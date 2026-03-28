@@ -189,21 +189,11 @@ impl<'a> Widget for Dashboard<'a> {
                 height: card_height,
             };
 
-            // Check if the selected session is in this group
-            let selected_in_group = group.sessions.contains(&selected);
-            let border_color = if selected_in_group {
-                Color::Rgb(200, 200, 255)
-            } else {
-                Color::Rgb(60, 60, 80)
-            };
+            let border_color = Color::Rgb(60, 60, 80);
 
             let display_name = crate::app::display_path(&group.directory);
             let title_str = format!(" {} ", display_name);
-            let title_style = if selected_in_group {
-                Style::default().fg(Color::Rgb(255, 255, 255))
-            } else {
-                Style::default().fg(Color::Rgb(140, 140, 160))
-            };
+            let title_style = Style::default().fg(Color::Rgb(140, 140, 160));
 
             // Draw card border
             let block = ratatui::widgets::Block::default()
@@ -217,18 +207,12 @@ impl<'a> Widget for Dashboard<'a> {
             block.render(card_area, buf);
 
             // Render all creatures in this group side by side
-            let creature_count = group.sessions.len();
-            let creature_slot_width = if creature_count > 0 {
-                inner.width / creature_count as u16
-            } else {
-                inner.width
-            };
-
             for (local_idx, &sess_idx) in group.sessions.iter().enumerate() {
                 let session = &self.sessions[sess_idx];
 
-                let cx = inner.x + (local_idx as u16) * creature_slot_width;
-                let cw = CREATURE_WIDTH.min(creature_slot_width);
+                let creature_spacing = CREATURE_WIDTH + 2; // creature width + 2 cells gap
+                let cx = inner.x + local_idx as u16 * creature_spacing;
+                let cw = CREATURE_WIDTH;
 
                 let creature_area = Rect {
                     x: cx,
@@ -256,12 +240,19 @@ impl<'a> Widget for Dashboard<'a> {
                     render_sprite_to_buffer(&icon, &palette, creature_area, buf);
                 }
 
-                // Draw session name below creature
+                // Draw state label below creature
                 let name_y = inner.y + creature_render_h;
                 if name_y < card_area.y + card_area.height.saturating_sub(1) {
-                    let name_style = Style::default().fg(Color::Rgb(140, 140, 160));
-                    let icon = session.state.icon();
-                    let label = format!("{} {}", icon, session.name);
+                    let state_color = match session.state {
+                        SessionState::Working => Color::Rgb(0, 200, 120),
+                        SessionState::Waiting => Color::Rgb(255, 180, 50),
+                        SessionState::Idle => Color::Rgb(100, 120, 220),
+                        SessionState::Sleeping => Color::Rgb(80, 90, 120),
+                        SessionState::Disconnected => Color::Rgb(100, 100, 100),
+                        SessionState::ShellOnly => Color::Rgb(200, 200, 210),
+                    };
+                    let name_style = Style::default().fg(state_color);
+                    let label = session.state.label().to_string();
                     let truncated: String = label.chars().take(cw as usize).collect();
                     draw_text(cx, name_y, &truncated, name_style, card_area, buf);
                 }
