@@ -98,3 +98,24 @@ fn borders_surround_body_cells() {
     }
     assert!(has_body || has_border, "Sprite should have some filled cells");
 }
+
+use summoner::creature::templates::{get_template, template_name, TEMPLATE_COUNT};
+
+#[test]
+fn all_templates_produce_valid_sprites() {
+    for i in 0..TEMPLATE_COUNT {
+        let mask = get_template(i);
+        let sprite = generate_sprite(&mask, 42);
+        assert!(sprite.width > 0);
+        assert!(sprite.height > 0);
+        let filled = sprite.cells.iter().filter(|c| **c != CellKind::Empty).count();
+        assert!(filled > 0, "Template {} produced empty sprite", template_name(i));
+    }
+}
+
+#[test]
+fn template_selection_wraps_with_modulo() {
+    let t1 = get_template(0);
+    let t2 = get_template(TEMPLATE_COUNT);
+    assert_eq!(t1.len(), t2.len());
+}
