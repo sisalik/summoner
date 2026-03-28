@@ -1,10 +1,25 @@
 use crossterm::event::{KeyCode, KeyEvent};
+use dirs;
 use nucleo_matcher::pattern::{AtomKind, CaseMatching, Normalization, Pattern};
 use nucleo_matcher::{Config, Matcher};
 use ratatui::buffer::Buffer;
 use ratatui::layout::{Position, Rect};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::widgets::{Block, Borders, Clear, Padding, Widget};
+
+fn expand_path(path: &str) -> String {
+    if let Some(rest) = path.strip_prefix("~/") {
+        if let Some(home) = dirs::home_dir() {
+            return format!("{}/{}", home.display(), rest);
+        }
+    }
+    if path == "~" {
+        if let Some(home) = dirs::home_dir() {
+            return home.display().to_string();
+        }
+    }
+    path.to_string()
+}
 
 pub enum DirPickerAction {
     None,
@@ -37,9 +52,9 @@ impl DirPicker {
             KeyCode::Esc => DirPickerAction::Cancel,
             KeyCode::Enter => {
                 if let Some((dir, _)) = self.filtered.get(self.selected) {
-                    DirPickerAction::Select(dir.clone())
+                    DirPickerAction::Select(expand_path(dir))
                 } else if !self.query.is_empty() {
-                    DirPickerAction::Select(self.query.clone())
+                    DirPickerAction::Select(expand_path(&self.query))
                 } else {
                     DirPickerAction::None
                 }
@@ -75,19 +90,55 @@ impl DirPicker {
     fn update_filter(&mut self) {
         if self.query.is_empty() {
             self.filtered = self.recent_dirs.iter().map(|d| (d.clone(), 0)).collect();
-        } else {
-            let pattern = Pattern::new(
-                &self.query,
-                CaseMatching::Ignore,
-                Normalization::Smart,
-                AtomKind::Fuzzy,
-            );
-            // match_list returns Vec<(&String, u32)>; clone the string refs into owned Strings
-            let matches = pattern.match_list(&self.recent_dirs, &mut self.matcher);
-            self.filtered = matches
-                .into_iter()
-                .map(|(s, score)| (s.clone(), score))
-                .collect();
+            return;
+        }
+
+        // Start with fuzzy matches from recent dirs
+        let pattern = Pattern::new(
+            &self.query,
+            CaseMatching::Ignore,
+            Normalization::Smart,
+            AtomKind::Fuzzy,
+        );
+        self.filtered = pattern
+            .match_list(&self.recent_dirs, &mut self.matcher)
+            .into_iter()
+            .map(|(s, score)| (s.clone(), score))
+            .collect();
+
+        // If query looks like a path, also scan filesystem
+        if self.query.starts_with('/') || self.query.starts_with('~') || self.query.starts_with('.') {
+            let expanded = expand_path(&self.query);
+            let scan_dir = if std::path::Path::new(&expanded).is_dir() {
+                expanded.clone()
+            } else {
+                // Parent directory
+                std::path::Path::new(&expanded)
+                    .parent()
+                    .map(|p| p.display().to_string())
+                    .unwrap_or_default()
+            };
+
+            if let Ok(entries) = std::fs::read_dir(&scan_dir) {
+                for entry in entries.filter_map(|e| e.ok()) {
+                    if entry.file_type().map(|t| t.is_dir()).unwrap_or(false) {
+                        let path = entry.path().display().to_string();
+                        if !self.filtered.iter().any(|(d, _)| d == &path) {
+                            // Score based on whether the entry name matches the query tail
+                            let name = entry.file_name().to_string_lossy().to_string();
+                            let query_tail = self.query.rsplit('/').next().unwrap_or(&self.query);
+                            if query_tail.is_empty() || name.to_lowercase().contains(&query_tail.to_lowercase()) {
+                                self.filtered.push((path, 0));
+                            }
+                        }
+                    }
+                }
+            }
+
+            // If the expanded path itself is a dir and not already listed, add it at top
+            if std::path::Path::new(&expanded).is_dir() && !self.filtered.iter().any(|(d, _)| d == &expanded) {
+                self.filtered.insert(0, (expanded, u32::MAX));
+            }
         }
     }
 }

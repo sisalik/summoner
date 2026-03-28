@@ -178,6 +178,7 @@ impl App {
     }
 
     fn process_pty_output(&mut self) {
+        let mut dir_changed = false;
         for i in 0..self.sessions.len() {
             let pty = match &self.pty_sessions[i] {
                 Some(p) => p,
@@ -188,6 +189,19 @@ impl App {
             let chunks = pty.read_available();
             for chunk in &chunks {
                 self.vt_parsers[i].process(chunk);
+            }
+
+            // Update working directory from /proc/PID/cwd
+            if let Some(cwd) = pty.cwd() {
+                if cwd != self.sessions[i].directory {
+                    self.sessions[i].directory = cwd.clone();
+                    self.sessions[i].name = std::path::Path::new(&cwd)
+                        .file_name()
+                        .and_then(|n| n.to_str())
+                        .unwrap_or("unknown")
+                        .to_string();
+                    dir_changed = true;
+                }
             }
 
             // Detect Claude state from screen
@@ -218,6 +232,10 @@ impl App {
                 self.sessions[i].state = SessionState::Disconnected;
                 self.animations[i].set_state(SessionState::Disconnected);
             }
+        }
+
+        if dir_changed {
+            update_nav_counts(&self.sessions, &mut self.nav);
         }
     }
 
@@ -465,6 +483,7 @@ impl App {
         }
 
         self.pty_sessions[index] = Some(pty);
+        self.vt_parsers[index] = vt100::Parser::new(session_rows, cols, 0);
         self.sessions[index].state = SessionState::ShellOnly;
         self.animations[index].set_state(SessionState::ShellOnly);
         self.mode = Mode::Session(index);

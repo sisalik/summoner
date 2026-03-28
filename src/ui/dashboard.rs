@@ -142,17 +142,26 @@ impl<'a> Widget for Dashboard<'a> {
             };
 
             let is_selected = card_idx == selected_card;
-            let border_color = if is_selected {
+            let in_card = selected_session_in_card.is_some();
+            let border_color = if is_selected && in_card {
+                Color::Rgb(255, 255, 255)
+            } else if is_selected {
                 Color::Rgb(200, 200, 255)
             } else {
                 Color::Rgb(60, 60, 80)
             };
 
             let title_str = format!(" {} ", group.name);
+            let title_style = if is_selected {
+                Style::default().fg(Color::Rgb(255, 255, 255))
+            } else {
+                Style::default().fg(Color::Rgb(140, 140, 160))
+            };
             let block = Block::default()
                 .borders(Borders::ALL)
                 .border_style(Style::default().fg(border_color))
                 .title(title_str.as_str())
+                .title_style(title_style)
                 .padding(Padding::uniform(1));
 
             let inner = block.inner(card_area);

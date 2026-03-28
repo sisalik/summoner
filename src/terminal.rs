@@ -81,6 +81,13 @@ impl PtySession {
         self.pid
     }
 
+    /// Read the current working directory of the child process via /proc/PID/cwd
+    pub fn cwd(&self) -> Option<String> {
+        let pid = self.pid?;
+        let link = format!("/proc/{}/cwd", pid);
+        std::fs::read_link(&link).ok().map(|p| p.display().to_string())
+    }
+
     pub fn resize(&self, rows: u16, cols: u16) -> Result<()> {
         self.master.resize(PtySize {
             rows,

@@ -48,7 +48,7 @@ fn frame_count(state: SessionState) -> usize {
         SessionState::Idle => 2,
         SessionState::Sleeping => 3,
         SessionState::Disconnected => 1,
-        SessionState::ShellOnly => 2,
+        SessionState::ShellOnly => 1,
     }
 }
 
@@ -59,7 +59,7 @@ fn frame_duration(state: SessionState) -> Duration {
         SessionState::Idle => Duration::from_millis(800),
         SessionState::Sleeping => Duration::from_millis(600),
         SessionState::Disconnected => Duration::ZERO,
-        SessionState::ShellOnly => Duration::from_millis(500),
+        SessionState::ShellOnly => Duration::ZERO,
     }
 }
 
@@ -70,7 +70,7 @@ pub fn animate_sprite(base: &Sprite, anim: &AnimationState) -> Sprite {
         SessionState::Idle => animate_breathe(base, anim.frame),
         SessionState::Sleeping => animate_sleep(base, anim.frame),
         SessionState::Disconnected => base.clone(),
-        SessionState::ShellOnly => animate_wobble(base, anim.frame),
+        SessionState::ShellOnly => base.clone(),
     }
 }
 
@@ -112,11 +112,6 @@ fn animate_sleep(base: &Sprite, frame: usize) -> Sprite {
     }
     let _ = frame;
     Sprite { width: base.width, height: new_height, cells }
-}
-
-fn animate_wobble(base: &Sprite, frame: usize) -> Sprite {
-    let offset: i32 = if frame == 0 { 0 } else { 1 };
-    shift_horizontal(base, offset)
 }
 
 fn shift_horizontal(sprite: &Sprite, offset: i32) -> Sprite {
