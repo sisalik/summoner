@@ -42,7 +42,7 @@ struct App {
     confirm_close_project: Option<String>,
 }
 
-fn display_path(path: &str) -> String {
+pub fn display_path(path: &str) -> String {
     if let Some(home) = dirs::home_dir() {
         let home_str = home.display().to_string();
         if let Some(rest) = path.strip_prefix(&home_str) {
@@ -95,7 +95,11 @@ impl App {
         }
 
         let mut nav = DashboardNav::new();
-        nav.update_total(sessions.len());
+        {
+            let groups = crate::session::group_by_project(&sessions);
+            let group_sizes: Vec<usize> = groups.iter().map(|g| g.sessions.len()).collect();
+            nav.update_layout(&group_sizes);
+        }
 
         let mode = if sessions.is_empty() {
             Mode::DirPicker
@@ -152,7 +156,11 @@ impl App {
         self.recent_dirs.add(directory, max);
         let _ = self.recent_dirs.save(&self.config_dir);
 
-        self.nav.update_total(self.sessions.len());
+        {
+            let groups = crate::session::group_by_project(&self.sessions);
+            let group_sizes: Vec<usize> = groups.iter().map(|g| g.sessions.len()).collect();
+            self.nav.update_layout(&group_sizes);
+        }
 
         self.mode = Mode::Session(idx);
         Ok(())
@@ -174,7 +182,11 @@ impl App {
         self.animations.remove(idx);
         self.sprites.remove(idx);
 
-        self.nav.update_total(self.sessions.len());
+        {
+            let groups = crate::session::group_by_project(&self.sessions);
+            let group_sizes: Vec<usize> = groups.iter().map(|g| g.sessions.len()).collect();
+            self.nav.update_layout(&group_sizes);
+        }
 
         // Adjust mode
         match self.mode {
@@ -288,7 +300,11 @@ impl App {
         }
 
         if dir_changed {
-            self.nav.update_total(self.sessions.len());
+            {
+            let groups = crate::session::group_by_project(&self.sessions);
+            let group_sizes: Vec<usize> = groups.iter().map(|g| g.sessions.len()).collect();
+            self.nav.update_layout(&group_sizes);
+        }
         }
     }
 
