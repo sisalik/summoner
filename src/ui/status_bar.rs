@@ -3,7 +3,7 @@ use ratatui::layout::{Position, Rect};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::widgets::Widget;
 
-use crate::session::{Session, SessionState};
+use crate::session::{group_by_project, Session, SessionState};
 
 pub struct StatusBar<'a> {
     sessions: &'a [Session],
@@ -33,17 +33,42 @@ impl<'a> Widget for StatusBar<'a> {
         let max_tab_x = area.x + area.width - f12_hint.len() as u16 - 1;
         let mut overflow_count = 0;
 
-        for (i, session) in self.sessions.iter().enumerate() {
-            let fkey = format!("F{}", i + 1);
+        let groups = group_by_project(self.sessions);
+        let mut session_order: Vec<usize> = Vec::new();
+        let mut group_boundaries: Vec<usize> = Vec::new();
+        for group in &groups {
+            group_boundaries.push(session_order.len());
+            session_order.extend(&group.sessions);
+        }
+
+        for (pos, &sess_idx) in session_order.iter().enumerate() {
+            let session = &self.sessions[sess_idx];
+
+            // Add separator between groups
+            if pos > 0 && group_boundaries.contains(&pos) {
+                let sep = "\u{2502}";
+                if x + 1 <= max_tab_x {
+                    let sep_style = Style::default()
+                        .fg(Color::Rgb(60, 60, 80))
+                        .bg(Color::Rgb(30, 30, 40));
+                    if let Some(cell) = buf.cell_mut(Position { x, y: area.y }) {
+                        cell.set_symbol(sep);
+                        cell.set_style(sep_style);
+                    }
+                    x += 1;
+                }
+            }
+
+            let fkey = format!("F{}", sess_idx + 1);
             let icon = session.state.icon();
             let tab_text = format!(" {} {} {} ", fkey, icon, session.name);
 
             if x + tab_text.len() as u16 > max_tab_x {
-                overflow_count = self.sessions.len() - i;
+                overflow_count = session_order.len() - pos;
                 break;
             }
 
-            let is_active = self.active_index == Some(i);
+            let is_active = self.active_index == Some(sess_idx);
             let style = tab_style(session.state, is_active);
 
             for ch in tab_text.chars() {

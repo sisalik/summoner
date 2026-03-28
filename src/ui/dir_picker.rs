@@ -1,4 +1,4 @@
-use crossterm::event::{KeyCode, KeyEvent};
+use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use dirs;
 use nucleo_matcher::pattern::{AtomKind, CaseMatching, Normalization, Pattern};
 use nucleo_matcher::{Config, Matcher};
@@ -36,15 +36,16 @@ pub struct DirPicker {
 }
 
 impl DirPicker {
-    pub fn new(recent_dirs: Vec<String>) -> Self {
-        let filtered = recent_dirs.iter().map(|d| (d.clone(), 0)).collect();
-        Self {
+    pub fn new(recent_dirs: Vec<String>, initial_query: Option<String>) -> Self {
+        let mut picker = Self {
             recent_dirs,
-            query: String::new(),
-            filtered,
+            query: initial_query.unwrap_or_default(),
+            filtered: Vec::new(),
             selected: 0,
             matcher: Matcher::new(Config::DEFAULT.match_paths()),
-        }
+        };
+        picker.update_filter();
+        picker
     }
 
     pub fn handle_key(&mut self, key: KeyEvent) -> DirPickerAction {
@@ -69,6 +70,12 @@ impl DirPicker {
                 if self.selected + 1 < self.filtered.len() {
                     self.selected += 1;
                 }
+                DirPickerAction::None
+            }
+            KeyCode::Char('u') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                self.query.clear();
+                self.update_filter();
+                self.selected = 0;
                 DirPickerAction::None
             }
             KeyCode::Char(c) => {

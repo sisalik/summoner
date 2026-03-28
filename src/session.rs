@@ -42,6 +42,8 @@ pub struct Session {
     pub state: SessionState,
     pub claude_conversation_id: Option<String>,
     pub name: String,
+    pub pending_state: Option<SessionState>,
+    pub pending_state_count: u8,
 }
 
 impl Session {
@@ -60,6 +62,8 @@ impl Session {
             state: SessionState::ShellOnly,
             claude_conversation_id: None,
             name,
+            pending_state: None,
+            pending_state_count: 0,
         }
     }
 }

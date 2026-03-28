@@ -11,7 +11,7 @@ use crate::config::{AppConfig, RecentDirs, SessionStore, SessionEntry};
 use crate::creature::animate::AnimationState;
 use crate::creature::generate::{generate_sprite, Sprite};
 use crate::creature::templates::{get_template, template_index, template_name, TEMPLATE_COUNT};
-use crate::session::{group_by_project, Session, SessionState};
+use crate::session::{Session, SessionState};
 use crate::terminal::PtySession;
 use crate::ui::dashboard::Dashboard;
 use crate::ui::dashboard_nav::DashboardNav;
@@ -39,6 +39,17 @@ struct App {
     recent_dirs: RecentDirs,
     config_dir: PathBuf,
     last_tick: Instant,
+    confirm_close_project: Option<String>,
+}
+
+fn display_path(path: &str) -> String {
+    if let Some(home) = dirs::home_dir() {
+        let home_str = home.display().to_string();
+        if let Some(rest) = path.strip_prefix(&home_str) {
+            return format!("~{}", rest);
+        }
+    }
+    path.to_string()
 }
 
 impl App {
@@ -84,7 +95,7 @@ impl App {
         }
 
         let mut nav = DashboardNav::new();
-        update_nav_counts(&sessions, &mut nav);
+        nav.update_total(sessions.len());
 
         let mode = if sessions.is_empty() {
             Mode::DirPicker
@@ -93,7 +104,10 @@ impl App {
         };
 
         let dir_picker = if mode == Mode::DirPicker {
-            Some(DirPicker::new(recent_dirs.directories.clone()))
+            let cwd = std::env::current_dir()
+                .ok()
+                .map(|p| display_path(&p.display().to_string()));
+            Some(DirPicker::new(recent_dirs.directories.clone(), cwd))
         } else {
             None
         };
@@ -111,6 +125,7 @@ impl App {
             recent_dirs,
             config_dir,
             last_tick: Instant::now(),
+            confirm_close_project: None,
         })
     }
 
@@ -137,7 +152,7 @@ impl App {
         self.recent_dirs.add(directory, max);
         let _ = self.recent_dirs.save(&self.config_dir);
 
-        update_nav_counts(&self.sessions, &mut self.nav);
+        self.nav.update_total(self.sessions.len());
 
         self.mode = Mode::Session(idx);
         Ok(())
@@ -159,7 +174,7 @@ impl App {
         self.animations.remove(idx);
         self.sprites.remove(idx);
 
-        update_nav_counts(&self.sessions, &mut self.nav);
+        self.nav.update_total(self.sessions.len());
 
         // Adjust mode
         match self.mode {
@@ -204,17 +219,37 @@ impl App {
                 }
             }
 
-            // Detect Claude state from screen
+            // Detect Claude state from screen with hysteresis
             let screen = self.vt_parsers[i].screen();
-            if let Some(new_state) = detect_claude_state(screen) {
-                self.sessions[i].state = new_state;
-                self.animations[i].set_state(new_state);
-            } else if self.sessions[i].state == SessionState::Working
-                || self.sessions[i].state == SessionState::Waiting
-            {
-                // Claude indicators disappeared, likely idle now
-                self.sessions[i].state = SessionState::Idle;
-                self.animations[i].set_state(SessionState::Idle);
+            let detected = detect_claude_state(screen);
+            let new_state = detected.unwrap_or(SessionState::ShellOnly);
+
+            if new_state != self.sessions[i].state {
+                // State change detected - require consistency
+                if self.sessions[i].pending_state == Some(new_state) {
+                    self.sessions[i].pending_state_count += 1;
+                } else {
+                    self.sessions[i].pending_state = Some(new_state);
+                    self.sessions[i].pending_state_count = 1;
+                }
+
+                // Only commit state change after consistent detections
+                let threshold = if new_state == SessionState::Working || new_state == SessionState::Waiting {
+                    1 // React to Working/Waiting immediately
+                } else {
+                    3 // Require consistency for Idle/ShellOnly transitions
+                };
+
+                if self.sessions[i].pending_state_count >= threshold {
+                    self.sessions[i].state = new_state;
+                    self.animations[i].set_state(new_state);
+                    self.sessions[i].pending_state = None;
+                    self.sessions[i].pending_state_count = 0;
+                }
+            } else {
+                // State unchanged, reset pending
+                self.sessions[i].pending_state = None;
+                self.sessions[i].pending_state_count = 0;
             }
 
             // Try to find conversation ID if we don't have one
@@ -235,7 +270,7 @@ impl App {
         }
 
         if dir_changed {
-            update_nav_counts(&self.sessions, &mut self.nav);
+            self.nav.update_total(self.sessions.len());
         }
     }
 
@@ -282,6 +317,13 @@ impl App {
                     );
                     frame.render_widget(dashboard, main_area);
 
+                    // Render confirmation overlay for project close
+                    if let Some(ref project_dir) = self.confirm_close_project {
+                        let popup_area = centered_rect(50, 20, main_area);
+                        let display_dir = display_path(project_dir);
+                        render_confirm_overlay(frame, popup_area, &display_dir);
+                    }
+
                     // Render dir picker overlay
                     if self.mode == Mode::DirPicker {
                         if let Some(ref picker) = self.dir_picker {
@@ -312,6 +354,29 @@ impl App {
     }
 
     fn handle_input(&mut self, key: KeyEvent, rows: u16, cols: u16) -> Result<bool> {
+        // Handle confirmation overlay first
+        if self.confirm_close_project.is_some() {
+            match key.code {
+                KeyCode::Char('y') => {
+                    let dir = self.confirm_close_project.take().unwrap();
+                    // Close all sessions matching that directory (in reverse to preserve indices)
+                    let indices: Vec<usize> = self.sessions.iter().enumerate()
+                        .filter(|(_, s)| s.directory == dir)
+                        .map(|(i, _)| i)
+                        .collect();
+                    for &idx in indices.iter().rev() {
+                        self.close_session(idx);
+                    }
+                    self.mode = Mode::Dashboard;
+                }
+                KeyCode::Char('n') | KeyCode::Esc => {
+                    self.confirm_close_project = None;
+                }
+                _ => {}
+            }
+            return Ok(false);
+        }
+
         // Ctrl+C or Ctrl+Q always quits
         if key.modifiers.contains(KeyModifiers::CONTROL)
             && (key.code == KeyCode::Char('c') || key.code == KeyCode::Char('q'))
@@ -373,47 +438,49 @@ impl App {
 
     fn handle_dashboard_input(&mut self, key: KeyEvent, rows: u16, cols: u16) -> Result<()> {
         match key.code {
-            KeyCode::Char('q') => {
-                // Quit handled by Ctrl+Q globally; 'q' on dashboard goes back
-                // If in card, exit card; otherwise do nothing special
-                if self.nav.is_in_card() {
-                    self.nav.exit_card();
-                }
-            }
             KeyCode::Char('N') => {
                 // Open dir picker for new directory
-                self.dir_picker = Some(DirPicker::new(self.recent_dirs.directories.clone()));
+                let cwd = std::env::current_dir()
+                    .ok()
+                    .map(|p| display_path(&p.display().to_string()));
+                self.dir_picker = Some(DirPicker::new(self.recent_dirs.directories.clone(), cwd));
                 self.mode = Mode::DirPicker;
             }
             KeyCode::Char('n') => {
-                // New session in same directory as selected card
-                let groups = group_by_project(&self.sessions);
-                if let Some(group) = groups.get(self.nav.selected_card()) {
-                    let dir = group.directory.clone();
+                // New session in same directory as selected session
+                let sel = self.nav.selected();
+                if let Some(session) = self.sessions.get(sel) {
+                    let dir = session.directory.clone();
                     let pty_rows = rows.saturating_sub(1);
                     self.spawn_session(dir, pty_rows, cols)?;
                 } else {
-                    // No groups, open dir picker
-                    self.dir_picker = Some(DirPicker::new(self.recent_dirs.directories.clone()));
+                    // No sessions, open dir picker
+                    let cwd = std::env::current_dir()
+                        .ok()
+                        .map(|p| display_path(&p.display().to_string()));
+                    self.dir_picker = Some(DirPicker::new(self.recent_dirs.directories.clone(), cwd));
                     self.mode = Mode::DirPicker;
                 }
             }
-            KeyCode::Char('d') => {
+            KeyCode::Char('x') => {
                 // Close selected session
-                let groups = group_by_project(&self.sessions);
-                let group_indices: Vec<Vec<usize>> =
-                    groups.iter().map(|g| g.sessions.clone()).collect();
-                if let Some(global_idx) = self.nav.selected_global_session(&group_indices) {
-                    self.close_session(global_idx);
+                let sel = self.nav.selected();
+                if sel < self.sessions.len() {
+                    self.close_session(sel);
+                }
+            }
+            KeyCode::Char('X') => {
+                // Close all sessions in selected project (with confirmation)
+                let sel = self.nav.selected();
+                if let Some(session) = self.sessions.get(sel) {
+                    self.confirm_close_project = Some(session.directory.clone());
                 }
             }
             KeyCode::Char('r') => {
-                // Restore selected session (resume Claude if conversation id exists)
-                let groups = group_by_project(&self.sessions);
-                let group_indices: Vec<Vec<usize>> =
-                    groups.iter().map(|g| g.sessions.clone()).collect();
-                if let Some(global_idx) = self.nav.selected_global_session(&group_indices) {
-                    self.restore_session(global_idx, rows, cols)?;
+                // Restore selected session
+                let sel = self.nav.selected();
+                if sel < self.sessions.len() {
+                    self.restore_session(sel, rows, cols)?;
                 }
             }
             KeyCode::Left => self.nav.move_left(),
@@ -421,25 +488,14 @@ impl App {
             KeyCode::Up => self.nav.move_up(),
             KeyCode::Down => self.nav.move_down(),
             KeyCode::Enter => {
-                if self.nav.is_in_card() {
-                    // Switch to the selected session
-                    let groups = group_by_project(&self.sessions);
-                    let group_indices: Vec<Vec<usize>> =
-                        groups.iter().map(|g| g.sessions.clone()).collect();
-                    if let Some(global_idx) = self.nav.selected_global_session(&group_indices) {
-                        if let Some(Some(pty)) = self.pty_sessions.get(global_idx) {
-                            let pty_rows = rows.saturating_sub(1);
-                            let _ = pty.resize(pty_rows, cols);
-                        }
-                        self.mode = Mode::Session(global_idx);
+                // Switch to the selected session
+                let sel = self.nav.selected();
+                if sel < self.sessions.len() {
+                    if let Some(Some(pty)) = self.pty_sessions.get(sel) {
+                        let pty_rows = rows.saturating_sub(1);
+                        let _ = pty.resize(pty_rows, cols);
                     }
-                } else {
-                    self.nav.enter_card();
-                }
-            }
-            KeyCode::Esc => {
-                if self.nav.is_in_card() {
-                    self.nav.exit_card();
+                    self.mode = Mode::Session(sel);
                 }
             }
             _ => {}
@@ -480,9 +536,13 @@ impl App {
         if let Some(ref conv_id) = self.sessions[index].claude_conversation_id.clone() {
             let cmd = format!("claude --resume {}\r\n", conv_id);
             let _ = pty.write(cmd.as_bytes());
+        } else {
+            // Write a newline to kick the shell into showing a prompt
+            let _ = pty.write(b"\n");
         }
 
         self.pty_sessions[index] = Some(pty);
+        // Reset vt100 parser to current terminal size
         self.vt_parsers[index] = vt100::Parser::new(session_rows, cols, 0);
         self.sessions[index].state = SessionState::ShellOnly;
         self.animations[index].set_state(SessionState::ShellOnly);
@@ -497,12 +557,6 @@ impl App {
     }
 }
 
-fn update_nav_counts(sessions: &[Session], nav: &mut DashboardNav) {
-    let groups = group_by_project(sessions);
-    let counts: Vec<usize> = groups.iter().map(|g| g.sessions.len()).collect();
-    nav.update_counts(counts);
-}
-
 fn centered_rect(percent_x: u16, percent_y: u16, area: Rect) -> Rect {
     let width = area.width * percent_x / 100;
     let height = area.height * percent_y / 100;
@@ -510,6 +564,35 @@ fn centered_rect(percent_x: u16, percent_y: u16, area: Rect) -> Rect {
     let y = area.y + (area.height.saturating_sub(height)) / 2;
     Rect::new(x, y, width, height)
 }
+
+fn render_confirm_overlay(frame: &mut ratatui::Frame, area: Rect, project_dir: &str) {
+    use ratatui::widgets::{Block, Borders, Clear, Padding};
+    use ratatui::style::{Color, Modifier, Style};
+
+    Clear.render(area, frame.buffer_mut());
+
+    let block = Block::default()
+        .title(" Confirm Close ")
+        .title_style(Style::default().fg(Color::Rgb(255, 100, 100)).add_modifier(Modifier::BOLD))
+        .borders(Borders::ALL)
+        .border_style(Style::default().fg(Color::Rgb(200, 80, 80)))
+        .padding(Padding::uniform(1));
+
+    let inner = block.inner(area);
+    block.render(area, frame.buffer_mut());
+
+    if inner.height >= 2 && inner.width >= 10 {
+        let msg = format!("Close all sessions in {}?", project_dir);
+        let hint = "(y)es / (n)o";
+        let msg_style = Style::default().fg(Color::Rgb(220, 220, 240));
+        let hint_style = Style::default().fg(Color::Rgb(150, 150, 170));
+
+        frame.buffer_mut().set_string(inner.x, inner.y, &msg, msg_style);
+        frame.buffer_mut().set_string(inner.x, inner.y + 1, hint, hint_style);
+    }
+}
+
+use ratatui::widgets::Widget;
 
 fn key_to_bytes(key: KeyEvent) -> Vec<u8> {
     let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);

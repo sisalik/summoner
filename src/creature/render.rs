@@ -114,3 +114,27 @@ fn kind_color(kind: &CellKind, palette: &Palette) -> Color {
 pub fn sprite_cell_size(sprite: &Sprite) -> (u16, u16) {
     (sprite.width as u16, ((sprite.height + 1) / 2) as u16)
 }
+
+pub fn terminal_icon_sprite() -> Sprite {
+    // A simple 10x8 terminal/monitor icon
+    use CellKind::*;
+    let cells = vec![
+        // Row 0: top of monitor frame
+        Empty, Border, Border, Border, Border, Border, Border, Border, Border, Empty,
+        // Row 1: screen top
+        Border, Body, Body, Body, Body, Body, Body, Body, Body, Border,
+        // Row 2: screen with > prompt
+        Border, Body, Body, Border, Body, Body, Body, Body, Body, Border,
+        // Row 3: screen content
+        Border, Body, Body, Body, Body, Body, Body, Body, Body, Border,
+        // Row 4: screen bottom
+        Border, Body, Body, Body, Body, Body, Body, Body, Body, Border,
+        // Row 5: bottom of monitor frame
+        Empty, Border, Border, Border, Border, Border, Border, Border, Border, Empty,
+        // Row 6: stand
+        Empty, Empty, Empty, Border, Border, Border, Border, Empty, Empty, Empty,
+        // Row 7: base
+        Empty, Empty, Border, Border, Border, Border, Border, Border, Empty, Empty,
+    ];
+    Sprite { width: 10, height: 8, cells }
+}
