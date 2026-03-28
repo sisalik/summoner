@@ -194,6 +194,7 @@ impl App {
 
     fn process_pty_output(&mut self) {
         let mut dir_changed = false;
+        let mut remove_active: Option<usize> = None;
         for i in 0..self.sessions.len() {
             let pty = match &self.pty_sessions[i] {
                 Some(p) => p,
@@ -264,9 +265,26 @@ impl App {
             // Check for child exit
             if pty.try_wait().is_some() {
                 self.pty_sessions[i] = None;
-                self.sessions[i].state = SessionState::Disconnected;
-                self.animations[i].set_state(SessionState::Disconnected);
+                if matches!(self.mode, Mode::Session(idx) if idx == i) {
+                    // Currently viewing this session — mark for removal
+                    remove_active = Some(i);
+                } else {
+                    // Background session died — mark disconnected
+                    self.sessions[i].state = SessionState::Disconnected;
+                    self.animations[i].set_state(SessionState::Disconnected);
+                    // Adjust mode index if needed
+                    if let Mode::Session(idx) = self.mode {
+                        if idx > i {
+                            self.mode = Mode::Session(idx - 1);
+                        }
+                    }
+                }
             }
+        }
+
+        if let Some(idx) = remove_active {
+            self.close_session(idx);
+            self.mode = Mode::Dashboard;
         }
 
         if dir_changed {
@@ -476,26 +494,24 @@ impl App {
                     self.confirm_close_project = Some(session.directory.clone());
                 }
             }
-            KeyCode::Char('r') => {
-                // Restore selected session
-                let sel = self.nav.selected();
-                if sel < self.sessions.len() {
-                    self.restore_session(sel, rows, cols)?;
-                }
-            }
             KeyCode::Left => self.nav.move_left(),
             KeyCode::Right => self.nav.move_right(),
             KeyCode::Up => self.nav.move_up(),
             KeyCode::Down => self.nav.move_down(),
             KeyCode::Enter => {
-                // Switch to the selected session
                 let sel = self.nav.selected();
                 if sel < self.sessions.len() {
-                    if let Some(Some(pty)) = self.pty_sessions.get(sel) {
+                    if self.pty_sessions[sel].is_none() {
+                        // Dead session — restore it
+                        self.restore_session(sel, rows, cols)?;
+                    } else {
+                        // Active session — switch to it
                         let pty_rows = rows.saturating_sub(1);
-                        let _ = pty.resize(pty_rows, cols);
+                        if let Some(Some(pty)) = self.pty_sessions.get(sel) {
+                            let _ = pty.resize(pty_rows, cols);
+                        }
+                        self.mode = Mode::Session(sel);
                     }
-                    self.mode = Mode::Session(sel);
                 }
             }
             _ => {}

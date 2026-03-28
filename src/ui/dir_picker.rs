@@ -21,6 +21,16 @@ fn expand_path(path: &str) -> String {
     path.to_string()
 }
 
+fn display_path(path: &str) -> String {
+    if let Some(home) = dirs::home_dir() {
+        let home_str = home.display().to_string();
+        if let Some(rest) = path.strip_prefix(&home_str) {
+            return format!("~{}", rest);
+        }
+    }
+    path.to_string()
+}
+
 pub enum DirPickerAction {
     None,
     Cancel,
@@ -33,18 +43,21 @@ pub struct DirPicker {
     filtered: Vec<(String, u32)>,
     selected: usize,
     matcher: Matcher,
+    user_typed: bool,
 }
 
 impl DirPicker {
     pub fn new(recent_dirs: Vec<String>, initial_query: Option<String>) -> Self {
         let mut picker = Self {
-            recent_dirs,
+            recent_dirs: recent_dirs.clone(),
             query: initial_query.unwrap_or_default(),
             filtered: Vec::new(),
             selected: 0,
             matcher: Matcher::new(Config::DEFAULT.match_paths()),
+            user_typed: false,
         };
-        picker.update_filter();
+        // Show recent dirs by default without filtering
+        picker.filtered = recent_dirs.iter().map(|d| (d.clone(), 0)).collect();
         picker
     }
 
@@ -52,7 +65,16 @@ impl DirPicker {
         match key.code {
             KeyCode::Esc => DirPickerAction::Cancel,
             KeyCode::Enter => {
-                if let Some((dir, _)) = self.filtered.get(self.selected) {
+                if !self.user_typed {
+                    // Use the pre-filled query directly (CWD)
+                    if !self.query.is_empty() {
+                        DirPickerAction::Select(expand_path(&self.query))
+                    } else if let Some((dir, _)) = self.filtered.get(self.selected) {
+                        DirPickerAction::Select(expand_path(dir))
+                    } else {
+                        DirPickerAction::None
+                    }
+                } else if let Some((dir, _)) = self.filtered.get(self.selected) {
                     DirPickerAction::Select(expand_path(dir))
                 } else if !self.query.is_empty() {
                     DirPickerAction::Select(expand_path(&self.query))
@@ -73,18 +95,21 @@ impl DirPicker {
                 DirPickerAction::None
             }
             KeyCode::Char('u') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                self.user_typed = true;
                 self.query.clear();
                 self.update_filter();
                 self.selected = 0;
                 DirPickerAction::None
             }
             KeyCode::Char(c) => {
+                self.user_typed = true;
                 self.query.push(c);
                 self.update_filter();
                 self.selected = 0;
                 DirPickerAction::None
             }
             KeyCode::Backspace => {
+                self.user_typed = true;
                 self.query.pop();
                 self.update_filter();
                 self.selected = 0;
@@ -95,6 +120,10 @@ impl DirPicker {
     }
 
     fn update_filter(&mut self) {
+        if !self.user_typed {
+            self.filtered = self.recent_dirs.iter().map(|d| (d.clone(), 0)).collect();
+            return;
+        }
         if self.query.is_empty() {
             self.filtered = self.recent_dirs.iter().map(|d| (d.clone(), 0)).collect();
             return;
@@ -232,12 +261,13 @@ impl Widget for &DirPicker {
                 };
                 let prefix = if is_selected { "▸ " } else { "  " };
                 let max_len = inner.width as usize - 2;
-                let display_dir = if dir.len() > max_len {
-                    &dir[dir.len() - max_len..]
+                let tilde_dir = display_path(dir);
+                let truncated = if tilde_dir.len() > max_len {
+                    tilde_dir[tilde_dir.len() - max_len..].to_string()
                 } else {
-                    dir.as_str()
+                    tilde_dir
                 };
-                let display = format!("{}{}", prefix, display_dir);
+                let display = format!("{}{}", prefix, truncated);
                 buf.set_string(inner.x, y, &display, style);
             }
         }

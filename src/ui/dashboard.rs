@@ -74,7 +74,7 @@ impl<'a> Widget for Dashboard<'a> {
 
         // Reserve 1 row at bottom for hints
         let hint_y = area.y + area.height - 1;
-        let hint_text = " \u{2190}\u{2192}\u{2191}\u{2193} navigate \u{2502} Enter select \u{2502} n new session \u{2502} N new dir \u{2502} x close \u{2502} X close project \u{2502} r restore ";
+        let hint_text = " \u{2190}\u{2192}\u{2191}\u{2193} navigate \u{2502} Enter select/restore \u{2502} n new session \u{2502} N new dir \u{2502} x close \u{2502} X close project ";
         let hint_style = Style::default()
             .fg(Color::Rgb(120, 120, 140))
             .bg(Color::Rgb(20, 20, 30));
