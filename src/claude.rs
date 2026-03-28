@@ -1,7 +1,7 @@
 use crate::session::SessionState;
 
 pub fn detect_claude_state(screen: &vt100::Screen) -> Option<SessionState> {
-    let (rows, cols) = screen.size();
+    let (rows, _cols) = screen.size();
     let search_rows = 4.min(rows);
     for row_offset in 0..search_rows {
         let row = rows - 1 - row_offset;

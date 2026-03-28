@@ -389,6 +389,15 @@ impl App {
                     self.close_session(global_idx);
                 }
             }
+            KeyCode::Char('r') => {
+                // Restore selected session (resume Claude if conversation id exists)
+                let groups = group_by_project(&self.sessions);
+                let group_indices: Vec<Vec<usize>> =
+                    groups.iter().map(|g| g.sessions.clone()).collect();
+                if let Some(global_idx) = self.nav.selected_global_session(&group_indices) {
+                    self.restore_session(global_idx, rows, cols)?;
+                }
+            }
             KeyCode::Left => self.nav.move_left(),
             KeyCode::Right => self.nav.move_right(),
             KeyCode::Up => self.nav.move_up(),
@@ -432,6 +441,33 @@ impl App {
             }
         }
 
+        Ok(())
+    }
+
+    fn restore_session(&mut self, index: usize, rows: u16, cols: u16) -> Result<()> {
+        if index >= self.sessions.len() {
+            return Ok(());
+        }
+        // Don't restore if already has an active PTY
+        if self.pty_sessions[index].is_some() {
+            self.mode = Mode::Session(index);
+            return Ok(());
+        }
+
+        let directory = self.sessions[index].directory.clone();
+        let session_rows = rows.saturating_sub(1);
+        let pty = PtySession::spawn(&self.config.general.default_shell, &directory, session_rows, cols)?;
+
+        // If there's a claude conversation id, resume it
+        if let Some(ref conv_id) = self.sessions[index].claude_conversation_id.clone() {
+            let cmd = format!("claude --resume {}\r\n", conv_id);
+            let _ = pty.write(cmd.as_bytes());
+        }
+
+        self.pty_sessions[index] = Some(pty);
+        self.sessions[index].state = SessionState::ShellOnly;
+        self.animations[index].set_state(SessionState::ShellOnly);
+        self.mode = Mode::Session(index);
         Ok(())
     }
 
@@ -543,16 +579,16 @@ pub fn run(terminal: &mut DefaultTerminal) -> Result<()> {
                     }
                 }
                 Event::Resize(cols, rows) => {
-                    // Resize active PTY session
-                    if let Mode::Session(idx) = app.mode {
-                        if let Some(Some(pty)) = app.pty_sessions.get(idx) {
-                            let pty_rows = rows.saturating_sub(1);
-                            let _ = pty.resize(pty_rows, cols);
+                    let session_rows = rows.saturating_sub(1);
+                    // Resize all active PTY sessions
+                    for pty_opt in &app.pty_sessions {
+                        if let Some(pty) = pty_opt {
+                            let _ = pty.resize(session_rows, cols);
                         }
                     }
-                    // Also resize vt parsers
+                    // Also resize all vt parsers
                     for parser in &mut app.vt_parsers {
-                        parser.screen_mut().set_size(rows.saturating_sub(1), cols);
+                        parser.screen_mut().set_size(session_rows, cols);
                     }
                 }
                 _ => {}

@@ -74,7 +74,7 @@ impl<'a> Widget for Dashboard<'a> {
 
         // Reserve 1 row at bottom for hints
         let hint_y = area.y + area.height - 1;
-        let hint_text = " ←→↑↓ navigate │ Enter select │ n new session │ N new dir │ d close │ q back ";
+        let hint_text = " ←→↑↓ navigate │ Enter select │ n new session │ N new dir │ d close │ r restore │ q back ";
         let hint_style = Style::default()
             .fg(Color::Rgb(120, 120, 140))
             .bg(Color::Rgb(20, 20, 30));
