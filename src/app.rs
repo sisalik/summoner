@@ -40,6 +40,8 @@ struct App {
     config_dir: PathBuf,
     last_tick: Instant,
     confirm_close_project: Option<String>,
+    confirm_selection: bool,
+    last_session: Option<usize>,
 }
 
 pub fn display_path(path: &str) -> String {
@@ -130,6 +132,8 @@ impl App {
             config_dir,
             last_tick: Instant::now(),
             confirm_close_project: None,
+            confirm_selection: false,
+            last_session: None,
         })
     }
 
@@ -162,6 +166,7 @@ impl App {
             self.nav.update_layout(&group_sizes);
         }
 
+        self.last_session = Some(idx);
         self.mode = Mode::Session(idx);
         Ok(())
     }
@@ -360,7 +365,7 @@ impl App {
                     if let Some(ref project_dir) = self.confirm_close_project {
                         let popup_area = centered_rect(50, 20, main_area);
                         let display_dir = display_path(project_dir);
-                        render_confirm_overlay(frame, popup_area, &display_dir);
+                        render_confirm_overlay(frame, popup_area, &display_dir, self.confirm_selection);
                     }
 
                     // Render dir picker overlay
@@ -396,9 +401,29 @@ impl App {
         // Handle confirmation overlay first
         if self.confirm_close_project.is_some() {
             match key.code {
+                KeyCode::Left | KeyCode::Right => {
+                    self.confirm_selection = !self.confirm_selection;
+                }
+                KeyCode::Enter => {
+                    if self.confirm_selection {
+                        // Yes selected — close all sessions
+                        let dir = self.confirm_close_project.take().unwrap();
+                        let indices: Vec<usize> = self.sessions.iter().enumerate()
+                            .filter(|(_, s)| s.directory == dir)
+                            .map(|(i, _)| i)
+                            .collect();
+                        for &idx in indices.iter().rev() {
+                            self.close_session(idx);
+                        }
+                        self.mode = Mode::Dashboard;
+                    } else {
+                        // No selected — cancel
+                        self.confirm_close_project = None;
+                    }
+                    self.confirm_selection = false;
+                }
                 KeyCode::Char('y') => {
                     let dir = self.confirm_close_project.take().unwrap();
-                    // Close all sessions matching that directory (in reverse to preserve indices)
                     let indices: Vec<usize> = self.sessions.iter().enumerate()
                         .filter(|(_, s)| s.directory == dir)
                         .map(|(i, _)| i)
@@ -407,9 +432,11 @@ impl App {
                         self.close_session(idx);
                     }
                     self.mode = Mode::Dashboard;
+                    self.confirm_selection = false;
                 }
                 KeyCode::Char('n') | KeyCode::Esc => {
                     self.confirm_close_project = None;
+                    self.confirm_selection = false;
                 }
                 _ => {}
             }
@@ -423,9 +450,24 @@ impl App {
             return Ok(true);
         }
 
-        // F12 always toggles to dashboard
+        // F12 toggles between dashboard and last session
         if key.code == KeyCode::F(12) {
-            self.mode = Mode::Dashboard;
+            match self.mode {
+                Mode::Dashboard | Mode::DirPicker => {
+                    // Go back to last session if one exists
+                    if let Some(idx) = self.last_session {
+                        if idx < self.sessions.len() && self.pty_sessions.get(idx).is_some_and(|p| p.is_some()) {
+                            self.mode = Mode::Session(idx);
+                            return Ok(false);
+                        }
+                    }
+                    // No active session to return to
+                }
+                Mode::Session(idx) => {
+                    self.last_session = Some(idx);
+                    self.mode = Mode::Dashboard;
+                }
+            }
             return Ok(false);
         }
 
@@ -440,6 +482,7 @@ impl App {
                         let pty_rows = rows.saturating_sub(1);
                         let _ = pty.resize(pty_rows, cols);
                     }
+                    self.last_session = Some(idx);
                     self.mode = Mode::Session(idx);
                 }
                 return Ok(false);
@@ -513,6 +556,7 @@ impl App {
                 let sel = self.nav.selected();
                 if let Some(session) = self.sessions.get(sel) {
                     self.confirm_close_project = Some(session.directory.clone());
+                    self.confirm_selection = false; // Default to No (safer)
                 }
             }
             KeyCode::Left => self.nav.move_left(),
@@ -523,7 +567,7 @@ impl App {
                 let sel = self.nav.selected();
                 if sel < self.sessions.len() {
                     if self.pty_sessions[sel].is_none() {
-                        // Dead session — restore it
+                        // Dead session — restore it (sets last_session inside restore_session)
                         self.restore_session(sel, rows, cols)?;
                     } else {
                         // Active session — switch to it
@@ -531,6 +575,7 @@ impl App {
                         if let Some(Some(pty)) = self.pty_sessions.get(sel) {
                             let _ = pty.resize(pty_rows, cols);
                         }
+                        self.last_session = Some(sel);
                         self.mode = Mode::Session(sel);
                     }
                 }
@@ -583,6 +628,7 @@ impl App {
         self.vt_parsers[index] = vt100::Parser::new(session_rows, cols, 0);
         self.sessions[index].state = SessionState::ShellOnly;
         self.animations[index].set_state(SessionState::ShellOnly);
+        self.last_session = Some(index);
         self.mode = Mode::Session(index);
         Ok(())
     }
@@ -602,7 +648,7 @@ fn centered_rect(percent_x: u16, percent_y: u16, area: Rect) -> Rect {
     Rect::new(x, y, width, height)
 }
 
-fn render_confirm_overlay(frame: &mut ratatui::Frame, area: Rect, project_dir: &str) {
+fn render_confirm_overlay(frame: &mut ratatui::Frame, area: Rect, project_dir: &str, yes_selected: bool) {
     use ratatui::widgets::{Block, Borders, Clear, Padding};
     use ratatui::style::{Color, Modifier, Style};
 
@@ -618,14 +664,40 @@ fn render_confirm_overlay(frame: &mut ratatui::Frame, area: Rect, project_dir: &
     let inner = block.inner(area);
     block.render(area, frame.buffer_mut());
 
-    if inner.height >= 2 && inner.width >= 10 {
+    if inner.height >= 3 && inner.width >= 20 {
         let msg = format!("Close all sessions in {}?", project_dir);
-        let hint = "(y)es / (n)o";
         let msg_style = Style::default().fg(Color::Rgb(220, 220, 240));
-        let hint_style = Style::default().fg(Color::Rgb(150, 150, 170));
-
         frame.buffer_mut().set_string(inner.x, inner.y, &msg, msg_style);
-        frame.buffer_mut().set_string(inner.x, inner.y + 1, hint, hint_style);
+
+        // Draw buttons on the third line (inner.y + 2)
+        let btn_y = inner.y + 2;
+
+        let yes_label = "[ Yes ]";
+        let no_label  = "[ No ]";
+
+        let selected_style = Style::default()
+            .fg(Color::Rgb(20, 20, 30))
+            .bg(Color::Rgb(200, 80, 80))
+            .add_modifier(Modifier::BOLD);
+        let normal_style = Style::default()
+            .fg(Color::Rgb(150, 150, 170))
+            .add_modifier(Modifier::DIM);
+
+        let (yes_style, no_style) = if yes_selected {
+            (selected_style, normal_style)
+        } else {
+            (normal_style, selected_style)
+        };
+
+        frame.buffer_mut().set_string(inner.x, btn_y, yes_label, yes_style);
+        frame.buffer_mut().set_string(inner.x + yes_label.len() as u16 + 4, btn_y, no_label, no_style);
+
+        // Navigation hint
+        let hint_style = Style::default().fg(Color::Rgb(100, 100, 120));
+        let hint = "◄ ► to switch  Enter to confirm";
+        if inner.height >= 5 {
+            frame.buffer_mut().set_string(inner.x, inner.y + 4, hint, hint_style);
+        }
     }
 }
 

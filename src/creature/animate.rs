@@ -80,7 +80,7 @@ fn animate_locomotion(base: &Sprite, frame: usize) -> Sprite {
 }
 
 fn animate_bounce(base: &Sprite, frame: usize) -> Sprite {
-    let shift_up = match frame { 0 => 0, 1 => 2, 2 => 1, _ => 0 };
+    let shift_up = match frame { 0 => 0, 1 => 3, 2 => 1, _ => 0 };
     shift_vertical(base, shift_up)
 }
 
