@@ -65,16 +65,7 @@ impl DirPicker {
         match key.code {
             KeyCode::Esc => DirPickerAction::Cancel,
             KeyCode::Enter => {
-                if !self.user_typed {
-                    // Use the pre-filled query directly (CWD)
-                    if !self.query.is_empty() {
-                        DirPickerAction::Select(expand_path(&self.query))
-                    } else if let Some((dir, _)) = self.filtered.get(self.selected) {
-                        DirPickerAction::Select(expand_path(dir))
-                    } else {
-                        DirPickerAction::None
-                    }
-                } else if let Some((dir, _)) = self.filtered.get(self.selected) {
+                if let Some((dir, _)) = self.filtered.get(self.selected) {
                     DirPickerAction::Select(expand_path(dir))
                 } else if !self.query.is_empty() {
                     DirPickerAction::Select(expand_path(&self.query))
