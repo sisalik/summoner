@@ -42,6 +42,7 @@ struct App {
     confirm_close_project: Option<String>,
     confirm_selection: bool,
     last_session: Option<usize>,
+    last_save: Instant,
 }
 
 pub fn display_path(path: &str) -> String {
@@ -134,6 +135,7 @@ impl App {
             confirm_close_project: None,
             confirm_selection: false,
             last_session: None,
+            last_save: Instant::now(),
         })
     }
 
@@ -239,11 +241,25 @@ impl App {
 
             // Detect Claude state from screen with hysteresis
             let screen = self.vt_parsers[i].screen();
+            let in_alternate_screen = screen.alternate_screen();
             let detected = detect_claude_state(screen);
-            // If Claude was previously detected in this session, default to Idle (not ShellOnly)
-            let has_claude = self.sessions[i].claude_conversation_id.is_some()
-                || matches!(self.sessions[i].state, SessionState::Working | SessionState::Waiting | SessionState::Idle);
-            let new_state = detected.unwrap_or(if has_claude { SessionState::Idle } else { SessionState::ShellOnly });
+
+            // If not in alternate screen, Claude has exited — use ShellOnly as default
+            let new_state = if let Some(state) = detected {
+                state
+            } else if in_alternate_screen {
+                // In alternate screen but no patterns matched — probably still Claude, default Idle
+                if self.sessions[i].claude_conversation_id.is_some()
+                    || matches!(self.sessions[i].state, SessionState::Working | SessionState::Waiting | SessionState::Idle)
+                {
+                    SessionState::Idle
+                } else {
+                    SessionState::ShellOnly
+                }
+            } else {
+                // Normal screen — no Claude running
+                SessionState::ShellOnly
+            };
 
             if new_state != self.sessions[i].state {
                 // State change detected - require consistency
@@ -809,8 +825,14 @@ pub fn run(terminal: &mut DefaultTerminal) -> Result<()> {
         // Process PTY output
         app.process_pty_output();
 
-        // Tick animations (mostly useful in dashboard)
+        // Periodic state save (every 10 seconds)
         let now = Instant::now();
+        if now.duration_since(app.last_save) >= Duration::from_secs(10) {
+            app.save_state();
+            app.last_save = now;
+        }
+
+        // Tick animations (mostly useful in dashboard)
         let dt = now.duration_since(app.last_tick);
         app.last_tick = now;
         if matches!(app.mode, Mode::Dashboard | Mode::DirPicker) {
