@@ -59,6 +59,17 @@ pub fn detect_claude_state(screen: &vt100::Screen) -> Option<SessionState> {
         }
     }
 
+    // Check for Claude Code UI chrome (borders, input box)
+    for line in &lines {
+        if line.contains("Claude Code") || line.contains("claude.ai") {
+            return Some(SessionState::Idle);
+        }
+        // Claude's input box uses rounded corners
+        if line.starts_with('╭') || line.starts_with('╰') {
+            return Some(SessionState::Idle);
+        }
+    }
+
     // No Claude Code patterns detected
     None
 }

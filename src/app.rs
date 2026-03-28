@@ -235,7 +235,10 @@ impl App {
             // Detect Claude state from screen with hysteresis
             let screen = self.vt_parsers[i].screen();
             let detected = detect_claude_state(screen);
-            let new_state = detected.unwrap_or(SessionState::ShellOnly);
+            // If Claude was previously detected in this session, default to Idle (not ShellOnly)
+            let has_claude = self.sessions[i].claude_conversation_id.is_some()
+                || matches!(self.sessions[i].state, SessionState::Working | SessionState::Waiting | SessionState::Idle);
+            let new_state = detected.unwrap_or(if has_claude { SessionState::Idle } else { SessionState::ShellOnly });
 
             if new_state != self.sessions[i].state {
                 // State change detected - require consistency
@@ -249,8 +252,10 @@ impl App {
                 // Only commit state change after consistent detections
                 let threshold = if new_state == SessionState::Working || new_state == SessionState::Waiting {
                     1 // React to Working/Waiting immediately
+                } else if self.sessions[i].state == SessionState::Working {
+                    8 // Very resistant to leaving Working state (prevents flashing)
                 } else {
-                    3 // Require consistency for Idle/ShellOnly transitions
+                    3 // Normal threshold for other transitions
                 };
 
                 if self.sessions[i].pending_state_count >= threshold {

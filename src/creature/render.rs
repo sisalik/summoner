@@ -116,25 +116,24 @@ pub fn sprite_cell_size(sprite: &Sprite) -> (u16, u16) {
 }
 
 pub fn terminal_icon_sprite() -> Sprite {
-    // A simple 10x8 terminal/monitor icon
     use CellKind::*;
     let cells = vec![
-        // Row 0: top of monitor frame
-        Empty, Border, Border, Border, Border, Border, Border, Border, Border, Empty,
-        // Row 1: screen top
-        Border, Body, Body, Body, Body, Body, Body, Body, Body, Border,
-        // Row 2: screen with > prompt
-        Border, Body, Body, Border, Body, Body, Body, Body, Body, Border,
-        // Row 3: screen content
-        Border, Body, Body, Body, Body, Body, Body, Body, Body, Border,
-        // Row 4: screen bottom
-        Border, Body, Body, Body, Body, Body, Body, Body, Body, Border,
-        // Row 5: bottom of monitor frame
-        Empty, Border, Border, Border, Border, Border, Border, Border, Border, Empty,
-        // Row 6: stand
-        Empty, Empty, Empty, Border, Border, Border, Border, Empty, Empty, Empty,
-        // Row 7: base
-        Empty, Empty, Border, Border, Border, Border, Border, Border, Empty, Empty,
+        // Row 0: title bar
+        Border, Border, Border, Border, Border, Border, Border, Border, Border, Border,
+        // Row 1: title bar content (window buttons)
+        Border, Body,   Body,   Body,   Empty,  Empty,  Empty,  Empty,  Empty,  Border,
+        // Row 2: separator
+        Border, Border, Border, Border, Border, Border, Border, Border, Border, Border,
+        // Row 3: prompt line "> _"
+        Border, Empty,  Body,   Empty,  Body,   Empty,  Empty,  Empty,  Empty,  Border,
+        // Row 4: text line
+        Border, Empty,  Empty,  Empty,  Empty,  Empty,  Empty,  Empty,  Empty,  Border,
+        // Row 5: empty
+        Border, Empty,  Empty,  Empty,  Empty,  Empty,  Empty,  Empty,  Empty,  Border,
+        // Row 6: empty
+        Border, Empty,  Empty,  Empty,  Empty,  Empty,  Empty,  Empty,  Empty,  Border,
+        // Row 7: bottom border
+        Border, Border, Border, Border, Border, Border, Border, Border, Border, Border,
     ];
     Sprite { width: 10, height: 8, cells }
 }
