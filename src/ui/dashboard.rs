@@ -5,8 +5,8 @@ use ratatui::layout::{Position, Rect};
 use ratatui::style::{Color, Style};
 use ratatui::widgets::Widget;
 
-use crate::creature::generate::Sprite;
-use crate::creature::render::{render_sprite_to_buffer, state_palette, terminal_icon_sprite};
+use crate::creature::outline::RasterResult;
+use crate::creature::render::{render_sprite_shaded, render_sprite_to_buffer, state_palette, terminal_icon_sprite};
 use crate::session::{group_by_project, Session, SessionState};
 use crate::ui::dashboard_nav::DashboardNav;
 
@@ -15,17 +15,17 @@ const CREATURE_HEIGHT: u16 = 24;
 
 pub struct Dashboard<'a> {
     sessions: &'a [Session],
-    sprites: &'a [Sprite],
+    rasters: &'a [RasterResult],
     nav: &'a DashboardNav,
 }
 
 impl<'a> Dashboard<'a> {
     pub fn new(
         sessions: &'a [Session],
-        sprites: &'a [Sprite],
+        rasters: &'a [RasterResult],
         nav: &'a DashboardNav,
     ) -> Self {
-        Self { sessions, sprites, nav }
+        Self { sessions, rasters, nav }
     }
 }
 
@@ -240,9 +240,9 @@ impl<'a> Widget for Dashboard<'a> {
                     || session.state == SessionState::Idle;
 
                 if is_claude {
-                    if let Some(sprite) = self.sprites.get(sess_idx) {
+                    if let Some(raster) = self.rasters.get(sess_idx) {
                         let palette = state_palette(session.state);
-                        render_sprite_to_buffer(sprite, &palette, creature_area, buf);
+                        render_sprite_shaded(&raster.sprite, &raster.capsule_ids, &palette, creature_area, buf);
                     }
                 } else {
                     let icon = terminal_icon_sprite();

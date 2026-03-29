@@ -9,9 +9,8 @@ use ratatui::DefaultTerminal;
 use crate::claude::{find_claude_child, find_conversation_id};
 use crate::hooks;
 use crate::config::{AppConfig, RecentDirs, SessionStore, SessionEntry};
-use crate::creature::generate::Sprite;
 use crate::creature::locomotion::LocomotionState;
-use crate::creature::outline::rasterize_skeleton;
+use crate::creature::outline::{rasterize_skeleton, RasterResult};
 use crate::creature::skeleton::{Skeleton, ARCHETYPE_COUNT, archetype_index, archetype_name};
 use crate::session::{Session, SessionState, session_order};
 use crate::terminal::PtySession;
@@ -34,7 +33,7 @@ struct App {
     pty_sessions: Vec<Option<PtySession>>,
     vt_parsers: Vec<vt100::Parser>,
     locomotions: Vec<LocomotionState>,
-    sprites: Vec<Sprite>,
+    sprites: Vec<RasterResult>,
     nav: DashboardNav,
     dir_picker: Option<DirPicker>,
     config: AppConfig,
@@ -84,7 +83,7 @@ impl App {
         for entry in &store.sessions {
             let archetype_idx = archetype_index(&entry.creature_template);
             let skeleton = Skeleton::instantiate(archetype_idx, entry.creature_seed);
-            let sprite = rasterize_skeleton(&skeleton).sprite;
+            let raster = rasterize_skeleton(&skeleton);
 
             let mut session = Session::new(
                 entry.directory.clone(),
@@ -99,7 +98,7 @@ impl App {
             pty_sessions.push(None);
             vt_parsers.push(vt100::Parser::new(24, 80, 0));
             locomotions.push(LocomotionState::new(skeleton, SessionState::Disconnected));
-            sprites.push(sprite);
+            sprites.push(raster);
         }
 
         let mut nav = DashboardNav::new();
@@ -155,7 +154,7 @@ impl App {
         let archetype_idx = self.sessions.len() % ARCHETYPE_COUNT;
         let creature_template = archetype_name(archetype_idx).to_string();
         let skeleton = Skeleton::instantiate(archetype_idx, seed);
-        let sprite = rasterize_skeleton(&skeleton).sprite;
+        let raster = rasterize_skeleton(&skeleton);
 
         let session = Session::new(directory.clone(), seed, creature_template);
 
@@ -171,7 +170,7 @@ impl App {
         self.pty_sessions.push(Some(pty));
         self.vt_parsers.push(vt100::Parser::new(rows, cols, 0));
         self.locomotions.push(LocomotionState::new(skeleton, SessionState::ShellOnly));
-        self.sprites.push(sprite);
+        self.sprites.push(raster);
 
         // Update recent dirs
         let max = self.config.new_session.recent_dirs_count;
@@ -652,7 +651,7 @@ impl App {
     fn tick_animations(&mut self, dt: Duration) {
         for (i, loco) in self.locomotions.iter_mut().enumerate() {
             loco.tick(dt);
-            self.sprites[i] = rasterize_skeleton(loco.skeleton()).sprite;
+            self.sprites[i] = rasterize_skeleton(loco.skeleton());
         }
     }
 }
