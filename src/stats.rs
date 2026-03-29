@@ -28,3 +28,56 @@ pub fn level_from_tokens(tokens: u64) -> u8 {
     }
     1
 }
+
+use std::fs::File;
+use std::io::{BufRead, BufReader, Seek, SeekFrom};
+use std::path::Path;
+
+/// Parse a JSONL conversation file from a byte offset.
+/// Returns (new_tokens, new_messages, new_offset).
+pub fn parse_jsonl_stats(path: &Path, offset: u64) -> (u64, u32, u64) {
+    let mut file = match File::open(path) {
+        Ok(f) => f,
+        Err(_) => return (0, 0, offset),
+    };
+
+    if offset > 0 {
+        if file.seek(SeekFrom::Start(offset)).is_err() {
+            return (0, 0, offset);
+        }
+    }
+
+    let reader = BufReader::new(&file);
+    let mut tokens: u64 = 0;
+    let mut messages: u32 = 0;
+    let mut bytes_read: u64 = offset;
+
+    for line in reader.lines() {
+        let line = match line {
+            Ok(l) => l,
+            Err(_) => break,
+        };
+        bytes_read += line.len() as u64 + 1;
+
+        let parsed: serde_json::Value = match serde_json::from_str(&line) {
+            Ok(v) => v,
+            Err(_) => continue,
+        };
+
+        let msg_type = parsed.get("type").and_then(|t| t.as_str());
+        match msg_type {
+            Some("user") | Some("assistant") => {
+                messages += 1;
+            }
+            _ => continue,
+        }
+
+        if let Some(usage) = parsed.get("message").and_then(|m| m.get("usage")) {
+            let input = usage.get("inputTokens").and_then(|v| v.as_u64()).unwrap_or(0);
+            let output = usage.get("outputTokens").and_then(|v| v.as_u64()).unwrap_or(0);
+            tokens += input + output;
+        }
+    }
+
+    (tokens, messages, bytes_read)
+}

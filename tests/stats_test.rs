@@ -1,4 +1,5 @@
-use summoner::stats::{format_xp, level_from_tokens};
+use summoner::stats::{format_xp, level_from_tokens, parse_jsonl_stats};
+use std::io::Write;
 
 #[test]
 fn format_xp_below_1000() {
@@ -43,4 +44,50 @@ fn level_from_tokens_thresholds() {
     assert_eq!(level_from_tokens(24_999_999), 9);
     assert_eq!(level_from_tokens(25_000_000), 10);
     assert_eq!(level_from_tokens(100_000_000), 10);
+}
+
+#[test]
+fn parse_jsonl_empty_file() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("test.jsonl");
+    std::fs::write(&path, "").unwrap();
+    let (tokens, messages, offset) = parse_jsonl_stats(&path, 0);
+    assert_eq!(tokens, 0);
+    assert_eq!(messages, 0);
+    assert_eq!(offset, 0);
+}
+
+#[test]
+fn parse_jsonl_counts_tokens_and_messages() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("test.jsonl");
+    let mut f = std::fs::File::create(&path).unwrap();
+    writeln!(f, r#"{{"type":"user","message":{{"role":"user","content":"hello"}}}}"#).unwrap();
+    writeln!(f, r#"{{"type":"assistant","message":{{"role":"assistant","content":"hi","usage":{{"inputTokens":100,"outputTokens":50,"cacheReadInputTokens":20,"cacheCreationInputTokens":10}}}}}}"#).unwrap();
+    writeln!(f, r#"{{"type":"assistant","message":{{"role":"assistant","content":"ok","usage":{{"inputTokens":200,"outputTokens":100,"cacheReadInputTokens":0,"cacheCreationInputTokens":0}}}}}}"#).unwrap();
+
+    let (tokens, messages, offset) = parse_jsonl_stats(&path, 0);
+    assert_eq!(tokens, 450); // 100+50 + 200+100
+    assert_eq!(messages, 3);
+    assert!(offset > 0);
+}
+
+#[test]
+fn parse_jsonl_incremental_from_offset() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("test.jsonl");
+    let mut f = std::fs::File::create(&path).unwrap();
+    writeln!(f, r#"{{"type":"user","message":{{"role":"user","content":"hello"}}}}"#).unwrap();
+    writeln!(f, r#"{{"type":"assistant","message":{{"role":"assistant","content":"hi","usage":{{"inputTokens":100,"outputTokens":50,"cacheReadInputTokens":0,"cacheCreationInputTokens":0}}}}}}"#).unwrap();
+
+    let (tokens1, messages1, offset1) = parse_jsonl_stats(&path, 0);
+    assert_eq!(tokens1, 150);
+    assert_eq!(messages1, 2);
+
+    let mut f = std::fs::OpenOptions::new().append(true).open(&path).unwrap();
+    writeln!(f, r#"{{"type":"assistant","message":{{"role":"assistant","content":"more","usage":{{"inputTokens":300,"outputTokens":200,"cacheReadInputTokens":0,"cacheCreationInputTokens":0}}}}}}"#).unwrap();
+
+    let (tokens2, messages2, _offset2) = parse_jsonl_stats(&path, offset1);
+    assert_eq!(tokens2, 500);
+    assert_eq!(messages2, 1);
 }
