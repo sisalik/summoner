@@ -3,23 +3,23 @@ use std::io::Write;
 
 #[test]
 fn format_xp_below_1000() {
-    assert_eq!(format_xp(0), "✦ 0");
-    assert_eq!(format_xp(847), "✦ 847");
-    assert_eq!(format_xp(999), "✦ 999");
+    assert_eq!(format_xp(0), "0 ✦");
+    assert_eq!(format_xp(847), "847 ✦");
+    assert_eq!(format_xp(999), "999 ✦");
 }
 
 #[test]
 fn format_xp_thousands() {
-    assert_eq!(format_xp(12_400), "✦ 12.4k");
-    assert_eq!(format_xp(1_000), "✦ 1.0k");
-    assert_eq!(format_xp(999_999), "✦ 1000.0k");
+    assert_eq!(format_xp(12_400), "12.4k ✦");
+    assert_eq!(format_xp(1_000), "1.0k ✦");
+    assert_eq!(format_xp(999_999), "1000.0k ✦");
 }
 
 #[test]
 fn format_xp_millions() {
-    assert_eq!(format_xp(1_200_000), "✦ 1.2M");
-    assert_eq!(format_xp(1_000_000), "✦ 1.0M");
-    assert_eq!(format_xp(10_000_000), "✦ 10.0M");
+    assert_eq!(format_xp(1_200_000), "1.2M ✦");
+    assert_eq!(format_xp(1_000_000), "1.0M ✦");
+    assert_eq!(format_xp(10_000_000), "10.0M ✦");
 }
 
 #[test]

@@ -1,10 +1,10 @@
 pub fn format_xp(tokens: u64) -> String {
     if tokens < 1_000 {
-        format!("✦ {}", tokens)
+        format!("{} ✦", tokens)
     } else if tokens < 1_000_000 {
-        format!("✦ {:.1}k", tokens as f64 / 1_000.0)
+        format!("{:.1}k ✦", tokens as f64 / 1_000.0)
     } else {
-        format!("✦ {:.1}M", tokens as f64 / 1_000_000.0)
+        format!("{:.1}M ✦", tokens as f64 / 1_000_000.0)
     }
 }
 

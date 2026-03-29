@@ -196,9 +196,9 @@ impl<'a> Dashboard<'a> {
 
                 // Layout from top of inner: health_bar(1), creature(creature_render_h), lvl_xp(1), state(1)
                 let health_y = inner.y;
-                let creature_y = inner.y + 1;
-                let lvl_xp_y = creature_y + creature_render_h;
-                let state_y = lvl_xp_y + 1;
+                let lvl_xp_y = inner.y + 1;
+                let creature_y = inner.y + 2;
+                let state_y = creature_y + creature_render_h;
 
                 // --- Health bar at top (only for active Claude sessions) ---
                 // Uses upper-half blocks ▀ for a thin bar
@@ -249,12 +249,13 @@ impl<'a> Dashboard<'a> {
                 } else {
                     let icon = terminal_icon_sprite();
                     let palette = state_palette(session.state);
-                    let (_, icon_h) = crate::creature::render::sprite_cell_size(&icon);
+                    let (icon_w, icon_h) = crate::creature::render::sprite_cell_size(&icon);
+                    let x_offset = creature_area.width.saturating_sub(icon_w) / 2;
                     let y_offset = creature_area.height.saturating_sub(icon_h) / 2;
                     let centered_area = Rect {
-                        x: creature_area.x,
+                        x: creature_area.x + x_offset,
                         y: creature_area.y + y_offset,
-                        width: creature_area.width,
+                        width: icon_w.min(creature_area.width.saturating_sub(x_offset)),
                         height: creature_area.height.saturating_sub(y_offset),
                     };
                     render_sprite_to_buffer(&icon, &palette, centered_area, buf);
@@ -298,12 +299,12 @@ impl<'a> Dashboard<'a> {
                         let activity = if let Some(ref tool) = stat.active_tool {
                             stats::tool_display(tool)
                         } else {
-                            format!("{} {}", session.state.icon(), session.state.label())
+                            format!("{}  {}", session.state.icon(), session.state.label())
                         };
                         let state_style = Style::default().fg(session.state.color());
                         draw_text(cx, state_y, &activity, state_style, creature_col, buf);
                     } else {
-                        let label = format!("{} {}", session.state.icon(), session.state.label());
+                        let label = format!("{}  {}", session.state.icon(), session.state.label());
                         let label_style = Style::default().fg(session.state.color());
                         draw_text(cx, state_y, &label, label_style, creature_col, buf);
                     }

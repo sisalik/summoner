@@ -19,7 +19,7 @@ impl SessionState {
             Self::Waiting => "\u{1f4ac}",     // 💬
             Self::Idle => "\u{1f4a4}",        // 💤
             Self::Sleeping => "\u{1f319}",    // 🌙
-            Self::Disconnected => "\u{1f480}", // 💀
+            Self::Disconnected => "\u{2715}", // ✕
             Self::ShellOnly => "\u{1f4bb}",   // 💻
         }
     }
@@ -31,7 +31,7 @@ impl SessionState {
             Self::Waiting => "\u{25cf}",   // ●
             Self::Idle => "\u{25c6}",      // ◆
             Self::Sleeping => "\u{263e}",  // ☾
-            Self::Disconnected => "\u{2716}", // ✖
+            Self::Disconnected => "\u{2715}", // ✕
             Self::ShellOnly => "\u{25b8}", // ▸
         }
     }

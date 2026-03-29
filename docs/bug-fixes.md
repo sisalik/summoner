@@ -105,3 +105,9 @@ Ok much better, but still there are some problems:
 - Levels could be colour-coded so that it's more fun
 - Actually now that the health bar hearts and activity/status lines are further apart, we could revert to the emojis for the states, since they're more expressive
 - In the bottom bar: if there are multiple sessions within one directory, you could omit the directory names for all but the last (or active) session and just keep the F-key label and the state icon
+
+Let's tweak a few more things please
+- The health bar should use upper half blocks instead
+- The XP icon should be separated by a space from the value
+- Let's be clear: everything (including state and tool usage) that's shown in the status line below the creature should use emojis, not unicode symbols. And everything in the bottom bar should use unicode symbols, not emojis. And all emojis should always have a space after them, separating them from the following value/text.
+- Use 💀 for disconnected sessions (in the creature status line)
