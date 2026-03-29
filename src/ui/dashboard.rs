@@ -41,24 +41,22 @@ impl<'a> Dashboard<'a> {
 
         if area.height < 3 { return; }
 
-        // Reserve 2 rows at bottom: usage bar + hints
-        let usage_y = area.y + area.height.saturating_sub(2);
-        let hint_y = area.y + area.height.saturating_sub(1);
+        // Usage bar at top
+        let usage_y = area.y;
+        draw_usage_bar(self.global_stats, Rect { x: area.x, y: usage_y, width: area.width, height: 1 }, buf);
 
-        // Draw hint row
+        // Hint row at bottom
+        let hint_y = area.y + area.height.saturating_sub(1);
         let hint_text = " \u{2190}\u{2192}\u{2191}\u{2193} navigate \u{2502} Enter open \u{2502} n/N new session/dir \u{2502} x/X close session/project ";
         let hint_style = Style::default()
             .fg(Color::Rgb(120, 120, 140))
             .bg(Color::Rgb(20, 20, 30));
         draw_text(area.x, hint_y, hint_text, hint_style, area, buf);
 
-        // Draw usage bar
-        draw_usage_bar(self.global_stats, Rect { x: area.x, y: usage_y, width: area.width, height: 1 }, buf);
-
-        // Content area (above both bottom rows)
+        // Content area (between top usage bar and bottom hints)
         let content_area = Rect {
             x: area.x,
-            y: area.y,
+            y: area.y + 1,
             width: area.width,
             height: area.height.saturating_sub(2),
         };
@@ -227,10 +225,12 @@ impl<'a> Dashboard<'a> {
                 // Draw stats below creature — RPG stats for active Claude sessions,
                 // plain state label for Disconnected/ShellOnly
                 let stats_y = inner.y + creature_render_h;
-                let is_active_claude = session.claude_conversation_id.is_some()
-                    || session.state == SessionState::Working
-                    || session.state == SessionState::Waiting
-                    || session.state == SessionState::Idle;
+                let is_active_claude = session.state != SessionState::Disconnected
+                    && session.state != SessionState::ShellOnly
+                    && (session.claude_conversation_id.is_some()
+                        || session.state == SessionState::Working
+                        || session.state == SessionState::Waiting
+                        || session.state == SessionState::Idle);
 
                 if stats_y < card_area.y + card_area.height.saturating_sub(2) {
                     if is_active_claude {
@@ -264,41 +264,35 @@ impl<'a> Dashboard<'a> {
                     let stat = self.session_stats.get(sess_idx).unwrap_or(&default_stats);
                     let pct = stat.context_pct.unwrap_or(0);
 
+                    // Unicode heart (1 cell wide, aligns with state icons above)
                     let (heart, bar_color) = match pct {
-                        0..=50 => ("\u{1f49a}", Color::Rgb(129, 199, 132)),   // 💚
-                        51..=75 => ("\u{1f49b}", Color::Rgb(255, 213, 79)),    // 💛
-                        76..=90 => ("\u{1f9e1}", Color::Rgb(255, 183, 77)),    // 🧡
-                        _ => ("\u{2764}\u{fe0f}", Color::Rgb(229, 115, 115)),  // ❤️
+                        0..=50 => ("\u{2665}", Color::Rgb(129, 199, 132)),   // ♥ green
+                        51..=75 => ("\u{2665}", Color::Rgb(255, 213, 79)),   // ♥ yellow
+                        76..=90 => ("\u{2665}", Color::Rgb(255, 183, 77)),   // ♥ orange
+                        _ => ("\u{2665}", Color::Rgb(229, 115, 115)),        // ♥ red
                     };
 
-                    // Bar width: use full creature column width minus heart(2) + pct(~5), expand 1 each side
-                    let bar_x = cx.saturating_sub(1);
-                    let bar_right = (cx + cw + 1).min(inner.x + inner.width);
-                    let bar_avail = bar_right.saturating_sub(bar_x) as usize;
+                    // Bar starts at cx (aligned with stats line), heart is 1 cell
                     let pct_str = if stat.context_pct.is_some() {
                         format!(" {}%", pct)
                     } else {
                         " ---%".to_string()
                     };
-                    let bar_total = bar_avail.saturating_sub(2 + pct_str.len()); // heart(2) + pct
+                    let bar_total = cw.saturating_sub(1 + pct_str.len() as u16) as usize; // heart(1) + pct
                     let filled = (bar_total as u64 * pct as u64 / 100).min(bar_total as u64) as usize;
                     let empty = bar_total.saturating_sub(filled);
 
-                    // Widen creature_col for the bar row to include the extra cols
-                    let bar_clip = Rect {
-                        x: bar_x,
-                        y: card_area.y,
-                        width: bar_right.saturating_sub(bar_x),
-                        height: card_area.height,
-                    };
-
-                    draw_text(bar_x, bar_y, heart, Style::default().fg(bar_color), bar_clip, buf);
+                    // Draw heart (1 cell)
+                    draw_text(cx, bar_y, heart, Style::default().fg(bar_color), creature_col, buf);
+                    // Draw filled
                     let filled_str: String = "\u{2593}".repeat(filled);
-                    draw_text(bar_x + 2, bar_y, &filled_str, Style::default().fg(bar_color), bar_clip, buf);
+                    draw_text(cx + 1, bar_y, &filled_str, Style::default().fg(bar_color), creature_col, buf);
+                    // Draw empty
                     let empty_str: String = "\u{2591}".repeat(empty);
-                    draw_text(bar_x + 2 + filled as u16, bar_y, &empty_str, Style::default().fg(Color::Rgb(85, 85, 85)), bar_clip, buf);
+                    draw_text(cx + 1 + filled as u16, bar_y, &empty_str, Style::default().fg(Color::Rgb(85, 85, 85)), creature_col, buf);
+                    // Draw percentage
                     let pct_color = if pct >= 90 { Color::Rgb(229, 115, 115) } else { Color::Rgb(136, 136, 136) };
-                    draw_text(bar_x + 2 + bar_total as u16, bar_y, &pct_str, Style::default().fg(pct_color), bar_clip, buf);
+                    draw_text(cx + 1 + bar_total as u16, bar_y, &pct_str, Style::default().fg(pct_color), creature_col, buf);
                 }
 
                 // Draw selection box around the selected creature (by flat position)
@@ -440,44 +434,52 @@ fn draw_usage_bar(global_stats: &GlobalStats, area: Rect, buf: &mut Buffer) {
 
     let mut x = area.x + 1;
 
-    // 📨 N msgs
-    let msgs = format!("\u{1f4e8} {} msgs", global_stats.daily_messages);
+    // 📨 N msgs — emoji is 2 cells wide, draw separately then text
+    draw_text(x, area.y, "\u{1f4e8}", Style::default().fg(Color::Rgb(120, 120, 140)).bg(bg), area, buf);
+    x += 2; // emoji width
+    let msgs = format!(" {} msgs", global_stats.daily_messages);
     draw_text(x, area.y, &msgs, Style::default().fg(Color::Rgb(120, 120, 140)).bg(bg), area, buf);
-    x += msgs.chars().count() as u16 + 1; // emoji width adjustment
+    x += msgs.len() as u16;
 
     draw_text(x, area.y, sep, sep_style, area, buf);
     x += sep.len() as u16;
 
-    // ✦ Nk tokens
-    let tok = format!("\u{2726} {}", format_tokens_compact(global_stats.daily_tokens));
+    // ✨ Nk tokens
+    draw_text(x, area.y, "\u{2728}", Style::default().fg(Color::Rgb(255, 213, 79)).bg(bg), area, buf);
+    x += 2;
+    let tok = format!(" {}", format_tokens_compact(global_stats.daily_tokens));
     draw_text(x, area.y, &tok, Style::default().fg(Color::Rgb(255, 213, 79)).bg(bg), area, buf);
-    x += tok.chars().count() as u16;
+    x += tok.len() as u16;
 
     draw_text(x, area.y, sep, sep_style, area, buf);
     x += sep.len() as u16;
 
     // ⏳ N% resets Xh Ym
+    draw_text(x, area.y, "\u{23f3}", Style::default().fg(Color::Rgb(79, 195, 247)).bg(bg), area, buf);
+    x += 2;
     let five_hr = match global_stats.five_hour_pct {
         Some(pct) => {
             let reset = format_reset_countdown(global_stats.five_hour_resets_at);
-            format!("\u{23f3} {}% {}", pct, reset)
+            format!(" {}% {}", pct, reset)
         }
-        None => "\u{23f3} ---".to_string(),
+        None => " ---".to_string(),
     };
     let five_color = pct_color(global_stats.five_hour_pct, Color::Rgb(79, 195, 247));
     draw_text(x, area.y, &five_hr, Style::default().fg(five_color).bg(bg), area, buf);
-    x += five_hr.chars().count() as u16 + 1;
+    x += five_hr.len() as u16;
 
     draw_text(x, area.y, sep, sep_style, area, buf);
     x += sep.len() as u16;
 
     // 📅 N% resets Day
+    draw_text(x, area.y, "\u{1f4c5}", Style::default().fg(Color::Rgb(129, 199, 132)).bg(bg), area, buf);
+    x += 2;
     let seven_day = match global_stats.seven_day_pct {
         Some(pct) => {
             let reset = format_reset_countdown(global_stats.seven_day_resets_at);
-            format!("\u{1f4c5} {}% {}", pct, reset)
+            format!(" {}% {}", pct, reset)
         }
-        None => "\u{1f4c5} ---".to_string(),
+        None => " ---".to_string(),
     };
     let seven_color = pct_color(global_stats.seven_day_pct, Color::Rgb(129, 199, 132));
     draw_text(x, area.y, &seven_day, Style::default().fg(seven_color).bg(bg), area, buf);

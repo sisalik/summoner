@@ -166,3 +166,14 @@ impl StatusLineData {
         results
     }
 }
+
+/// Remove all statusLine state files. Called on startup to clear stale data
+/// from previous sessions.
+pub fn clear_stale_files(summoner_dir: &Path) {
+    let dir = summoner_dir.join("statusline-states");
+    if let Ok(entries) = fs::read_dir(&dir) {
+        for entry in entries.flatten() {
+            let _ = fs::remove_file(entry.path());
+        }
+    }
+}

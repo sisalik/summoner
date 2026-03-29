@@ -50,6 +50,7 @@ struct App {
     global_stats: GlobalStats,
     git_cache: GitDiffCache,
     last_stats_update: Instant,
+    last_statusline_check: Instant,
 }
 
 pub fn display_path(path: &str) -> String {
@@ -70,6 +71,9 @@ impl App {
 
         // Install Claude Code hooks for state detection
         hooks::install_hooks(&config_dir);
+
+        // Clean stale statusLine files from previous runs
+        crate::statusline::clear_stale_files(&config_dir);
 
         let config = AppConfig::load(&config_dir).unwrap_or_default();
         let recent_dirs = RecentDirs::load(&config_dir).unwrap_or_else(|_| RecentDirs {
@@ -153,6 +157,7 @@ impl App {
             global_stats: GlobalStats::new(),
             git_cache: GitDiffCache::new(30),
             last_stats_update: Instant::now(),
+            last_statusline_check: Instant::now(),
         })
     }
 
@@ -681,6 +686,39 @@ impl App {
 
     fn update_stats(&mut self) {
         let now = Instant::now();
+
+        // StatusLine files are tiny — read every 5 seconds for responsive rate limit display
+        if now.duration_since(self.last_statusline_check).as_secs() >= 5 {
+            self.last_statusline_check = now;
+            // Read statusLine data, matching only to active sessions
+            let active_session_ids: Vec<String> = self.sessions.iter()
+                .filter(|s| s.state != SessionState::Disconnected)
+                .filter_map(|s| s.claude_conversation_id.clone())
+                .collect();
+
+            let sl_data = crate::statusline::StatusLineData::read_all(&self.config_dir);
+            for sl in &sl_data {
+                // Only use data from sessions we currently have active
+                if !active_session_ids.contains(&sl.session_id) {
+                    continue;
+                }
+                for i in 0..self.sessions.len() {
+                    if self.sessions[i].claude_conversation_id.as_deref() == Some(&sl.session_id) {
+                        self.session_stats[i].context_pct = sl.context_pct;
+                    }
+                }
+                if sl.five_hour_pct.is_some() {
+                    self.global_stats.five_hour_pct = sl.five_hour_pct;
+                    self.global_stats.five_hour_resets_at = sl.five_hour_resets_at;
+                }
+                if sl.seven_day_pct.is_some() {
+                    self.global_stats.seven_day_pct = sl.seven_day_pct;
+                    self.global_stats.seven_day_resets_at = sl.seven_day_resets_at;
+                }
+            }
+        }
+
+        // JSONL parsing is heavier — keep at 60 seconds
         if now.duration_since(self.last_stats_update).as_secs() < 60 {
             return;
         }
@@ -710,24 +748,6 @@ impl App {
                 stats.jsonl_offset = new_offset;
                 self.global_stats.daily_tokens += new_tokens;
                 self.global_stats.daily_messages += new_messages;
-            }
-        }
-
-        // Update statusLine data
-        let sl_data = crate::statusline::StatusLineData::read_all(&self.config_dir);
-        for sl in &sl_data {
-            for i in 0..self.sessions.len() {
-                if self.sessions[i].claude_conversation_id.as_deref() == Some(&sl.session_id) {
-                    self.session_stats[i].context_pct = sl.context_pct;
-                }
-            }
-            if sl.five_hour_pct.is_some() {
-                self.global_stats.five_hour_pct = sl.five_hour_pct;
-                self.global_stats.five_hour_resets_at = sl.five_hour_resets_at;
-            }
-            if sl.seven_day_pct.is_some() {
-                self.global_stats.seven_day_pct = sl.seven_day_pct;
-                self.global_stats.seven_day_resets_at = sl.seven_day_resets_at;
             }
         }
     }

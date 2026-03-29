@@ -63,3 +63,20 @@ Some more issues:
 Some more improvements:
 - I had an Idle agent and also a Waiting agent. When I switched over to the Idle agent, its state also switched to Waiting, even though it wasn't actually waiting. Are we definitely managing and retrieving the state of each Claude instance independently? 
 - When switching to a disconnected session using F-keys, we should show an empty screen with a dialogue with the working dir and Claude session, if any, and "Press any key to resume this session"
+
+Let's try to improve the creatures and their animations a bit:
+- The bipedal creature's arms are always swallowed up by its body, making it look like its forearms are growing from its waist. Its neck is far too long and shoulders low down. Let's adjust the nominal skeleton to make its neck shorter, spine longer and shoulders wider.
+- The quadruped suffers from similar issues - neck too long, legs too close together (short spine). Tail could be slightly longer even.
+- Both of the above have very broken walking animations in Working state. They take a step or two initially, crossing their legs, but that's mostly it. It should be a nice cyclical walk with both/all legs moving in a sensible gait.
+- The blobs look pretty good actually, but their Working animation could be more pronounced and undulating, and in Waiting it could bounce up and down a bit
+- The winged creature's Working animation is far too crazy and exaggerated. Let's tone it down and not move its head so much. Wings should move more.
+- The serpentine's Working animation is probably the coolest, but sometimes its last two tail segments are twisted forward in a weird hook shape - can these be straight as well and follow the rest of its body?
+- The rest of the serpentine's animation states are very boring, as it just lies on the floor in a completely straight line. Let's come up with something more interesting than that.
+
+Ok better, but still some issues:
+- Check the latest screenshot - we don't need to show "Lv" or a health bar or any stats for the disconnected sessions. Just the "X Disconnected" will do.
+- The stat rows should be left aligned, so the health bar and state emojis line up. There is room for the health bar to be expanded 1 column to the left and 1 col to the right too.
+- An earlier bug seems to have resurfaced: an idle session started showing Waiting randomly about 1 minute after it had been Idle.
+- The ccstatusline redirection trick seems to have killed my status line display and taken over its output entirely. I thought we were supposed to tee it?
+- When 3 directories are shown in a 2x2 grid, up and down arrow keys don't work for navigation. Pressing down from either box 0, 0 or 0, 1 should move to 1, 0 (since 1, 1 doesn't exist). Up arrow doesn't work either.
+
