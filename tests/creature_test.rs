@@ -210,3 +210,43 @@ fn two_bone_ik_clamps_when_target_unreachable() {
     let total = (result.end - anchor).length();
     assert!((total - 6.0).abs() < 0.5, "Should fully extend: total={total}");
 }
+
+use summoner::creature::outline::rasterize_skeleton;
+
+#[test]
+fn rasterize_bipedal_produces_non_empty_sprite() {
+    let skel = Skeleton::instantiate(0, 42);
+    let sprite = rasterize_skeleton(&skel);
+    assert_eq!(sprite.width, 18);
+    assert_eq!(sprite.height, 24);
+    let filled = sprite.cells.iter().filter(|c| **c != CellKind::Empty).count();
+    assert!(filled > 10, "Rasterized bipedal should have significant fill, got {filled}");
+}
+
+#[test]
+fn rasterize_all_archetypes_produce_visible_sprites() {
+    for archetype in 0..ARCHETYPE_COUNT {
+        let skel = Skeleton::instantiate(archetype, 42);
+        let sprite = rasterize_skeleton(&skel);
+        let filled = sprite.cells.iter().filter(|c| **c != CellKind::Empty).count();
+        assert!(filled > 5, "Archetype {} produced only {filled} filled cells", archetype_name(archetype));
+    }
+}
+
+#[test]
+fn rasterized_sprite_has_borders_around_body() {
+    let skel = Skeleton::instantiate(0, 42);
+    let sprite = rasterize_skeleton(&skel);
+    let has_body = sprite.cells.iter().any(|c| *c == CellKind::Body);
+    let has_border = sprite.cells.iter().any(|c| *c == CellKind::Border);
+    assert!(has_body, "Should have Body cells");
+    assert!(has_border, "Should have Border cells");
+}
+
+#[test]
+fn rasterize_same_skeleton_is_deterministic() {
+    let skel = Skeleton::instantiate(0, 42);
+    let s1 = rasterize_skeleton(&skel);
+    let s2 = rasterize_skeleton(&skel);
+    assert_eq!(s1.cells, s2.cells);
+}
