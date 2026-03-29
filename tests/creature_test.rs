@@ -216,10 +216,10 @@ use summoner::creature::outline::rasterize_skeleton;
 #[test]
 fn rasterize_bipedal_produces_non_empty_sprite() {
     let skel = Skeleton::instantiate(0, 42);
-    let sprite = rasterize_skeleton(&skel);
-    assert_eq!(sprite.width, 18);
-    assert_eq!(sprite.height, 24);
-    let filled = sprite.cells.iter().filter(|c| **c != CellKind::Empty).count();
+    let result = rasterize_skeleton(&skel);
+    assert_eq!(result.sprite.width, 18);
+    assert_eq!(result.sprite.height, 24);
+    let filled = result.sprite.cells.iter().filter(|c| **c != CellKind::Empty).count();
     assert!(filled > 10, "Rasterized bipedal should have significant fill, got {filled}");
 }
 
@@ -227,8 +227,8 @@ fn rasterize_bipedal_produces_non_empty_sprite() {
 fn rasterize_all_archetypes_produce_visible_sprites() {
     for archetype in 0..ARCHETYPE_COUNT {
         let skel = Skeleton::instantiate(archetype, 42);
-        let sprite = rasterize_skeleton(&skel);
-        let filled = sprite.cells.iter().filter(|c| **c != CellKind::Empty).count();
+        let result = rasterize_skeleton(&skel);
+        let filled = result.sprite.cells.iter().filter(|c| **c != CellKind::Empty).count();
         assert!(filled > 5, "Archetype {} produced only {filled} filled cells", archetype_name(archetype));
     }
 }
@@ -236,9 +236,9 @@ fn rasterize_all_archetypes_produce_visible_sprites() {
 #[test]
 fn rasterized_sprite_has_borders_around_body() {
     let skel = Skeleton::instantiate(0, 42);
-    let sprite = rasterize_skeleton(&skel);
-    let has_body = sprite.cells.iter().any(|c| *c == CellKind::Body);
-    let has_border = sprite.cells.iter().any(|c| *c == CellKind::Border);
+    let result = rasterize_skeleton(&skel);
+    let has_body = result.sprite.cells.iter().any(|c| *c == CellKind::Body);
+    let has_border = result.sprite.cells.iter().any(|c| *c == CellKind::Border);
     assert!(has_body, "Should have Body cells");
     assert!(has_border, "Should have Border cells");
 }
@@ -248,7 +248,7 @@ fn rasterize_same_skeleton_is_deterministic() {
     let skel = Skeleton::instantiate(0, 42);
     let s1 = rasterize_skeleton(&skel);
     let s2 = rasterize_skeleton(&skel);
-    assert_eq!(s1.cells, s2.cells);
+    assert_eq!(s1.sprite.cells, s2.sprite.cells);
 }
 
 use summoner::creature::locomotion::LocomotionState;
@@ -328,12 +328,12 @@ fn locomotion_disconnected_is_frozen() {
 fn full_pipeline_skeleton_to_rendered_buffer() {
     for archetype in 0..ARCHETYPE_COUNT {
         let skel = Skeleton::instantiate(archetype, 42);
-        let sprite = rasterize_skeleton(&skel);
-        let (w, h) = sprite_cell_size(&sprite);
+        let result = rasterize_skeleton(&skel);
+        let (w, h) = sprite_cell_size(&result.sprite);
         let area = Rect::new(0, 0, w, h);
         let mut buf = Buffer::empty(area);
         let palette = state_palette(SessionState::Working);
-        render_sprite_to_buffer(&sprite, &palette, area, &mut buf);
+        render_sprite_to_buffer(&result.sprite, &palette, area, &mut buf);
         let non_empty = (0..area.height)
             .flat_map(|y| (0..area.width).map(move |x| (x, y)))
             .filter(|(x, y)| {
@@ -349,10 +349,10 @@ fn full_pipeline_skeleton_to_rendered_buffer() {
 fn locomotion_produces_changing_sprites_over_time() {
     let skel = Skeleton::instantiate(0, 42);
     let mut loco = LocomotionState::new(skel, SessionState::Working);
-    let sprite1 = rasterize_skeleton(loco.skeleton());
+    let r1 = rasterize_skeleton(loco.skeleton());
     for _ in 0..20 {
         loco.tick(Duration::from_millis(33));
     }
-    let sprite2 = rasterize_skeleton(loco.skeleton());
-    assert_ne!(sprite1.cells, sprite2.cells, "Working animation should change sprite over time");
+    let r2 = rasterize_skeleton(loco.skeleton());
+    assert_ne!(r1.sprite.cells, r2.sprite.cells, "Working animation should change sprite over time");
 }

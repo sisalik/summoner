@@ -8,7 +8,7 @@ use ratatui::DefaultTerminal;
 
 use crate::creature::generate::{CellKind, Sprite};
 use crate::creature::locomotion::LocomotionState;
-use crate::creature::outline::{rasterize_skeleton, rasterize_skeleton_debug, rasterize_skeleton_scaled, rasterize_skeleton_wireframe};
+use crate::creature::outline::{rasterize_skeleton, rasterize_skeleton_scaled, rasterize_skeleton_wireframe};
 use crate::creature::render::{render_sprite_to_buffer, state_palette};
 use crate::creature::skeleton::{Skeleton, ARCHETYPE_COUNT, archetype_name};
 use crate::session::SessionState;
@@ -349,7 +349,7 @@ fn render_grid(grid: &TestGrid, area: Rect, buf: &mut ratatui::buffer::Buffer) {
             };
 
             let skel = grid.skeleton_for(archetype, col);
-            let sprite = rasterize_skeleton(&skel);
+            let sprite = rasterize_skeleton(&skel).sprite;
             let palette = if col < ANIM_STATES.len() {
                 state_palette(ANIM_STATES[col])
             } else {
@@ -379,14 +379,17 @@ fn render_zoom(zoom: &ZoomView, area: Rect, buf: &mut ratatui::buffer::Buffer) {
     let skel = zoom.current_skeleton();
 
     let (sprite, maybe_comp) = match zoom.color_mode {
-        ColorMode::State => (rasterize_skeleton_scaled(&skel, scale), None),
+        ColorMode::State => {
+            let r = rasterize_skeleton_scaled(&skel, scale);
+            (r.sprite, None)
+        }
         ColorMode::Limb => {
-            let (s, c) = rasterize_skeleton_debug(&skel, scale);
-            (s, Some(c))
+            let r = rasterize_skeleton_scaled(&skel, scale);
+            (r.sprite, Some(r.capsule_ids))
         }
         ColorMode::Wireframe => {
-            let (s, c) = rasterize_skeleton_wireframe(&skel, scale);
-            (s, Some(c))
+            let r = rasterize_skeleton_wireframe(&skel, scale);
+            (r.sprite, Some(r.capsule_ids))
         }
     };
 

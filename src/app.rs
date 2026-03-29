@@ -84,7 +84,7 @@ impl App {
         for entry in &store.sessions {
             let archetype_idx = archetype_index(&entry.creature_template);
             let skeleton = Skeleton::instantiate(archetype_idx, entry.creature_seed);
-            let sprite = rasterize_skeleton(&skeleton);
+            let sprite = rasterize_skeleton(&skeleton).sprite;
 
             let mut session = Session::new(
                 entry.directory.clone(),
@@ -155,7 +155,7 @@ impl App {
         let archetype_idx = self.sessions.len() % ARCHETYPE_COUNT;
         let creature_template = archetype_name(archetype_idx).to_string();
         let skeleton = Skeleton::instantiate(archetype_idx, seed);
-        let sprite = rasterize_skeleton(&skeleton);
+        let sprite = rasterize_skeleton(&skeleton).sprite;
 
         let session = Session::new(directory.clone(), seed, creature_template);
 
@@ -652,7 +652,7 @@ impl App {
     fn tick_animations(&mut self, dt: Duration) {
         for (i, loco) in self.locomotions.iter_mut().enumerate() {
             loco.tick(dt);
-            self.sprites[i] = rasterize_skeleton(loco.skeleton());
+            self.sprites[i] = rasterize_skeleton(loco.skeleton()).sprite;
         }
     }
 }
