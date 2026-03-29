@@ -1,10 +1,10 @@
 pub fn format_xp(tokens: u64) -> String {
     if tokens < 1_000 {
-        format!("✦{}", tokens)
+        format!("✦ {}", tokens)
     } else if tokens < 1_000_000 {
-        format!("✦{:.1}k", tokens as f64 / 1_000.0)
+        format!("✦ {:.1}k", tokens as f64 / 1_000.0)
     } else {
-        format!("✦{:.1}M", tokens as f64 / 1_000_000.0)
+        format!("✦ {:.1}M", tokens as f64 / 1_000_000.0)
     }
 }
 
@@ -101,16 +101,17 @@ pub fn find_jsonl_path(claude_dir: &Path, project_directory: &str, session_id: &
     None
 }
 
+/// Tool display for creature status line — uses emojis with space separator.
 pub fn tool_display(tool_name: &str) -> String {
     match tool_name {
-        "Edit" => "\u{270e} Editing".into(),     // ✎
-        "Write" => "\u{270e} Writing".into(),     // ✎
-        "Read" => "\u{25b7} Reading".into(),      // ▷
-        "Bash" => "\u{25b8} Running".into(),      // ▸
-        "Glob" | "Grep" => "\u{2315} Searching".into(), // ⌕
-        "Agent" => "\u{2234} Delegating".into(),  // ∴
-        "WebSearch" => "\u{2301} Browsing".into(), // ⌁
-        "WebFetch" => "\u{2301} Fetching".into(),  // ⌁
-        other => format!("\u{2022} {}", other),    // •
+        "Edit" => "\u{270f}\u{fe0f} Editing".into(),   // ✏️ Editing
+        "Write" => "\u{1f4dd} Writing".into(),          // 📝 Writing
+        "Read" => "\u{1f4d6} Reading".into(),           // 📖 Reading
+        "Bash" => "\u{2699}\u{fe0f} Running".into(),    // ⚙️ Running
+        "Glob" | "Grep" => "\u{1f50d} Searching".into(), // 🔍 Searching
+        "Agent" => "\u{1f916} Delegating".into(),       // 🤖 Delegating
+        "WebSearch" => "\u{1f310} Browsing".into(),     // 🌐 Browsing
+        "WebFetch" => "\u{1f310} Fetching".into(),      // 🌐 Fetching
+        other => format!("\u{1f527} {}", other),         // 🔧 Other
     }
 }

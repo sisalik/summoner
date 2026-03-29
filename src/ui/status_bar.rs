@@ -95,7 +95,7 @@ impl<'a> Widget for StatusBar<'a> {
             }
 
             let fkey = format!("F{}", pos + 1);
-            let icon = session.state.icon();
+            let icon = session.state.bar_icon();
             let tab_text = if show_name_for.get(pos).copied().unwrap_or(true) {
                 format!(" {} {} {} ", fkey, icon, session.name)
             } else {

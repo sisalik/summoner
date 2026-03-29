@@ -3,23 +3,23 @@ use std::io::Write;
 
 #[test]
 fn format_xp_below_1000() {
-    assert_eq!(format_xp(0), "✦0");
-    assert_eq!(format_xp(847), "✦847");
-    assert_eq!(format_xp(999), "✦999");
+    assert_eq!(format_xp(0), "✦ 0");
+    assert_eq!(format_xp(847), "✦ 847");
+    assert_eq!(format_xp(999), "✦ 999");
 }
 
 #[test]
 fn format_xp_thousands() {
-    assert_eq!(format_xp(12_400), "✦12.4k");
-    assert_eq!(format_xp(1_000), "✦1.0k");
-    assert_eq!(format_xp(999_999), "✦1000.0k");
+    assert_eq!(format_xp(12_400), "✦ 12.4k");
+    assert_eq!(format_xp(1_000), "✦ 1.0k");
+    assert_eq!(format_xp(999_999), "✦ 1000.0k");
 }
 
 #[test]
 fn format_xp_millions() {
-    assert_eq!(format_xp(1_200_000), "✦1.2M");
-    assert_eq!(format_xp(1_000_000), "✦1.0M");
-    assert_eq!(format_xp(10_000_000), "✦10.0M");
+    assert_eq!(format_xp(1_200_000), "✦ 1.2M");
+    assert_eq!(format_xp(1_000_000), "✦ 1.0M");
+    assert_eq!(format_xp(10_000_000), "✦ 10.0M");
 }
 
 #[test]
@@ -115,18 +115,18 @@ fn find_jsonl_path_returns_none_when_missing() {
 
 #[test]
 fn tool_display_known_tools() {
-    assert_eq!(tool_display("Edit"), "\u{270e} Editing");
-    assert_eq!(tool_display("Write"), "\u{270e} Writing");
-    assert_eq!(tool_display("Read"), "\u{25b7} Reading");
-    assert_eq!(tool_display("Bash"), "\u{25b8} Running");
-    assert_eq!(tool_display("Glob"), "\u{2315} Searching");
-    assert_eq!(tool_display("Grep"), "\u{2315} Searching");
-    assert_eq!(tool_display("Agent"), "\u{2234} Delegating");
-    assert_eq!(tool_display("WebSearch"), "\u{2301} Browsing");
-    assert_eq!(tool_display("WebFetch"), "\u{2301} Fetching");
+    assert_eq!(tool_display("Edit"), "\u{270f}\u{fe0f} Editing");
+    assert_eq!(tool_display("Write"), "\u{1f4dd} Writing");
+    assert_eq!(tool_display("Read"), "\u{1f4d6} Reading");
+    assert_eq!(tool_display("Bash"), "\u{2699}\u{fe0f} Running");
+    assert_eq!(tool_display("Glob"), "\u{1f50d} Searching");
+    assert_eq!(tool_display("Grep"), "\u{1f50d} Searching");
+    assert_eq!(tool_display("Agent"), "\u{1f916} Delegating");
+    assert_eq!(tool_display("WebSearch"), "\u{1f310} Browsing");
+    assert_eq!(tool_display("WebFetch"), "\u{1f310} Fetching");
 }
 
 #[test]
 fn tool_display_unknown_tool() {
-    assert_eq!(tool_display("CustomTool"), "\u{2022} CustomTool");
+    assert_eq!(tool_display("CustomTool"), "\u{1f527} CustomTool");
 }

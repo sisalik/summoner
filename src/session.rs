@@ -12,14 +12,27 @@ pub enum SessionState {
 }
 
 impl SessionState {
+    /// Emoji icon for creature status line (dashboard cards).
     pub fn icon(&self) -> &'static str {
         match self {
-            Self::Working => "\u{26a1}",     // ⚡
-            Self::Waiting => "\u{1f4ac}",    // 💬
-            Self::Idle => "\u{1f4a4}",       // 💤
-            Self::Sleeping => "\u{1f319}",   // 🌙
-            Self::Disconnected => "\u{274c}", // ❌
-            Self::ShellOnly => "\u{1f4bb}",  // 💻
+            Self::Working => "\u{26a1}",      // ⚡
+            Self::Waiting => "\u{1f4ac}",     // 💬
+            Self::Idle => "\u{1f4a4}",        // 💤
+            Self::Sleeping => "\u{1f319}",    // 🌙
+            Self::Disconnected => "\u{1f480}", // 💀
+            Self::ShellOnly => "\u{1f4bb}",   // 💻
+        }
+    }
+
+    /// Unicode icon for bottom status bar (compact, 1-cell wide).
+    pub fn bar_icon(&self) -> &'static str {
+        match self {
+            Self::Working => "\u{25b6}",   // ▶
+            Self::Waiting => "\u{25cf}",   // ●
+            Self::Idle => "\u{25c6}",      // ◆
+            Self::Sleeping => "\u{263e}",  // ☾
+            Self::Disconnected => "\u{2716}", // ✖
+            Self::ShellOnly => "\u{25b8}", // ▸
         }
     }
 

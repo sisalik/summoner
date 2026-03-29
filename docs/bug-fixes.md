@@ -95,3 +95,13 @@ Ok better, but still some issues:
 - Can we use a filled heart symbol for the health bar?
 - In the dashboard, vertical navigation between rows with Up/Down arrow keys still doesn't work at all
 - Let's only enable the bipedal, blob and serpentine archetypes for now - leave the others implemented but don't enable them to be associated with a session. We'll come back to tweak them later to get them to look better.
+
+Ok much better, but still there are some problems:
+- The health bar is overlapped by the creature selection highlight box. If we move the top edge of the box 1 row higher (there should be space) then this won't happen.
+- Are there any box characters we can use to decrease the height of the health bar, while maintaining its continuity and vertical middle/top alignment within the row?
+- Looks like the heart character takes up 2 colums too, so that's why it's partially obscured by the health bar
+- Decrease the size of the shell sprite a bit, it goes from one edge to another but it'd be good to have some margin around it (still centre aligned)
+- The XP counter could be right-aligned
+- Levels could be colour-coded so that it's more fun
+- Actually now that the health bar hearts and activity/status lines are further apart, we could revert to the emojis for the states, since they're more expressive
+- In the bottom bar: if there are multiple sessions within one directory, you could omit the directory names for all but the last (or active) session and just keep the F-key label and the state icon

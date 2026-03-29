@@ -201,7 +201,7 @@ impl<'a> Dashboard<'a> {
                 let state_y = lvl_xp_y + 1;
 
                 // --- Health bar at top (only for active Claude sessions) ---
-                // Uses lower-half blocks ▄ for a thin bar with top-aligned appearance
+                // Uses upper-half blocks ▀ for a thin bar
                 if is_active_claude {
                     let default_stats = SessionStats::new();
                     let stat = self.session_stats.get(sess_idx).unwrap_or(&default_stats);
@@ -218,10 +218,10 @@ impl<'a> Dashboard<'a> {
                     let healthy = bar_total.saturating_sub(damaged);
 
                     // Draw healthy portion (green, lower-half block ▄)
-                    let healthy_str: String = "\u{2584}".repeat(healthy);
+                    let healthy_str: String = "\u{2580}".repeat(healthy);
                     draw_text(cx, health_y, &healthy_str, Style::default().fg(Color::Rgb(129, 199, 132)), creature_col, buf);
                     // Draw damaged portion (red)
-                    let damaged_str: String = "\u{2584}".repeat(damaged);
+                    let damaged_str: String = "\u{2580}".repeat(damaged);
                     draw_text(cx + healthy as u16, health_y, &damaged_str, Style::default().fg(Color::Rgb(229, 115, 115)), creature_col, buf);
                     // Draw percentage
                     let pct_color = if pct >= 90 { Color::Rgb(229, 115, 115) } else { Color::Rgb(136, 136, 136) };
