@@ -6,7 +6,8 @@ use crossterm::event::{self, Event, KeyCode, KeyEvent, KeyModifiers};
 use ratatui::layout::{Constraint, Layout, Rect};
 use ratatui::DefaultTerminal;
 
-use crate::claude::{detect_claude_state, find_conversation_id};
+use crate::claude::{detect_claude_state, find_claude_child, find_conversation_id};
+use crate::hooks;
 use crate::config::{AppConfig, RecentDirs, SessionStore, SessionEntry};
 use crate::creature::animate::AnimationState;
 use crate::creature::generate::{generate_sprite, Sprite};
@@ -60,6 +61,9 @@ impl App {
         let config_dir = dirs::home_dir()
             .unwrap_or_else(|| PathBuf::from("."))
             .join(".summoner");
+
+        // Install Claude Code hooks for state detection
+        hooks::install_hooks(&config_dir);
 
         let config = AppConfig::load(&config_dir).unwrap_or_default();
         let recent_dirs = RecentDirs::load(&config_dir).unwrap_or_else(|_| RecentDirs {
@@ -150,6 +154,11 @@ impl App {
 
         let pty = PtySession::spawn(&self.config.general.default_shell, &directory, rows, cols)?;
 
+        // Clear any stale hook state file for this PID (in case of PID reuse)
+        if let Some(pid) = pty.pid() {
+            hooks::clear_state_file(&self.config_dir, pid);
+        }
+
         let idx = self.sessions.len();
         self.sessions.push(session);
         self.pty_sessions.push(Some(pty));
@@ -239,45 +248,68 @@ impl App {
                 }
             }
 
-            // Detect Claude state from screen with hysteresis
-            let screen = self.vt_parsers[i].screen();
-            let in_alternate_screen = screen.alternate_screen();
-            let detected = detect_claude_state(screen);
+            // Primary: use Claude Code hooks for state detection
+            let shell_pid = pty.pid();
+            let hook_state = shell_pid
+                .and_then(|pid| hooks::read_hook_state(&self.config_dir, pid));
 
-            // If not in alternate screen, Claude has exited — use ShellOnly as default
-            let new_state = if let Some(state) = detected {
+            // Pick up conversation ID from hooks
+            if self.sessions[i].claude_conversation_id.is_none() {
+                if let Some(pid) = shell_pid {
+                    if let Some(sid) = hooks::read_hook_session_id(&self.config_dir, pid) {
+                        self.sessions[i].claude_conversation_id = Some(sid);
+                    } else if let Some(conv_id) = find_conversation_id(pid) {
+                        self.sessions[i].claude_conversation_id = Some(conv_id);
+                    }
+                }
+            }
+
+            let new_state = if let Some(state) = hook_state {
+                // Hook gave us a definitive state — trust it
                 state
-            } else if in_alternate_screen {
-                // In alternate screen but no patterns matched — probably still Claude, default Idle
-                if self.sessions[i].claude_conversation_id.is_some()
-                    || matches!(self.sessions[i].state, SessionState::Working | SessionState::Waiting | SessionState::Idle)
-                {
+            } else {
+                // Fallback: screen-based detection
+                let screen = self.vt_parsers[i].screen();
+                let in_alternate_screen = screen.alternate_screen();
+                let detected = detect_claude_state(screen);
+                let claude_running = shell_pid
+                    .and_then(find_claude_child)
+                    .is_some();
+
+                if let Some(state) = detected {
+                    state
+                } else if in_alternate_screen && claude_running {
                     SessionState::Idle
                 } else {
+                    // Clear conversation ID when Claude is gone
+                    if !claude_running && !in_alternate_screen
+                        && self.sessions[i].claude_conversation_id.is_some()
+                    {
+                        self.sessions[i].claude_conversation_id = None;
+                    }
                     SessionState::ShellOnly
                 }
-            } else {
-                // Normal screen — no Claude running
-                SessionState::ShellOnly
             };
 
             if new_state != self.sessions[i].state {
-                // State change detected - require consistency
+                // Hook-sourced states commit immediately (no hysteresis needed)
+                // Screen-based states use hysteresis to avoid flashing
+                let threshold = if hook_state.is_some() {
+                    1
+                } else if new_state == SessionState::Working || new_state == SessionState::Waiting {
+                    1
+                } else if self.sessions[i].state == SessionState::Working {
+                    8
+                } else {
+                    3
+                };
+
                 if self.sessions[i].pending_state == Some(new_state) {
                     self.sessions[i].pending_state_count += 1;
                 } else {
                     self.sessions[i].pending_state = Some(new_state);
                     self.sessions[i].pending_state_count = 1;
                 }
-
-                // Only commit state change after consistent detections
-                let threshold = if new_state == SessionState::Working || new_state == SessionState::Waiting {
-                    1 // React to Working/Waiting immediately
-                } else if self.sessions[i].state == SessionState::Working {
-                    8 // Very resistant to leaving Working state (prevents flashing)
-                } else {
-                    3 // Normal threshold for other transitions
-                };
 
                 if self.sessions[i].pending_state_count >= threshold {
                     self.sessions[i].state = new_state;
@@ -286,22 +318,16 @@ impl App {
                     self.sessions[i].pending_state_count = 0;
                 }
             } else {
-                // State unchanged, reset pending
                 self.sessions[i].pending_state = None;
                 self.sessions[i].pending_state_count = 0;
             }
 
-            // Try to find conversation ID if we don't have one
-            if self.sessions[i].claude_conversation_id.is_none() {
-                if let Some(pid) = pty.pid() {
-                    if let Some(conv_id) = find_conversation_id(pid) {
-                        self.sessions[i].claude_conversation_id = Some(conv_id);
-                    }
-                }
-            }
-
             // Check for child exit
             if pty.try_wait().is_some() {
+                // Clean up hook state file for this shell PID
+                if let Some(pid) = pty.pid() {
+                    hooks::clear_state_file(&self.config_dir, pid);
+                }
                 self.pty_sessions[i] = None;
                 if matches!(self.mode, Mode::Session(idx) if idx == i) {
                     // Currently viewing this session — mark for removal
@@ -630,14 +656,17 @@ impl App {
         let session_rows = rows.saturating_sub(1);
         let pty = PtySession::spawn(&self.config.general.default_shell, &directory, session_rows, cols)?;
 
+        // Clear any stale hook state file for this PID
+        if let Some(pid) = pty.pid() {
+            hooks::clear_state_file(&self.config_dir, pid);
+        }
+
         // If there's a claude conversation id, resume it
         if let Some(ref conv_id) = self.sessions[index].claude_conversation_id.clone() {
             let cmd = format!("claude --resume {}\r\n", conv_id);
             let _ = pty.write(cmd.as_bytes());
-        } else {
-            // Write a newline to kick the shell into showing a prompt
-            let _ = pty.write(b"\n");
         }
+        // Shell sessions don't need a newline — the shell shows a prompt on startup
 
         self.pty_sessions[index] = Some(pty);
         // Reset vt100 parser to current terminal size

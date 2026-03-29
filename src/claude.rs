@@ -111,16 +111,63 @@ fn row_text(screen: &vt100::Screen, row: u16, cols: u16) -> String {
     screen.rows(0, cols).nth(row as usize).unwrap_or_default()
 }
 
-pub fn find_conversation_id(pid: u32) -> Option<String> {
+/// Check if a `claude` process is running as a descendant of the given PID.
+/// Returns the claude process PID if found.
+pub fn find_claude_child(shell_pid: u32) -> Option<u32> {
+    find_descendant_by_name(shell_pid, "claude")
+}
+
+fn find_descendant_by_name(pid: u32, name: &str) -> Option<u32> {
+    let children = read_children(pid);
+    for child in children {
+        if process_name(child).as_deref() == Some(name) {
+            return Some(child);
+        }
+        // Recurse into grandchildren
+        if let Some(found) = find_descendant_by_name(child, name) {
+            return Some(found);
+        }
+    }
+    None
+}
+
+fn read_children(pid: u32) -> Vec<u32> {
+    let path = format!("/proc/{}/task/{}/children", pid, pid);
+    std::fs::read_to_string(&path)
+        .unwrap_or_default()
+        .split_whitespace()
+        .filter_map(|s| s.parse().ok())
+        .collect()
+}
+
+fn process_name(pid: u32) -> Option<String> {
+    let path = format!("/proc/{}/comm", pid);
+    std::fs::read_to_string(&path).ok().map(|s| s.trim().to_string())
+}
+
+/// Find conversation ID by looking for a claude child process and its session file.
+pub fn find_conversation_id(shell_pid: u32) -> Option<String> {
     let sessions_dir = dirs::home_dir()?.join(".claude/sessions");
-    let pid_file = sessions_dir.join(format!("{}.json", pid));
+
+    // First try: look for session file matching claude's PID
+    if let Some(claude_pid) = find_claude_child(shell_pid) {
+        let pid_file = sessions_dir.join(format!("{}.json", claude_pid));
+        if pid_file.exists() {
+            let content = std::fs::read_to_string(&pid_file).ok()?;
+            return extract_json_field(&content, "session_id")
+                .or_else(|| extract_json_field(&content, "id"));
+        }
+    }
+
+    // Fallback: try shell PID directly (in case claude replaces the shell process)
+    let pid_file = sessions_dir.join(format!("{}.json", shell_pid));
     if pid_file.exists() {
         let content = std::fs::read_to_string(&pid_file).ok()?;
-        extract_json_field(&content, "session_id")
-            .or_else(|| extract_json_field(&content, "id"))
-    } else {
-        None
+        return extract_json_field(&content, "session_id")
+            .or_else(|| extract_json_field(&content, "id"));
     }
+
+    None
 }
 
 fn extract_json_field(json: &str, field: &str) -> Option<String> {
