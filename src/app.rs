@@ -402,11 +402,13 @@ impl App {
                     );
                     dashboard.render(main_area, frame.buffer_mut());
 
-                    // Render confirmation overlay for project close
                     if let Some(ref project_dir) = self.confirm_close_project {
-                        let popup_area = centered_rect(50, 20, main_area);
-                        let display_dir = display_path(project_dir);
-                        render_confirm_overlay(frame, popup_area, &display_dir, self.confirm_selection);
+                        let msg = format!("Close all sessions in {}?", display_path(project_dir));
+                        ConfirmDialog {
+                            title: "Confirm Close",
+                            message: &msg,
+                            yes_selected: self.confirm_selection,
+                        }.render(frame, main_area);
                     }
 
                     // Render dir picker overlay
@@ -430,10 +432,12 @@ impl App {
                 }
             }
 
-            // Render quit confirmation overlay
             if self.confirm_quit {
-                let popup_area = centered_rect(40, 20, main_area);
-                render_quit_overlay(frame, popup_area, self.confirm_quit_selection);
+                ConfirmDialog {
+                    title: "Quit Summoner",
+                    message: "Quit Summoner?",
+                    yes_selected: self.confirm_quit_selection,
+                }.render(frame, main_area);
             }
 
             // Render status bar
@@ -812,84 +816,57 @@ fn centered_rect(percent_x: u16, percent_y: u16, area: Rect) -> Rect {
     Rect::new(x, y, width, height)
 }
 
-fn render_confirm_overlay(frame: &mut ratatui::Frame, area: Rect, project_dir: &str, yes_selected: bool) {
-    use ratatui::widgets::{Block, Borders, Clear, Padding};
-    use ratatui::style::{Color, Modifier, Style};
-
-    Clear.render(area, frame.buffer_mut());
-
-    let block = Block::default()
-        .title(" Confirm Close ")
-        .title_style(Style::default().fg(Color::Rgb(255, 100, 100)).add_modifier(Modifier::BOLD))
-        .borders(Borders::ALL)
-        .border_style(Style::default().fg(Color::Rgb(200, 80, 80)))
-        .padding(Padding::uniform(1));
-
-    let inner = block.inner(area);
-    block.render(area, frame.buffer_mut());
-
-    if inner.height >= 3 && inner.width >= 20 {
-        let msg = format!("Close all sessions in {}?", project_dir);
-        let msg_style = Style::default().fg(Color::Rgb(220, 220, 240));
-        frame.buffer_mut().set_string(inner.x, inner.y, &msg, msg_style);
-
-        // Draw buttons on the third line (inner.y + 2)
-        let btn_y = inner.y + 2;
-
-        let yes_label = "[ Yes ]";
-        let no_label  = "[ No ]";
-
-        let selected_style = Style::default()
-            .fg(Color::Rgb(20, 20, 30))
-            .bg(Color::Rgb(200, 80, 80))
-            .add_modifier(Modifier::BOLD);
-        let normal_style = Style::default()
-            .fg(Color::Rgb(150, 150, 170))
-            .add_modifier(Modifier::DIM);
-
-        let (yes_style, no_style) = if yes_selected {
-            (selected_style, normal_style)
-        } else {
-            (normal_style, selected_style)
-        };
-
-        frame.buffer_mut().set_string(inner.x, btn_y, yes_label, yes_style);
-        frame.buffer_mut().set_string(inner.x + yes_label.len() as u16 + 4, btn_y, no_label, no_style);
-
-        // Navigation hint
-        let hint_style = Style::default().fg(Color::Rgb(100, 100, 120));
-        let hint = "◄ ► to switch  Enter to confirm";
-        if inner.height >= 5 {
-            frame.buffer_mut().set_string(inner.x, inner.y + 4, hint, hint_style);
-        }
-    }
+fn centered_fixed(width: u16, height: u16, area: Rect) -> Rect {
+    let w = width.min(area.width);
+    let h = height.min(area.height);
+    let x = area.x + (area.width.saturating_sub(w)) / 2;
+    let y = area.y + (area.height.saturating_sub(h)) / 2;
+    Rect::new(x, y, w, h)
 }
 
-fn render_quit_overlay(frame: &mut ratatui::Frame, area: Rect, yes_selected: bool) {
-    use ratatui::widgets::{Block, Borders, Clear, Padding};
-    use ratatui::style::{Color, Modifier, Style};
+struct ConfirmDialog<'a> {
+    title: &'a str,
+    message: &'a str,
+    yes_selected: bool,
+}
 
-    Clear.render(area, frame.buffer_mut());
+impl ConfirmDialog<'_> {
+    fn render(&self, frame: &mut ratatui::Frame, area: Rect) {
+        use ratatui::widgets::{Block, Borders, Clear, Padding};
+        use ratatui::style::{Color, Modifier, Style};
 
-    let block = Block::default()
-        .title(" Quit Summoner ")
-        .title_style(Style::default().fg(Color::Rgb(255, 100, 100)).add_modifier(Modifier::BOLD))
-        .borders(Borders::ALL)
-        .border_style(Style::default().fg(Color::Rgb(200, 80, 80)))
-        .padding(Padding::uniform(1));
+        let yes_label = "[ Yes ]";
+        let no_label = "[ No ]";
+        let hint = "\u{25c4} \u{25ba} to switch  Enter to confirm";
 
-    let inner = block.inner(area);
-    block.render(area, frame.buffer_mut());
+        // Content: message, blank, buttons, blank, hint = 5 lines
+        // + 2 border + 2 padding = 9
+        let content_width = self.message.len()
+            .max(hint.len())
+            .max(yes_label.len() + 4 + no_label.len()) as u16;
+        let popup = centered_fixed(content_width + 4, 9, area);
 
-    if inner.height >= 3 && inner.width >= 20 {
-        let msg = "Quit Summoner?";
+        Clear.render(popup, frame.buffer_mut());
+
+        let title = format!(" {} ", self.title);
+        let block = Block::default()
+            .title(title)
+            .title_style(Style::default().fg(Color::Rgb(255, 100, 100)).add_modifier(Modifier::BOLD))
+            .borders(Borders::ALL)
+            .border_style(Style::default().fg(Color::Rgb(200, 80, 80)))
+            .padding(Padding::uniform(1));
+
+        let inner = block.inner(popup);
+        block.render(popup, frame.buffer_mut());
+
+        if inner.height < 3 || inner.width < 10 {
+            return;
+        }
+
         let msg_style = Style::default().fg(Color::Rgb(220, 220, 240));
-        frame.buffer_mut().set_string(inner.x, inner.y, msg, msg_style);
+        frame.buffer_mut().set_string(inner.x, inner.y, self.message, msg_style);
 
         let btn_y = inner.y + 2;
-        let yes_label = "[ Yes ]";
-        let no_label  = "[ No ]";
-
         let selected_style = Style::default()
             .fg(Color::Rgb(20, 20, 30))
             .bg(Color::Rgb(200, 80, 80))
@@ -897,21 +874,16 @@ fn render_quit_overlay(frame: &mut ratatui::Frame, area: Rect, yes_selected: boo
         let normal_style = Style::default()
             .fg(Color::Rgb(150, 150, 170))
             .add_modifier(Modifier::DIM);
-
-        let (yes_style, no_style) = if yes_selected {
+        let (yes_style, no_style) = if self.yes_selected {
             (selected_style, normal_style)
         } else {
             (normal_style, selected_style)
         };
-
         frame.buffer_mut().set_string(inner.x, btn_y, yes_label, yes_style);
         frame.buffer_mut().set_string(inner.x + yes_label.len() as u16 + 4, btn_y, no_label, no_style);
 
         let hint_style = Style::default().fg(Color::Rgb(100, 100, 120));
-        let hint = "◄ ► to switch  Enter to confirm";
-        if inner.height >= 5 {
-            frame.buffer_mut().set_string(inner.x, inner.y + 4, hint, hint_style);
-        }
+        frame.buffer_mut().set_string(inner.x, inner.y + 4, hint, hint_style);
     }
 }
 
@@ -929,7 +901,17 @@ fn render_resume_dialog(frame: &mut ratatui::Frame, area: Rect, session: &Sessio
         }
     }
 
-    let popup_area = centered_rect(60, 30, area);
+    let dir_value = display_path(&session.directory);
+    let claude_value = session.claude_conversation_id.as_deref().unwrap_or("none");
+    let hint = "Press any key to resume this session";
+
+    let dir_line = format!("Directory: {}", dir_value);
+    let claude_line = format!("Claude session: {}", claude_value);
+    let content_width = dir_line.len()
+        .max(claude_line.len())
+        .max(hint.len()) as u16;
+    // Content: dir, blank, claude, blank, hint = 5 lines + 2 border + 2 padding = 9
+    let popup_area = centered_fixed(content_width + 4, 9, area);
     Clear.render(popup_area, frame.buffer_mut());
 
     let block = Block::default()
@@ -950,28 +932,19 @@ fn render_resume_dialog(frame: &mut ratatui::Frame, area: Rect, session: &Sessio
     let value_style = Style::default().fg(Color::Rgb(220, 220, 240));
 
     let dir_label = "Directory: ";
-    let dir_value = display_path(&session.directory);
     frame.buffer_mut().set_string(inner.x, inner.y, dir_label, label_style);
     frame.buffer_mut().set_string(inner.x + dir_label.len() as u16, inner.y, &dir_value, value_style);
 
     let claude_label = "Claude session: ";
-    let claude_value = if let Some(ref id) = session.claude_conversation_id {
-        id.clone()
-    } else {
-        "none".to_string()
-    };
     frame.buffer_mut().set_string(inner.x, inner.y + 2, claude_label, label_style);
-    frame.buffer_mut().set_string(inner.x + claude_label.len() as u16, inner.y + 2, &claude_value, value_style);
+    frame.buffer_mut().set_string(inner.x + claude_label.len() as u16, inner.y + 2, claude_value, value_style);
 
-    // "Press any key to resume" centered at bottom
-    let hint = "Press any key to resume this session";
     let hint_len = hint.len() as u16;
     let hint_x = inner.x + inner.width.saturating_sub(hint_len) / 2;
-    let hint_y = inner.y + inner.height.saturating_sub(1);
     let hint_style = Style::default()
         .fg(Color::Rgb(150, 150, 200))
         .add_modifier(Modifier::BOLD);
-    frame.buffer_mut().set_string(hint_x, hint_y, hint, hint_style);
+    frame.buffer_mut().set_string(hint_x, inner.y + 4, hint, hint_style);
 }
 
 use ratatui::widgets::Widget;
