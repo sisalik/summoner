@@ -158,12 +158,12 @@ impl Skeleton {
 
     fn build_bipedal(rng: &mut Xorshift) -> Self {
         let cx = 9.0;
-        let head_neck = Self::vary(rng, 3.0, 0.9);
-        let neck_upper = Self::vary(rng, 4.0, 1.2);
-        let upper_lower = Self::vary(rng, 3.5, 1.0);
+        let head_neck = Self::vary(rng, 1.5, 0.4);    // shorter neck
+        let neck_upper = Self::vary(rng, 2.5, 0.8);   // shorter to shoulders
+        let upper_lower = Self::vary(rng, 5.0, 1.2);  // longer spine
         let head_w = Self::vary(rng, 4.0, 1.6);
         let neck_w = Self::vary(rng, 2.5, 1.0);
-        let upper_w = Self::vary(rng, 6.0, 2.4);
+        let upper_w = Self::vary(rng, 7.0, 2.0);      // wider shoulders
         let lower_w = Self::vary(rng, 5.0, 2.0);
         let head_y = 2.0;
         let neck_y = head_y + head_neck;
@@ -175,15 +175,15 @@ impl Skeleton {
             ChainPoint { name: "neck",       pos: Vec2::new(cx, neck_y),  prev_pos: Vec2::new(cx, neck_y),  width: neck_w.max(1.5),  pinned: false },
             ChainPoint { name: "upper_body", pos: Vec2::new(cx, upper_y), prev_pos: Vec2::new(cx, upper_y), width: upper_w.max(3.0), pinned: false },
             ChainPoint { name: "lower_body", pos: Vec2::new(cx, lower_y), prev_pos: Vec2::new(cx, lower_y), width: lower_w.max(2.5), pinned: false },
-            ChainPoint { name: "hip_l",      pos: Vec2::new(cx - 1.5, lower_y), prev_pos: Vec2::new(cx - 1.5, lower_y), width: 1.0, pinned: false },
-            ChainPoint { name: "hip_r",      pos: Vec2::new(cx + 1.5, lower_y), prev_pos: Vec2::new(cx + 1.5, lower_y), width: 1.0, pinned: false },
+            ChainPoint { name: "hip_l",      pos: Vec2::new(cx - 2.0, lower_y), prev_pos: Vec2::new(cx - 2.0, lower_y), width: 1.0, pinned: false },
+            ChainPoint { name: "hip_r",      pos: Vec2::new(cx + 2.0, lower_y), prev_pos: Vec2::new(cx + 2.0, lower_y), width: 1.0, pinned: false },
         ];
         let constraints = vec![
             Constraint { a: 0, b: 1, rest_length: head_neck },
             Constraint { a: 1, b: 2, rest_length: neck_upper },
             Constraint { a: 2, b: 3, rest_length: upper_lower },
-            Constraint { a: 3, b: 4, rest_length: 1.5 },
-            Constraint { a: 3, b: 5, rest_length: 1.5 },
+            Constraint { a: 3, b: 4, rest_length: 2.0 },
+            Constraint { a: 3, b: 5, rest_length: 2.0 },
         ];
         let arm_upper = Self::vary(rng, 2.5, 0.6);
         let arm_lower = Self::vary(rng, 2.5, 0.6);
@@ -195,22 +195,22 @@ impl Skeleton {
         let leg_width_lower = Self::vary(rng, 1.2, 0.3).max(0.6);
         let foot_y = lower_y + leg_upper + leg_lower;
         let limbs = vec![
-            Limb { anchor: 2, upper_len: arm_upper.max(1.5), lower_len: arm_lower.max(1.5), upper_width: arm_width_upper, lower_width: arm_width_lower, end_effector: Vec2::new(cx - 3.0, upper_y + arm_upper + arm_lower), side: Side::Left },
-            Limb { anchor: 2, upper_len: arm_upper.max(1.5), lower_len: arm_lower.max(1.5), upper_width: arm_width_upper, lower_width: arm_width_lower, end_effector: Vec2::new(cx + 3.0, upper_y + arm_upper + arm_lower), side: Side::Right },
-            Limb { anchor: 4, upper_len: leg_upper.max(2.0), lower_len: leg_lower.max(2.0), upper_width: leg_width_upper, lower_width: leg_width_lower, end_effector: Vec2::new(cx - 2.0, foot_y.min(23.0)), side: Side::Left },
-            Limb { anchor: 5, upper_len: leg_upper.max(2.0), lower_len: leg_lower.max(2.0), upper_width: leg_width_upper, lower_width: leg_width_lower, end_effector: Vec2::new(cx + 2.0, foot_y.min(23.0)), side: Side::Right },
+            Limb { anchor: 2, upper_len: arm_upper.max(1.5), lower_len: arm_lower.max(1.5), upper_width: arm_width_upper, lower_width: arm_width_lower, end_effector: Vec2::new(cx - 4.5, upper_y + arm_upper * 0.7), side: Side::Left },
+            Limb { anchor: 2, upper_len: arm_upper.max(1.5), lower_len: arm_lower.max(1.5), upper_width: arm_width_upper, lower_width: arm_width_lower, end_effector: Vec2::new(cx + 4.5, upper_y + arm_upper * 0.7), side: Side::Right },
+            Limb { anchor: 4, upper_len: leg_upper.max(2.0), lower_len: leg_lower.max(2.0), upper_width: leg_width_upper, lower_width: leg_width_lower, end_effector: Vec2::new(cx - 2.5, foot_y.min(23.0)), side: Side::Left },
+            Limb { anchor: 5, upper_len: leg_upper.max(2.0), lower_len: leg_lower.max(2.0), upper_width: leg_width_upper, lower_width: leg_width_lower, end_effector: Vec2::new(cx + 2.5, foot_y.min(23.0)), side: Side::Right },
         ];
         Self { points, constraints, limbs }
     }
 
     fn build_quadruped(rng: &mut Xorshift) -> Self {
         let cy = 10.0;
-        let head_neck = Self::vary(rng, 3.0, 0.9);
-        let neck_front = Self::vary(rng, 3.5, 1.0);
-        let front_rear = Self::vary(rng, 5.0, 1.5);
-        let tail1 = Self::vary(rng, 2.0, 0.6);
-        let tail2 = Self::vary(rng, 2.0, 0.6);
-        let tail3 = Self::vary(rng, 1.5, 0.4);
+        let head_neck = Self::vary(rng, 1.5, 0.4);    // shorter neck
+        let neck_front = Self::vary(rng, 2.0, 0.6);   // shorter to front body
+        let front_rear = Self::vary(rng, 6.5, 1.5);   // longer spine
+        let tail1 = Self::vary(rng, 2.5, 0.6);        // longer tail segments
+        let tail2 = Self::vary(rng, 2.5, 0.6);
+        let tail3 = Self::vary(rng, 2.0, 0.5);
         let head_w = Self::vary(rng, 3.5, 1.4);
         let neck_w = Self::vary(rng, 3.0, 1.2);
         let front_w = Self::vary(rng, 5.0, 2.0);
