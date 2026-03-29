@@ -5,4 +5,5 @@ pub mod creature;
 pub mod hooks;
 pub mod session;
 pub mod terminal;
+pub mod test_creatures;
 pub mod ui;
