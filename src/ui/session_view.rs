@@ -61,14 +61,16 @@ impl<'a> Widget for TerminalView<'a> {
             }
         }
 
-        // Render cursor
-        let (cur_row, cur_col) = self.screen.cursor_position();
-        let cursor_pos = Position {
-            x: area.x + cur_col,
-            y: area.y + cur_row,
-        };
-        if let Some(cell) = buf.cell_mut(cursor_pos) {
-            cell.set_style(cell.style().add_modifier(Modifier::REVERSED));
+        // Render cursor only when not scrolled back
+        if self.screen.scrollback() == 0 {
+            let (cur_row, cur_col) = self.screen.cursor_position();
+            let cursor_pos = Position {
+                x: area.x + cur_col,
+                y: area.y + cur_row,
+            };
+            if let Some(cell) = buf.cell_mut(cursor_pos) {
+                cell.set_style(cell.style().add_modifier(Modifier::REVERSED));
+            }
         }
     }
 }

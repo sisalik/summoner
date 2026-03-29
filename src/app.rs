@@ -2,7 +2,7 @@ use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
 use anyhow::Result;
-use crossterm::event::{self, Event, KeyCode, KeyEvent, KeyModifiers};
+use crossterm::event::{self, Event, KeyCode, KeyEvent, KeyModifiers, MouseEventKind};
 use ratatui::layout::{Constraint, Layout, Rect};
 use ratatui::DefaultTerminal;
 
@@ -20,6 +20,8 @@ use crate::ui::dashboard_nav::DashboardNav;
 use crate::ui::dir_picker::{DirPicker, DirPickerAction};
 use crate::ui::session_view::TerminalView;
 use crate::ui::status_bar::StatusBar;
+
+const SCROLLBACK_LEN: usize = 1000;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Mode {
@@ -107,7 +109,7 @@ impl App {
 
             sessions.push(session);
             pty_sessions.push(None);
-            vt_parsers.push(vt100::Parser::new(24, 80, 0));
+            vt_parsers.push(vt100::Parser::new(24, 80, SCROLLBACK_LEN));
             locomotions.push(LocomotionState::new(skeleton, SessionState::Disconnected));
             sprites.push(raster);
             session_stats.push(SessionStats::new());
@@ -194,7 +196,7 @@ impl App {
         let idx = self.sessions.len();
         self.sessions.push(session);
         self.pty_sessions.push(Some(pty));
-        self.vt_parsers.push(vt100::Parser::new(rows, cols, 0));
+        self.vt_parsers.push(vt100::Parser::new(rows, cols, SCROLLBACK_LEN));
         self.locomotions.push(LocomotionState::new(skeleton, SessionState::ShellOnly));
         self.sprites.push(raster);
         self.session_stats.push(SessionStats::new());
@@ -257,6 +259,9 @@ impl App {
 
             // Read output and feed to vt100 parser
             let chunks = pty.read_available();
+            if !chunks.is_empty() && self.vt_parsers[i].screen().scrollback() > 0 {
+                self.vt_parsers[i].screen_mut().set_scrollback(0);
+            }
             for chunk in &chunks {
                 self.vt_parsers[i].process(chunk);
             }
@@ -632,6 +637,9 @@ impl App {
             return Ok(());
         }
 
+        if idx < self.vt_parsers.len() && self.vt_parsers[idx].screen().scrollback() > 0 {
+            self.vt_parsers[idx].screen_mut().set_scrollback(0);
+        }
         if let Some(ref pty) = self.pty_sessions[idx] {
             let bytes = key_to_bytes(key);
             if !bytes.is_empty() {
@@ -670,7 +678,7 @@ impl App {
 
         self.pty_sessions[index] = Some(pty);
         // Reset vt100 parser to current terminal size
-        self.vt_parsers[index] = vt100::Parser::new(session_rows, cols, 0);
+        self.vt_parsers[index] = vt100::Parser::new(session_rows, cols, SCROLLBACK_LEN);
         self.sessions[index].state = SessionState::ShellOnly;
         self.locomotions[index].set_state(SessionState::ShellOnly);
         self.last_session = Some(index);
@@ -1013,6 +1021,22 @@ pub fn run(terminal: &mut DefaultTerminal) -> Result<()> {
                     // Also resize all vt parsers
                     for parser in &mut app.vt_parsers {
                         parser.screen_mut().set_size(session_rows, cols);
+                    }
+                }
+                Event::Mouse(mouse) => {
+                    if let Mode::Session(idx) = app.mode {
+                        if idx < app.vt_parsers.len() {
+                            let screen = app.vt_parsers[idx].screen();
+                            let current = screen.scrollback();
+                            let new_offset = match mouse.kind {
+                                MouseEventKind::ScrollUp => current.saturating_add(3),
+                                MouseEventKind::ScrollDown => current.saturating_sub(3),
+                                _ => current,
+                            };
+                            if new_offset != current {
+                                app.vt_parsers[idx].screen_mut().set_scrollback(new_offset);
+                            }
+                        }
                     }
                 }
                 _ => {}
