@@ -191,23 +191,38 @@ pub fn sprite_cell_size(sprite: &Sprite) -> (u16, u16) {
 
 pub fn terminal_icon_sprite() -> Sprite {
     use CellKind::*;
+    #[allow(non_snake_case)]
+    let (B, O, E) = (Border, Body, Empty);
+    // 18x14 — proportionally scaled from original 10x8
     let cells = vec![
-        // Row 0: title bar
-        Border, Border, Border, Border, Border, Border, Border, Border, Border, Border,
-        // Row 1: title bar content (window buttons)
-        Border, Body,   Body,   Body,   Empty,  Empty,  Empty,  Empty,  Empty,  Border,
+        // Row 0: top frame
+        B, B, B, B, B, B, B, B, B, B, B, B, B, B, B, B, B, B,
+        // Row 1: title bar with traffic-light buttons
+        B, E, O, O, E, O, O, E, O, O, E, E, E, E, E, E, E, B,
         // Row 2: separator
-        Border, Border, Border, Border, Border, Border, Border, Border, Border, Border,
-        // Row 3: prompt line "> _"
-        Border, Empty,  Body,   Empty,  Body,   Empty,  Empty,  Empty,  Empty,  Border,
-        // Row 4: text line
-        Border, Empty,  Empty,  Empty,  Empty,  Empty,  Empty,  Empty,  Empty,  Border,
-        // Row 5: empty
-        Border, Empty,  Empty,  Empty,  Empty,  Empty,  Empty,  Empty,  Empty,  Border,
+        B, B, B, B, B, B, B, B, B, B, B, B, B, B, B, B, B, B,
+        // Row 3: empty
+        B, E, E, E, E, E, E, E, E, E, E, E, E, E, E, E, E, B,
+        // Row 4: prompt "> _"
+        B, E, O, O, E, O, E, E, E, E, E, E, E, E, E, E, E, B,
+        // Row 5: output text
+        B, E, E, O, O, O, O, O, O, E, E, E, E, E, E, E, E, B,
         // Row 6: empty
-        Border, Empty,  Empty,  Empty,  Empty,  Empty,  Empty,  Empty,  Empty,  Border,
-        // Row 7: bottom border
-        Border, Border, Border, Border, Border, Border, Border, Border, Border, Border,
+        B, E, E, E, E, E, E, E, E, E, E, E, E, E, E, E, E, B,
+        // Row 7: empty
+        B, E, E, E, E, E, E, E, E, E, E, E, E, E, E, E, E, B,
+        // Row 8: empty
+        B, E, E, E, E, E, E, E, E, E, E, E, E, E, E, E, E, B,
+        // Row 9: empty
+        B, E, E, E, E, E, E, E, E, E, E, E, E, E, E, E, E, B,
+        // Row 10: empty
+        B, E, E, E, E, E, E, E, E, E, E, E, E, E, E, E, E, B,
+        // Row 11: empty
+        B, E, E, E, E, E, E, E, E, E, E, E, E, E, E, E, E, B,
+        // Row 12: empty
+        B, E, E, E, E, E, E, E, E, E, E, E, E, E, E, E, E, B,
+        // Row 13: bottom frame
+        B, B, B, B, B, B, B, B, B, B, B, B, B, B, B, B, B, B,
     ];
-    Sprite { width: 10, height: 8, cells }
+    Sprite { width: 18, height: 14, cells }
 }

@@ -29,15 +29,22 @@ impl<'a> Dashboard<'a> {
     }
 }
 
-/// Compute grid layout: (cols, rows) based on group count
-fn grid_layout(count: usize) -> (usize, usize) {
-    match count {
-        0 => (0, 0),
-        1 => (1, 1),
-        2 | 3 => (count, 1),
-        4 | 5 | 6 => (3, 2),
-        _ => (3, (count + 2) / 3),
-    }
+/// Compute grid layout: (cols, rows) based on group count and available width
+fn grid_layout(count: usize, available_width: u16) -> (usize, usize) {
+    let min_card_width: u16 = 35;
+    // Max columns that fit: (width - 1 outer margin) / (card + 1 gap)
+    let max_cols = ((available_width.saturating_sub(1)) / (min_card_width + 1)).max(1) as usize;
+
+    let desired = match count {
+        0 => return (0, 0),
+        1 => 1,
+        2 | 3 => count,
+        4 | 5 | 6 => 3,
+        _ => 3,
+    };
+    let cols = desired.min(max_cols);
+    let rows = (count + cols - 1) / cols;
+    (cols, rows)
 }
 
 fn fill_background(area: Rect, buf: &mut Buffer) {
@@ -149,7 +156,7 @@ impl<'a> Widget for Dashboard<'a> {
             return;
         }
 
-        let (cols, _rows) = grid_layout(groups.len());
+        let (cols, _rows) = grid_layout(groups.len(), content_area.width);
         if cols == 0 { return; }
 
         // Determine which group names need disambiguation (same basename, different path)
@@ -247,7 +254,16 @@ impl<'a> Widget for Dashboard<'a> {
                 } else {
                     let icon = terminal_icon_sprite();
                     let palette = state_palette(session.state);
-                    render_sprite_to_buffer(&icon, &palette, creature_area, buf);
+                    // Center the icon vertically within the creature area
+                    let (_, icon_h) = crate::creature::render::sprite_cell_size(&icon);
+                    let y_offset = creature_area.height.saturating_sub(icon_h) / 2;
+                    let centered_area = Rect {
+                        x: creature_area.x,
+                        y: creature_area.y + y_offset,
+                        width: creature_area.width,
+                        height: creature_area.height.saturating_sub(y_offset),
+                    };
+                    render_sprite_to_buffer(&icon, &palette, centered_area, buf);
                 }
 
                 // Draw state label below creature (centered under sprite)
