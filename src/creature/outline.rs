@@ -280,7 +280,14 @@ pub fn rasterize_skeleton_scaled(skeleton: &Skeleton, scale: usize) -> RasterRes
         }
     }
 
-    // Phase 3: Edge detection — Body pixels adjacent to Empty become Border
+    // Phase 3: Ring interior fill (blob archetype)
+    if is_ring_topology(skeleton) {
+        ring_interior_fill(&mut cells, &mut ids, w, h);
+        // Convert interior Border pixels to Body (they're no longer on the edge)
+        demote_interior_borders(&mut cells, w, h);
+    }
+
+    // Phase 4: Edge detection — Body pixels adjacent to Empty become Border
     edge_detect(&mut cells, w, h);
 
     RasterResult {
@@ -367,6 +374,82 @@ pub fn rasterize_skeleton_wireframe(skeleton: &Skeleton, scale: usize) -> Raster
             cells,
         },
         capsule_ids: ids,
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Ring interior fill (for blob archetype)
+// ---------------------------------------------------------------------------
+
+/// Detect if the skeleton is a ring topology (no limbs, last constraint wraps).
+fn is_ring_topology(skeleton: &Skeleton) -> bool {
+    skeleton.limbs.is_empty()
+        && skeleton.constraints.iter().any(|c| {
+            let n = skeleton.points.len();
+            (c.a == n - 1 && c.b == 0) || (c.a == 0 && c.b == n - 1)
+        })
+}
+
+/// Scanline fill the interior of a ring of capsules.
+/// For each row, find leftmost and rightmost filled pixels (Body or Border),
+/// fill Empty pixels between them as Body. Inherit capsule ID from nearest border.
+fn ring_interior_fill(cells: &mut [CellKind], ids: &mut [u8], w: usize, h: usize) {
+    for y in 0..h {
+        let mut left = None;
+        let mut right = None;
+        let mut left_id = 0u8;
+        let mut right_id = 0u8;
+        for x in 0..w {
+            let idx = y * w + x;
+            if cells[idx] != CellKind::Empty {
+                if left.is_none() {
+                    left = Some(x);
+                    left_id = ids[idx];
+                }
+                right = Some(x);
+                right_id = ids[idx];
+            }
+        }
+        if let (Some(l), Some(r)) = (left, right) {
+            if r > l + 1 {
+                let mid = (l + r) / 2;
+                for x in (l + 1)..r {
+                    let idx = y * w + x;
+                    if cells[idx] == CellKind::Empty {
+                        cells[idx] = CellKind::Body;
+                        ids[idx] = if x <= mid { left_id } else { right_id };
+                    }
+                }
+            }
+        }
+    }
+}
+
+/// Convert Border pixels that are completely surrounded (no adjacent Empty) to Body.
+/// Used after ring fill to remove internal outlines.
+fn demote_interior_borders(cells: &mut [CellKind], w: usize, h: usize) {
+    let snapshot = cells.to_vec();
+    for y in 0..h {
+        for x in 0..w {
+            let idx = y * w + x;
+            if snapshot[idx] == CellKind::Border {
+                let has_empty =
+                    [(0i32, -1i32), (0, 1), (-1, 0), (1, 0)]
+                        .iter()
+                        .any(|(dx, dy)| {
+                            let nx = x as i32 + dx;
+                            let ny = y as i32 + dy;
+                            if nx >= 0 && nx < w as i32 && ny >= 0 && ny < h as i32 {
+                                snapshot[ny as usize * w + nx as usize] == CellKind::Empty
+                            } else {
+                                false
+                            }
+                        });
+                if !has_empty {
+                    cells[idx] = CellKind::Body;
+                }
+            }
+        }
     }
 }
 
