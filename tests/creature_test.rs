@@ -250,3 +250,73 @@ fn rasterize_same_skeleton_is_deterministic() {
     let s2 = rasterize_skeleton(&skel);
     assert_eq!(s1.cells, s2.cells);
 }
+
+use summoner::creature::locomotion::LocomotionState;
+use summoner::session::SessionState;
+use std::time::Duration;
+
+#[test]
+fn locomotion_new_creates_valid_state() {
+    let skel = Skeleton::instantiate(0, 42);
+    let loco = LocomotionState::new(skel, SessionState::Working);
+    assert_eq!(loco.state(), SessionState::Working);
+}
+
+#[test]
+fn locomotion_tick_modifies_skeleton() {
+    let skel = Skeleton::instantiate(0, 42);
+    let mut loco = LocomotionState::new(skel, SessionState::Working);
+    let before = loco.skeleton().points[0].pos;
+    for _ in 0..10 {
+        loco.tick(Duration::from_millis(33));
+    }
+    let after = loco.skeleton().points[0].pos;
+    let moved = (after.x - before.x).abs() > 0.1 || (after.y - before.y).abs() > 0.1;
+    assert!(moved, "Working locomotion should move the head: before={:?} after={:?}", before, after);
+}
+
+#[test]
+fn locomotion_sleeping_is_static() {
+    let skel = Skeleton::instantiate(0, 42);
+    let mut loco = LocomotionState::new(skel, SessionState::Sleeping);
+    for _ in 0..20 {
+        loco.tick(Duration::from_millis(33));
+    }
+    let before = loco.skeleton().points[0].pos;
+    for _ in 0..10 {
+        loco.tick(Duration::from_millis(33));
+    }
+    let after = loco.skeleton().points[0].pos;
+    let dx = (after.x - before.x).abs();
+    let dy = (after.y - before.y).abs();
+    assert!(dx < 2.0 && dy < 2.0, "Sleeping should have minimal movement: dx={dx}, dy={dy}");
+}
+
+#[test]
+fn locomotion_state_change_resets() {
+    let skel = Skeleton::instantiate(0, 42);
+    let mut loco = LocomotionState::new(skel, SessionState::Working);
+    for _ in 0..5 {
+        loco.tick(Duration::from_millis(33));
+    }
+    loco.set_state(SessionState::Idle);
+    assert_eq!(loco.state(), SessionState::Idle);
+}
+
+#[test]
+fn locomotion_disconnected_is_frozen() {
+    let skel = Skeleton::instantiate(0, 42);
+    let mut loco = LocomotionState::new(skel, SessionState::Disconnected);
+    for _ in 0..15 {
+        loco.tick(Duration::from_millis(33));
+    }
+    let before: Vec<Vec2> = loco.skeleton().points.iter().map(|p| p.pos).collect();
+    for _ in 0..10 {
+        loco.tick(Duration::from_millis(33));
+    }
+    let after: Vec<Vec2> = loco.skeleton().points.iter().map(|p| p.pos).collect();
+    for (b, a) in before.iter().zip(after.iter()) {
+        assert!((b.x - a.x).abs() < 0.01 && (b.y - a.y).abs() < 0.01,
+            "Disconnected should freeze after settling");
+    }
+}
