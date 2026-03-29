@@ -45,7 +45,7 @@ impl Sprite {
         }
     }
 
-    fn set(&mut self, x: usize, y: usize, kind: CellKind) {
+    pub fn set(&mut self, x: usize, y: usize, kind: CellKind) {
         if x < self.width && y < self.height {
             self.cells[y * self.width + x] = kind;
         }
