@@ -70,6 +70,22 @@ pub fn install_hooks(summoner_dir: &Path) {
     crate::statusline::install_wrapper(summoner_dir);
 }
 
+/// Remove hook entries from ~/.claude/settings.json, delete scripts and state files.
+pub fn uninstall_hooks(summoner_dir: &Path) {
+    let _ = unconfigure_claude_settings();
+    crate::statusline::uninstall_wrapper();
+    // Remove hook scripts
+    let hooks_dir = summoner_dir.join("hooks");
+    let _ = fs::remove_file(hooks_dir.join("claude-state.sh"));
+    let _ = fs::remove_file(hooks_dir.join("statusline-wrapper.sh"));
+    let _ = fs::remove_dir(&hooks_dir); // only succeeds if empty
+    // Remove state directories
+    clear_all_state_files(summoner_dir);
+    let _ = fs::remove_dir(summoner_dir.join("claude-states"));
+    crate::statusline::clear_stale_files(summoner_dir);
+    let _ = fs::remove_dir(summoner_dir.join("statusline-states"));
+}
+
 /// Remove all state files. Called on startup to avoid stale PID reuse.
 pub fn clear_all_state_files(summoner_dir: &Path) {
     let dir = summoner_dir.join("claude-states");
@@ -161,6 +177,67 @@ fn configure_claude_settings() -> std::io::Result<()> {
             }));
             changed = true;
         }
+    }
+
+    if changed {
+        let content = serde_json::to_string_pretty(&settings)
+            .map_err(|e| std::io::Error::other(e))?;
+        fs::write(&settings_path, content)?;
+    }
+    Ok(())
+}
+
+fn unconfigure_claude_settings() -> std::io::Result<()> {
+    let settings_path = dirs::home_dir()
+        .ok_or_else(|| std::io::Error::new(std::io::ErrorKind::NotFound, "no home dir"))?
+        .join(".claude")
+        .join("settings.json");
+
+    if !settings_path.exists() {
+        return Ok(());
+    }
+
+    let content = fs::read_to_string(&settings_path)?;
+    let mut settings: serde_json::Value = serde_json::from_str(&content)
+        .map_err(|e| std::io::Error::other(e))?;
+
+    let mut changed = false;
+
+    // Remove our hook entries
+    if let Some(hooks) = settings.get_mut("hooks").and_then(|h| h.as_object_mut()) {
+        for &event in HOOK_EVENTS {
+            if let Some(arr) = hooks.get_mut(event).and_then(|v| v.as_array_mut()) {
+                let before = arr.len();
+                arr.retain(|entry| {
+                    !entry.get("hooks")
+                        .and_then(|h| h.as_array())
+                        .map(|hooks| hooks.iter().any(|h| {
+                            h.get("command").and_then(|c| c.as_str()) == Some(HOOK_COMMAND)
+                        }))
+                        .unwrap_or(false)
+                });
+                if arr.len() != before {
+                    changed = true;
+                }
+            }
+        }
+        // Clean up empty event arrays
+        let empty_events: Vec<String> = hooks.iter()
+            .filter(|(_, v)| v.as_array().map(|a| a.is_empty()).unwrap_or(false))
+            .map(|(k, _)| k.clone())
+            .collect();
+        for key in empty_events {
+            hooks.remove(&key);
+            changed = true;
+        }
+        // Remove hooks key if empty
+        if hooks.is_empty() {
+            // mark for removal below
+        }
+    }
+    if settings.get("hooks").and_then(|h| h.as_object()).map(|o| o.is_empty()).unwrap_or(false) {
+        settings.as_object_mut().unwrap().remove("hooks");
+        changed = true;
     }
 
     if changed {

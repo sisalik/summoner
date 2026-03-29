@@ -1,3 +1,5 @@
+use std::path::PathBuf;
+
 use anyhow::Result;
 
 #[cfg(feature = "dev-creature")]
@@ -144,11 +146,17 @@ mod render_creature {
     }
 }
 
+fn summoner_dir() -> PathBuf {
+    dirs::home_dir()
+        .unwrap_or_else(|| PathBuf::from("."))
+        .join(".summoner")
+}
+
 fn main() -> Result<()> {
+    let args: Vec<String> = std::env::args().collect();
+
     #[cfg(feature = "dev-creature")]
     {
-        let args: Vec<String> = std::env::args().collect();
-
         if args.iter().any(|a| a == "--render-creature") {
             return render_creature::run(&args);
         }
@@ -161,8 +169,31 @@ fn main() -> Result<()> {
         }
     }
 
-    let mut terminal = ratatui::init();
-    let result = summoner::app::run(&mut terminal);
-    ratatui::restore();
-    result
+    match args.get(1).map(|s| s.as_str()) {
+        Some("install") => {
+            let dir = summoner_dir();
+            std::fs::create_dir_all(&dir)?;
+            summoner::hooks::install_hooks(&dir);
+            eprintln!("Summoner hooks installed.");
+            eprintln!("  Hook script:     ~/.summoner/hooks/claude-state.sh");
+            eprintln!("  StatusLine wrap:  ~/.summoner/hooks/statusline-wrapper.sh");
+            eprintln!("  Claude settings:  ~/.claude/settings.json (updated)");
+            Ok(())
+        }
+        Some("uninstall") => {
+            let dir = summoner_dir();
+            summoner::hooks::uninstall_hooks(&dir);
+            eprintln!("Summoner hooks uninstalled.");
+            eprintln!("  Removed hook entries from ~/.claude/settings.json");
+            eprintln!("  Removed scripts from ~/.summoner/hooks/");
+            eprintln!("  Cleaned up state files");
+            Ok(())
+        }
+        _ => {
+            let mut terminal = ratatui::init();
+            let result = summoner::app::run(&mut terminal);
+            ratatui::restore();
+            result
+        }
+    }
 }
