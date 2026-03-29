@@ -263,9 +263,6 @@ impl App {
 
             // Read output and feed to vt100 parser
             let chunks = pty.read_available();
-            if !chunks.is_empty() && self.vt_parsers[i].screen().scrollback() > 0 {
-                self.vt_parsers[i].screen_mut().set_scrollback(0);
-            }
             for chunk in &chunks {
                 self.vt_parsers[i].process(chunk);
             }
