@@ -254,6 +254,9 @@ fn rasterize_same_skeleton_is_deterministic() {
 use summoner::creature::locomotion::LocomotionState;
 use summoner::session::SessionState;
 use std::time::Duration;
+use summoner::creature::render::{render_sprite_to_buffer, state_palette, sprite_cell_size};
+use ratatui::buffer::Buffer;
+use ratatui::layout::Rect;
 
 #[test]
 fn locomotion_new_creates_valid_state() {
@@ -319,4 +322,37 @@ fn locomotion_disconnected_is_frozen() {
         assert!((b.x - a.x).abs() < 0.01 && (b.y - a.y).abs() < 0.01,
             "Disconnected should freeze after settling");
     }
+}
+
+#[test]
+fn full_pipeline_skeleton_to_rendered_buffer() {
+    for archetype in 0..ARCHETYPE_COUNT {
+        let skel = Skeleton::instantiate(archetype, 42);
+        let sprite = rasterize_skeleton(&skel);
+        let (w, h) = sprite_cell_size(&sprite);
+        let area = Rect::new(0, 0, w, h);
+        let mut buf = Buffer::empty(area);
+        let palette = state_palette(SessionState::Working);
+        render_sprite_to_buffer(&sprite, &palette, area, &mut buf);
+        let non_empty = (0..area.height)
+            .flat_map(|y| (0..area.width).map(move |x| (x, y)))
+            .filter(|(x, y)| {
+                let cell = &buf[ratatui::layout::Position { x: *x, y: *y }];
+                cell.symbol() != " "
+            })
+            .count();
+        assert!(non_empty > 0, "Archetype {} rendered nothing", archetype_name(archetype));
+    }
+}
+
+#[test]
+fn locomotion_produces_changing_sprites_over_time() {
+    let skel = Skeleton::instantiate(0, 42);
+    let mut loco = LocomotionState::new(skel, SessionState::Working);
+    let sprite1 = rasterize_skeleton(loco.skeleton());
+    for _ in 0..20 {
+        loco.tick(Duration::from_millis(33));
+    }
+    let sprite2 = rasterize_skeleton(loco.skeleton());
+    assert_ne!(sprite1.cells, sprite2.cells, "Working animation should change sprite over time");
 }
