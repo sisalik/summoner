@@ -1,6 +1,88 @@
 use std::fs;
 use std::path::Path;
 
+const WRAPPER_SCRIPT: &str = r#"#!/bin/bash
+# Summoner statusLine wrapper — tees JSON to state file, pipes to downstream
+input=$(cat)
+
+# Extract session_id
+sid_tmp="${input##*"\"session_id\":\""}"
+session_id="${sid_tmp%%\"*}"
+
+if [ -n "$session_id" ]; then
+    dir="$HOME/.summoner/statusline-states"
+    mkdir -p "$dir" 2>/dev/null
+    printf '%s' "$input" > "$dir/$session_id.json"
+fi
+
+# Pipe to downstream command (original statusLine)
+PASSTHROUGH_CMD="__PASSTHROUGH__"
+if [ -n "$PASSTHROUGH_CMD" ] && [ "$PASSTHROUGH_CMD" != "__PASSTHROUGH__" ]; then
+    printf '%s' "$input" | eval "$PASSTHROUGH_CMD"
+fi
+"#;
+
+const WRAPPER_COMMAND: &str = "bash ~/.summoner/hooks/statusline-wrapper.sh";
+
+/// Install the statusLine wrapper script and update ~/.claude/settings.json.
+pub fn install_wrapper(summoner_dir: &Path) {
+    let _ = install_wrapper_inner(summoner_dir);
+}
+
+fn install_wrapper_inner(summoner_dir: &Path) -> std::io::Result<()> {
+    let hooks_dir = summoner_dir.join("hooks");
+    fs::create_dir_all(&hooks_dir)?;
+
+    let claude_dir = dirs::home_dir()
+        .ok_or_else(|| std::io::Error::new(std::io::ErrorKind::NotFound, "no home dir"))?
+        .join(".claude");
+    let settings_path = claude_dir.join("settings.json");
+
+    let settings: serde_json::Value = if settings_path.exists() {
+        let content = fs::read_to_string(&settings_path)?;
+        serde_json::from_str(&content).unwrap_or(serde_json::json!({}))
+    } else {
+        serde_json::json!({})
+    };
+
+    let current_cmd = settings.get("statusLine")
+        .and_then(|sl| sl.get("command"))
+        .and_then(|c| c.as_str())
+        .unwrap_or("");
+
+    if current_cmd == WRAPPER_COMMAND {
+        return Ok(());
+    }
+
+    let passthrough = if current_cmd.is_empty() || current_cmd == WRAPPER_COMMAND {
+        String::new()
+    } else {
+        current_cmd.to_string()
+    };
+
+    let script = WRAPPER_SCRIPT.replace("__PASSTHROUGH__", &passthrough);
+    let script_path = hooks_dir.join("statusline-wrapper.sh");
+    fs::write(&script_path, &script)?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        fs::set_permissions(&script_path, fs::Permissions::from_mode(0o755))?;
+    }
+
+    let mut settings = settings;
+    settings["statusLine"] = serde_json::json!({
+        "type": "command",
+        "command": WRAPPER_COMMAND,
+        "padding": 0
+    });
+
+    let content = serde_json::to_string_pretty(&settings)
+        .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e))?;
+    fs::write(&settings_path, content)?;
+
+    Ok(())
+}
+
 #[derive(Debug, Clone)]
 pub struct StatusLineData {
     pub session_id: String,

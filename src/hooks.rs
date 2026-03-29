@@ -15,6 +15,7 @@ extract() {
 
 event=$(extract hook_event_name)
 sid=$(extract session_id)
+tool=$(extract tool_name)
 
 # Hook process tree: shell → claude → bash → this script
 # Walk up to find the shell PID
@@ -40,7 +41,7 @@ shell_pid=$(find_shell_pid)
 
 dir="$HOME/.summoner/claude-states"
 mkdir -p "$dir" 2>/dev/null
-echo "$event $sid" > "$dir/$shell_pid"
+echo "$event $sid $tool" > "$dir/$shell_pid"
 "#;
 
 const HOOK_COMMAND: &str = "bash ~/.summoner/hooks/claude-state.sh";
@@ -51,6 +52,8 @@ const HOOK_EVENTS: &[&str] = &[
     "Stop",
     "Notification",
     "SessionEnd",
+    "PreToolUse",
+    "PostToolUse",
 ];
 
 /// Install the hook script and configure ~/.claude/settings.json.
@@ -59,6 +62,7 @@ pub fn install_hooks(summoner_dir: &Path) {
     let _ = install_hook_script(summoner_dir);
     let _ = configure_claude_settings();
     clear_all_state_files(summoner_dir);
+    crate::statusline::install_wrapper(summoner_dir);
 }
 
 /// Remove all state files. Called on startup to avoid stale PID reuse.
@@ -167,30 +171,38 @@ fn state_file_path(summoner_dir: &Path, shell_pid: u32) -> PathBuf {
 }
 
 /// Read hook state and session ID in a single file read.
-/// Returns (state, session_id) where state is None if no hook data or Claude exited.
-pub fn read_hook_state(summoner_dir: &Path, shell_pid: u32) -> (Option<SessionState>, Option<String>) {
+/// Returns (state, session_id, active_tool) where state is None if no hook data or Claude exited.
+pub fn read_hook_state(summoner_dir: &Path, shell_pid: u32) -> (Option<SessionState>, Option<String>, Option<String>) {
     let state_file = state_file_path(summoner_dir, shell_pid);
     let content = match fs::read_to_string(&state_file) {
         Ok(c) => c,
-        Err(_) => return (None, None),
+        Err(_) => return (None, None, None),
     };
     let mut parts = content.split_whitespace();
     let event = match parts.next() {
         Some(e) => e,
-        None => return (None, None),
+        None => return (None, None, None),
     };
     let session_id = parts.next().map(|s| s.to_string());
+    let tool_name = parts.next().map(|s| s.to_string());
 
     let state = match event {
         "UserPromptSubmit" => Some(SessionState::Working),
         "Stop" | "SessionStart" => Some(SessionState::Idle),
         "Notification" => Some(SessionState::Waiting),
+        "PreToolUse" => Some(SessionState::Working),
+        "PostToolUse" => Some(SessionState::Working),
         "SessionEnd" => {
             let _ = fs::remove_file(&state_file);
-            return (None, None);
+            return (None, None, None);
         }
         _ => None,
     };
 
-    (state, session_id)
+    let active_tool = match event {
+        "PreToolUse" => tool_name,
+        _ => None,
+    };
+
+    (state, session_id, active_tool)
 }
