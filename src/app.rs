@@ -289,11 +289,14 @@ impl App {
                 self.session_stats[i].active_tool = hook_tool;
             }
 
-            // Pick up conversation ID from hooks or fallback
-            if self.sessions[i].claude_conversation_id.is_none() {
-                if let Some(sid) = hook_session_id {
+            // Pick up conversation ID from hooks or fallback.
+            // Always prefer the hook's session ID — it updates on /clear and /resume.
+            if let Some(sid) = hook_session_id {
+                if self.sessions[i].claude_conversation_id.as_deref() != Some(&sid) {
                     self.sessions[i].claude_conversation_id = Some(sid);
-                } else if let Some(pid) = shell_pid
+                }
+            } else if self.sessions[i].claude_conversation_id.is_none() {
+                if let Some(pid) = shell_pid
                     && let Some(conv_id) = find_conversation_id(pid) {
                         self.sessions[i].claude_conversation_id = Some(conv_id);
                     }
