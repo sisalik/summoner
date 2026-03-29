@@ -6,6 +6,7 @@ pub mod hooks;
 pub mod session;
 pub mod git;
 pub mod stats;
+pub mod statusline;
 pub mod terminal;
 #[cfg(feature = "dev-creature")]
 pub mod test_creatures;
