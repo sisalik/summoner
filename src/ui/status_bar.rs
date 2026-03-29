@@ -41,6 +41,41 @@ impl<'a> Widget for StatusBar<'a> {
             session_order.extend(&group.sessions);
         }
 
+        // Pre-compute: for each group, find the last session index in the group
+        // or the active session if one exists in the group
+        let mut show_name_for: Vec<bool> = vec![false; session_order.len()];
+        {
+            let mut group_start = 0;
+            for group in &groups {
+                let group_end = group_start + group.sessions.len();
+                // Find if any session in this group is active
+                let active_in_group = (group_start..group_end).any(|pos| {
+                    session_order.get(pos).map_or(false, |&si| self.active_index == Some(si))
+                });
+                if group.sessions.len() <= 1 {
+                    // Single session — always show name
+                    if group_start < show_name_for.len() {
+                        show_name_for[group_start] = true;
+                    }
+                } else if active_in_group {
+                    // Show name only for the active session
+                    for pos in group_start..group_end {
+                        if let Some(&si) = session_order.get(pos) {
+                            if self.active_index == Some(si) {
+                                show_name_for[pos] = true;
+                            }
+                        }
+                    }
+                } else {
+                    // No active session in group — show name for last one
+                    if group_end > 0 && group_end - 1 < show_name_for.len() {
+                        show_name_for[group_end - 1] = true;
+                    }
+                }
+                group_start = group_end;
+            }
+        }
+
         for (pos, &sess_idx) in session_order.iter().enumerate() {
             let session = &self.sessions[sess_idx];
 
@@ -61,7 +96,11 @@ impl<'a> Widget for StatusBar<'a> {
 
             let fkey = format!("F{}", pos + 1);
             let icon = session.state.icon();
-            let tab_text = format!(" {} {} {} ", fkey, icon, session.name);
+            let tab_text = if show_name_for.get(pos).copied().unwrap_or(true) {
+                format!(" {} {} {} ", fkey, icon, session.name)
+            } else {
+                format!(" {} {} ", fkey, icon)
+            };
 
             if x + tab_text.len() as u16 > max_tab_x {
                 overflow_count = session_order.len() - pos;

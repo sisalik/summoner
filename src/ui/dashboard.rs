@@ -201,40 +201,31 @@ impl<'a> Dashboard<'a> {
                 let state_y = lvl_xp_y + 1;
 
                 // --- Health bar at top (only for active Claude sessions) ---
+                // Uses lower-half blocks ▄ for a thin bar with top-aligned appearance
                 if is_active_claude {
                     let default_stats = SessionStats::new();
                     let stat = self.session_stats.get(sess_idx).unwrap_or(&default_stats);
                     let pct = stat.context_pct.unwrap_or(0);
-
-                    // Heart color based on remaining health
-                    let heart_color = match pct {
-                        0..=50 => Color::Rgb(129, 199, 132),
-                        51..=75 => Color::Rgb(255, 213, 79),
-                        76..=90 => Color::Rgb(255, 183, 77),
-                        _ => Color::Rgb(229, 115, 115),
-                    };
 
                     let pct_str = if stat.context_pct.is_some() {
                         format!(" {}%", pct)
                     } else {
                         " ---%".to_string()
                     };
-                    let bar_total = cw.saturating_sub(1 + pct_str.len() as u16) as usize;
+                    let bar_total = cw.saturating_sub(pct_str.len() as u16) as usize;
                     // "Damage" bar: green = remaining, red = used
                     let damaged = (bar_total as u64 * pct as u64 / 100).min(bar_total as u64) as usize;
                     let healthy = bar_total.saturating_sub(damaged);
 
-                    // Draw filled heart ♥
-                    draw_text(cx, health_y, "\u{2665}", Style::default().fg(heart_color), creature_col, buf);
-                    // Draw healthy portion (green)
-                    let healthy_str: String = "\u{2593}".repeat(healthy);
-                    draw_text(cx + 1, health_y, &healthy_str, Style::default().fg(Color::Rgb(129, 199, 132)), creature_col, buf);
+                    // Draw healthy portion (green, lower-half block ▄)
+                    let healthy_str: String = "\u{2584}".repeat(healthy);
+                    draw_text(cx, health_y, &healthy_str, Style::default().fg(Color::Rgb(129, 199, 132)), creature_col, buf);
                     // Draw damaged portion (red)
-                    let damaged_str: String = "\u{2593}".repeat(damaged);
-                    draw_text(cx + 1 + healthy as u16, health_y, &damaged_str, Style::default().fg(Color::Rgb(229, 115, 115)), creature_col, buf);
+                    let damaged_str: String = "\u{2584}".repeat(damaged);
+                    draw_text(cx + healthy as u16, health_y, &damaged_str, Style::default().fg(Color::Rgb(229, 115, 115)), creature_col, buf);
                     // Draw percentage
                     let pct_color = if pct >= 90 { Color::Rgb(229, 115, 115) } else { Color::Rgb(136, 136, 136) };
-                    draw_text(cx + 1 + bar_total as u16, health_y, &pct_str, Style::default().fg(pct_color), creature_col, buf);
+                    draw_text(cx + bar_total as u16, health_y, &pct_str, Style::default().fg(pct_color), creature_col, buf);
                 }
 
                 // --- Creature sprite ---
@@ -275,9 +266,28 @@ impl<'a> Dashboard<'a> {
                     let stat = self.session_stats.get(sess_idx).unwrap_or(&default_stats);
                     let level = stats::level_from_tokens(stat.total_tokens);
                     let xp = stats::format_xp(stat.total_tokens);
-                    let lvl_text = format!("Lv.{}  {}", level, xp);
-                    let lvl_style = Style::default().fg(Color::Rgb(170, 170, 190));
-                    draw_text(cx, lvl_xp_y, &lvl_text, lvl_style, creature_col, buf);
+
+                    // Color-code level
+                    let lvl_color = match level {
+                        1 => Color::Rgb(140, 140, 160),   // gray
+                        2 => Color::Rgb(129, 199, 132),   // green
+                        3 => Color::Rgb(100, 181, 246),   // blue
+                        4 => Color::Rgb(149, 117, 205),   // purple
+                        5 => Color::Rgb(255, 213, 79),    // gold
+                        6 => Color::Rgb(255, 152, 0),     // orange
+                        7 => Color::Rgb(244, 67, 54),     // red
+                        8 => Color::Rgb(233, 30, 99),     // pink
+                        9 => Color::Rgb(0, 230, 230),     // cyan
+                        _ => Color::Rgb(255, 255, 100),   // bright yellow (10+)
+                    };
+
+                    let lvl_text = format!("Lv.{}", level);
+                    draw_text(cx, lvl_xp_y, &lvl_text, Style::default().fg(lvl_color), creature_col, buf);
+
+                    // Right-align XP
+                    let xp_len = xp.chars().count() as u16;
+                    let xp_x = cx + cw.saturating_sub(xp_len);
+                    draw_text(xp_x, lvl_xp_y, &xp, Style::default().fg(Color::Rgb(255, 213, 79)), creature_col, buf);
                 }
 
                 // --- State line (always shown, bottom row) ---
@@ -299,10 +309,10 @@ impl<'a> Dashboard<'a> {
                     }
                 }
 
-                // --- Selection box ---
+                // --- Selection box (starts above health bar row) ---
                 if flat_pos == selected {
                     let box_x = cx.saturating_sub(1).max(card_area.x + 1);
-                    let box_y = creature_y.saturating_sub(1).max(card_area.y + 1);
+                    let box_y = health_y.saturating_sub(1).max(card_area.y + 1);
                     let box_right = (cx + cw + 1).min(card_area.x + card_area.width - 1);
                     let box_bottom = (state_y + 2).min(card_area.y + card_area.height - 1);
                     let box_w = box_right.saturating_sub(box_x);

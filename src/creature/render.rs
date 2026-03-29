@@ -193,36 +193,28 @@ pub fn terminal_icon_sprite() -> Sprite {
     use CellKind::*;
     #[allow(non_snake_case)]
     let (B, O, E) = (Border, Body, Empty);
-    // 18x14 — proportionally scaled from original 10x8
+    // 14x10 — compact terminal icon with margin when centered in 18-wide area
     let cells = vec![
         // Row 0: top frame
-        B, B, B, B, B, B, B, B, B, B, B, B, B, B, B, B, B, B,
-        // Row 1: title bar with traffic-light buttons
-        B, E, O, O, E, O, O, E, O, O, E, E, E, E, E, E, E, B,
+        B, B, B, B, B, B, B, B, B, B, B, B, B, B,
+        // Row 1: title bar with traffic-light dots
+        B, E, O, E, O, E, O, E, B, B, B, B, B, B,
         // Row 2: separator
-        B, B, B, B, B, B, B, B, B, B, B, B, B, B, B, B, B, B,
+        B, B, B, B, B, B, B, B, B, B, B, B, B, B,
         // Row 3: empty
-        B, E, E, E, E, E, E, E, E, E, E, E, E, E, E, E, E, B,
+        B, E, E, E, E, E, E, E, E, E, E, E, E, B,
         // Row 4: prompt "> _"
-        B, E, O, O, E, O, E, E, E, E, E, E, E, E, E, E, E, B,
+        B, E, O, O, E, O, E, E, E, E, E, E, E, B,
         // Row 5: output text
-        B, E, E, O, O, O, O, O, O, E, E, E, E, E, E, E, E, B,
+        B, E, E, O, O, O, O, O, E, E, E, E, E, B,
         // Row 6: empty
-        B, E, E, E, E, E, E, E, E, E, E, E, E, E, E, E, E, B,
+        B, E, E, E, E, E, E, E, E, E, E, E, E, B,
         // Row 7: empty
-        B, E, E, E, E, E, E, E, E, E, E, E, E, E, E, E, E, B,
+        B, E, E, E, E, E, E, E, E, E, E, E, E, B,
         // Row 8: empty
-        B, E, E, E, E, E, E, E, E, E, E, E, E, E, E, E, E, B,
-        // Row 9: empty
-        B, E, E, E, E, E, E, E, E, E, E, E, E, E, E, E, E, B,
-        // Row 10: empty
-        B, E, E, E, E, E, E, E, E, E, E, E, E, E, E, E, E, B,
-        // Row 11: empty
-        B, E, E, E, E, E, E, E, E, E, E, E, E, E, E, E, E, B,
-        // Row 12: empty
-        B, E, E, E, E, E, E, E, E, E, E, E, E, E, E, E, E, B,
-        // Row 13: bottom frame
-        B, B, B, B, B, B, B, B, B, B, B, B, B, B, B, B, B, B,
+        B, E, E, E, E, E, E, E, E, E, E, E, E, B,
+        // Row 9: bottom frame
+        B, B, B, B, B, B, B, B, B, B, B, B, B, B,
     ];
-    Sprite { width: 18, height: 14, cells }
+    Sprite { width: 14, height: 10, cells }
 }

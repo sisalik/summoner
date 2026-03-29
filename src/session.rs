@@ -14,12 +14,12 @@ pub enum SessionState {
 impl SessionState {
     pub fn icon(&self) -> &'static str {
         match self {
-            Self::Working => "⚡",
-            Self::Waiting => "❓",
-            Self::Idle => "◆",
-            Self::Sleeping => "☽",
-            Self::Disconnected => "✕",
-            Self::ShellOnly => "▸",
+            Self::Working => "\u{26a1}",     // ⚡
+            Self::Waiting => "\u{1f4ac}",    // 💬
+            Self::Idle => "\u{1f4a4}",       // 💤
+            Self::Sleeping => "\u{1f319}",   // 🌙
+            Self::Disconnected => "\u{274c}", // ❌
+            Self::ShellOnly => "\u{1f4bb}",  // 💻
         }
     }
 
