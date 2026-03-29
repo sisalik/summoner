@@ -215,6 +215,53 @@ fn set_cell_tagged(x: i32, y: i32, kind: CellKind, id: u8, cells: &mut [CellKind
     }
 }
 
+/// Wireframe-only debug rasterizer: draws skeleton lines and head circle
+/// with component IDs, but NO scanline fill and NO edge detection.
+/// Shows the raw bone structure.
+pub fn rasterize_skeleton_wireframe(skeleton: &Skeleton, scale: usize) -> (Sprite, Vec<u8>) {
+    let scale_f = scale as f32;
+    let w = BASE_W * scale;
+    let h = BASE_H * scale;
+    let mut cells = vec![CellKind::Empty; w * h];
+    let mut comp = vec![0u8; w * h];
+
+    let scaled_points: Vec<(Vec2, f32)> = skeleton.points.iter()
+        .map(|pt| (pt.pos * scale_f, pt.width * scale_f))
+        .collect();
+
+    // Draw spine chain as lines between consecutive constrained points
+    for (ci, c) in skeleton.constraints.iter().enumerate() {
+        let id = 2 + ci as u8;
+        draw_line_tagged(scaled_points[c.a].0, scaled_points[c.b].0, &mut cells, &mut comp, id, w, h);
+    }
+
+    // Draw limbs via IK
+    for (li, limb) in skeleton.limbs.iter().enumerate() {
+        let anchor = skeleton.points[limb.anchor].pos * scale_f;
+        let target = limb.end_effector * scale_f;
+        let ik = solve_two_bone_ik(anchor, target, limb.upper_len * scale_f, limb.lower_len * scale_f);
+        let id = 100 + li as u8;
+        draw_line_tagged(anchor, ik.mid, &mut cells, &mut comp, id, w, h);
+        draw_line_tagged(ik.mid, ik.end, &mut cells, &mut comp, id, w, h);
+    }
+
+    // Draw joint dots at each chain point
+    for (i, (pos, _)) in scaled_points.iter().enumerate() {
+        let id = if i == 0 { 1 } else { 2 + i as u8 };
+        let r = if i == 0 { 2.0 * scale_f / 2.0 } else { 1.0 };
+        draw_filled_circle_tagged(*pos, r.max(1.0), &mut cells, &mut comp, id, w, h);
+    }
+
+    // Draw end-effector dots for limbs
+    for (li, limb) in skeleton.limbs.iter().enumerate() {
+        let target = limb.end_effector * scale_f;
+        let id = 100 + li as u8;
+        draw_filled_circle_tagged(target, 1.0, &mut cells, &mut comp, id, w, h);
+    }
+
+    (Sprite { width: w, height: h, cells }, comp)
+}
+
 fn draw_body_outline(
     skeleton: &Skeleton,
     scaled_points: &[(Vec2, f32)],
