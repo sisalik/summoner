@@ -189,7 +189,10 @@ pub fn read_hook_state(summoner_dir: &Path, shell_pid: u32) -> (Option<SessionSt
     let state = match event {
         "UserPromptSubmit" => Some(SessionState::Working),
         "Stop" | "SessionStart" => Some(SessionState::Idle),
-        "Notification" => Some(SessionState::Waiting),
+        // Notification fires for idle_prompt, permission_prompt, etc.
+        // We can't distinguish types in the hook script, and idle_prompt
+        // shouldn't change state. Ignore Notification to avoid spurious Waiting.
+        "Notification" => None,
         "PreToolUse" => Some(SessionState::Working),
         "PostToolUse" => Some(SessionState::Working),
         "SessionEnd" => {

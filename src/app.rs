@@ -45,6 +45,7 @@ struct App {
     confirm_selection: bool,
     last_session: Option<usize>,
     last_save: Instant,
+    last_term_width: u16,
     session_stats: Vec<SessionStats>,
     global_stats: GlobalStats,
     git_cache: GitDiffCache,
@@ -147,6 +148,7 @@ impl App {
             confirm_selection: false,
             last_session: None,
             last_save: Instant::now(),
+            last_term_width: 80, // default, updated on first render/resize
             session_stats,
             global_stats: GlobalStats::new(),
             git_cache: GitDiffCache::new(30),
@@ -157,7 +159,14 @@ impl App {
     fn refresh_nav_layout(&mut self) {
         let groups = crate::session::group_by_project(&self.sessions);
         let group_sizes: Vec<usize> = groups.iter().map(|g| g.sessions.len()).collect();
-        self.nav.update_layout(&group_sizes);
+        let max_creatures = group_sizes.iter().copied().max().unwrap_or(1);
+        // Use grid_layout to get the actual column count (same logic as dashboard render)
+        let (actual_cols, _) = crate::ui::dashboard::grid_layout(
+            groups.len(),
+            self.last_term_width,
+            max_creatures,
+        );
+        self.nav.update_layout_with_cols(&group_sizes, actual_cols);
     }
 
     fn spawn_session(&mut self, directory: String, rows: u16, cols: u16) -> Result<()> {
@@ -354,6 +363,7 @@ impl App {
     fn render(&mut self, terminal: &mut DefaultTerminal) -> Result<()> {
         terminal.draw(|frame| {
             let area = frame.area();
+            self.last_term_width = area.width;
 
             let layout = Layout::vertical([
                 Constraint::Min(1),
@@ -933,6 +943,8 @@ pub fn run(terminal: &mut DefaultTerminal) -> Result<()> {
                 }
                 Event::Resize(cols, rows) => {
                     let session_rows = rows.saturating_sub(1);
+                    app.last_term_width = cols;
+                    app.refresh_nav_layout();
                     // Resize all active PTY sessions
                     for pty in app.pty_sessions.iter().flatten() {
                         let _ = pty.resize(session_rows, cols);

@@ -224,74 +224,81 @@ impl<'a> Dashboard<'a> {
                     render_sprite_to_buffer(&icon, &palette, centered_area, buf);
                 }
 
-                // Draw RPG stats line below creature: "⚡ Editing  Lv.3  ✦12.4k"
+                // Draw stats below creature — RPG stats for active Claude sessions,
+                // plain state label for Disconnected/ShellOnly
                 let stats_y = inner.y + creature_render_h;
+                let is_active_claude = session.claude_conversation_id.is_some()
+                    || session.state == SessionState::Working
+                    || session.state == SessionState::Waiting
+                    || session.state == SessionState::Idle;
+
                 if stats_y < card_area.y + card_area.height.saturating_sub(2) {
-                    let default_stats = SessionStats::new();
-                    let stat = self.session_stats.get(sess_idx).unwrap_or(&default_stats);
-
-                    let activity = if let Some(ref tool) = stat.active_tool {
-                        stats::tool_display(tool)
-                    } else {
-                        format!("{} {}", session.state.icon(), session.state.label())
-                    };
-
-                    let level = stats::level_from_tokens(stat.total_tokens);
-                    let xp = stats::format_xp(stat.total_tokens);
-                    let stats_text = format!("{}  Lv.{}  {}", activity, level, xp);
-                    let stats_len = stats_text.chars().count() as u16;
-                    let stats_x = cx + cw.saturating_sub(stats_len) / 2;
-                    let stats_style = Style::default().fg(session.state.color());
-                    draw_text(stats_x, stats_y, &stats_text, stats_style, creature_col, buf);
-                }
-
-                // Draw health bar: 💚▓▓▓▓░░░░ 42%
-                let bar_y = stats_y + 1;
-                if bar_y < card_area.y + card_area.height.saturating_sub(1) {
-                    let is_claude = session.claude_conversation_id.is_some()
-                        || session.state == SessionState::Working
-                        || session.state == SessionState::Waiting
-                        || session.state == SessionState::Idle;
-
-                    if is_claude {
+                    if is_active_claude {
+                        // RPG stats line: "⚡ Editing  Lv.3  ✦12.4k" — left-aligned
                         let default_stats = SessionStats::new();
                         let stat = self.session_stats.get(sess_idx).unwrap_or(&default_stats);
-                        let pct = stat.context_pct.unwrap_or(0);
 
-                        let (heart, bar_color) = match pct {
-                            0..=50 => ("\u{1f49a}", Color::Rgb(129, 199, 132)),   // 💚
-                            51..=75 => ("\u{1f49b}", Color::Rgb(255, 213, 79)),    // 💛
-                            76..=90 => ("\u{1f9e1}", Color::Rgb(255, 183, 77)),    // 🧡
-                            _ => ("\u{2764}\u{fe0f}", Color::Rgb(229, 115, 115)),  // ❤️
-                        };
-
-                        // Bar width: creature width minus heart(2) + pct display(~5)
-                        let bar_total = cw.saturating_sub(8) as usize;
-                        let filled = (bar_total as u64 * pct as u64 / 100).min(bar_total as u64) as usize;
-                        let empty = bar_total.saturating_sub(filled);
-
-                        let pct_str = if stat.context_pct.is_some() {
-                            format!(" {}%", pct)
+                        let activity = if let Some(ref tool) = stat.active_tool {
+                            stats::tool_display(tool)
                         } else {
-                            " ---%".to_string()
+                            format!("{} {}", session.state.icon(), session.state.label())
                         };
 
-                        // Position bar centered under creature
-                        let bar_content_len = 2 + bar_total + pct_str.len(); // heart(2) + bars + pct
-                        let bar_x = cx + cw.saturating_sub(bar_content_len as u16) / 2;
-
-                        // Draw heart
-                        draw_text(bar_x, bar_y, heart, Style::default().fg(bar_color), creature_col, buf);
-                        // Draw filled
-                        let filled_str: String = "\u{2593}".repeat(filled);
-                        draw_text(bar_x + 2, bar_y, &filled_str, Style::default().fg(bar_color), creature_col, buf);
-                        // Draw empty
-                        let empty_str: String = "\u{2591}".repeat(empty);
-                        draw_text(bar_x + 2 + filled as u16, bar_y, &empty_str, Style::default().fg(Color::Rgb(85, 85, 85)), creature_col, buf);
-                        // Draw percentage
-                        let pct_color = if pct >= 90 { Color::Rgb(229, 115, 115) } else { Color::Rgb(136, 136, 136) };
-                        draw_text(bar_x + 2 + bar_total as u16, bar_y, &pct_str, Style::default().fg(pct_color), creature_col, buf);
+                        let level = stats::level_from_tokens(stat.total_tokens);
+                        let xp = stats::format_xp(stat.total_tokens);
+                        let stats_text = format!("{}  Lv.{}  {}", activity, level, xp);
+                        let stats_style = Style::default().fg(session.state.color());
+                        draw_text(cx, stats_y, &stats_text, stats_style, creature_col, buf);
+                    } else {
+                        // Plain state label for Disconnected/ShellOnly — left-aligned
+                        let label = format!("{} {}", session.state.icon(), session.state.label());
+                        let label_style = Style::default().fg(session.state.color());
+                        draw_text(cx, stats_y, &label, label_style, creature_col, buf);
                     }
+                }
+
+                // Draw health bar only for active Claude sessions
+                let bar_y = stats_y + 1;
+                if is_active_claude && bar_y < card_area.y + card_area.height.saturating_sub(1) {
+                    let default_stats = SessionStats::new();
+                    let stat = self.session_stats.get(sess_idx).unwrap_or(&default_stats);
+                    let pct = stat.context_pct.unwrap_or(0);
+
+                    let (heart, bar_color) = match pct {
+                        0..=50 => ("\u{1f49a}", Color::Rgb(129, 199, 132)),   // 💚
+                        51..=75 => ("\u{1f49b}", Color::Rgb(255, 213, 79)),    // 💛
+                        76..=90 => ("\u{1f9e1}", Color::Rgb(255, 183, 77)),    // 🧡
+                        _ => ("\u{2764}\u{fe0f}", Color::Rgb(229, 115, 115)),  // ❤️
+                    };
+
+                    // Bar width: use full creature column width minus heart(2) + pct(~5), expand 1 each side
+                    let bar_x = cx.saturating_sub(1);
+                    let bar_right = (cx + cw + 1).min(inner.x + inner.width);
+                    let bar_avail = bar_right.saturating_sub(bar_x) as usize;
+                    let pct_str = if stat.context_pct.is_some() {
+                        format!(" {}%", pct)
+                    } else {
+                        " ---%".to_string()
+                    };
+                    let bar_total = bar_avail.saturating_sub(2 + pct_str.len()); // heart(2) + pct
+                    let filled = (bar_total as u64 * pct as u64 / 100).min(bar_total as u64) as usize;
+                    let empty = bar_total.saturating_sub(filled);
+
+                    // Widen creature_col for the bar row to include the extra cols
+                    let bar_clip = Rect {
+                        x: bar_x,
+                        y: card_area.y,
+                        width: bar_right.saturating_sub(bar_x),
+                        height: card_area.height,
+                    };
+
+                    draw_text(bar_x, bar_y, heart, Style::default().fg(bar_color), bar_clip, buf);
+                    let filled_str: String = "\u{2593}".repeat(filled);
+                    draw_text(bar_x + 2, bar_y, &filled_str, Style::default().fg(bar_color), bar_clip, buf);
+                    let empty_str: String = "\u{2591}".repeat(empty);
+                    draw_text(bar_x + 2 + filled as u16, bar_y, &empty_str, Style::default().fg(Color::Rgb(85, 85, 85)), bar_clip, buf);
+                    let pct_color = if pct >= 90 { Color::Rgb(229, 115, 115) } else { Color::Rgb(136, 136, 136) };
+                    draw_text(bar_x + 2 + bar_total as u16, bar_y, &pct_str, Style::default().fg(pct_color), bar_clip, buf);
                 }
 
                 // Draw selection box around the selected creature (by flat position)
@@ -323,7 +330,7 @@ impl<'a> Dashboard<'a> {
 
 /// Compute grid layout: (cols, rows) based on group count and available width.
 /// `max_creatures_per_group` is the largest number of sessions in any single group.
-fn grid_layout(count: usize, available_width: u16, max_creatures_per_group: usize) -> (usize, usize) {
+pub fn grid_layout(count: usize, available_width: u16, max_creatures_per_group: usize) -> (usize, usize) {
     // Minimum card width: enough to fit the widest group's creatures side by side
     // Each creature needs CREATURE_WIDTH + 2 gap, plus card border(2) + padding(2)
     let creatures_w = max_creatures_per_group.max(1) as u16 * (CREATURE_WIDTH + 2);

@@ -34,7 +34,12 @@ impl DashboardNav {
     }
 
     pub fn update_layout(&mut self, group_sizes: &[usize]) {
-        self.grid_cols = grid_cols_for_count(group_sizes.len());
+        self.update_layout_with_cols(group_sizes, grid_cols_for_count(group_sizes.len()));
+    }
+
+    /// Update layout with an explicit column count (from the actual rendered grid).
+    pub fn update_layout_with_cols(&mut self, group_sizes: &[usize], cols: usize) {
+        self.grid_cols = cols;
         self.total = group_sizes.iter().sum();
         let mut start = 0;
         self.group_ranges = group_sizes

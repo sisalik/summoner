@@ -1,7 +1,7 @@
 use std::fs;
 use std::path::Path;
 
-const WRAPPER_SCRIPT: &str = r#"#!/bin/bash
+const WRAPPER_SCRIPT_HEAD: &str = r#"#!/bin/bash
 # Summoner statusLine wrapper — tees JSON to state file, pipes to downstream
 input=$(cat)
 
@@ -14,15 +14,24 @@ if [ -n "$session_id" ]; then
     mkdir -p "$dir" 2>/dev/null
     printf '%s' "$input" > "$dir/$session_id.json"
 fi
-
-# Pipe to downstream command (original statusLine)
-PASSTHROUGH_CMD="__PASSTHROUGH__"
-if [ -n "$PASSTHROUGH_CMD" ] && [ "$PASSTHROUGH_CMD" != "__PASSTHROUGH__" ]; then
-    printf '%s' "$input" | eval "$PASSTHROUGH_CMD"
-fi
 "#;
 
 const WRAPPER_COMMAND: &str = "bash ~/.summoner/hooks/statusline-wrapper.sh";
+
+/// Extract the passthrough command from an existing wrapper script, if any.
+fn extract_passthrough_from_script(path: &Path) -> Option<String> {
+    let content = fs::read_to_string(path).ok()?;
+    // Look for: printf '%s' "$input" | <command>
+    for line in content.lines() {
+        let trimmed = line.trim();
+        if let Some(rest) = trimmed.strip_prefix("printf '%s' \"$input\" | ") {
+            if !rest.is_empty() {
+                return Some(rest.to_string());
+            }
+        }
+    }
+    None
+}
 
 /// Install the statusLine wrapper script and update ~/.claude/settings.json.
 pub fn install_wrapper(summoner_dir: &Path) {
@@ -50,17 +59,25 @@ fn install_wrapper_inner(summoner_dir: &Path) -> std::io::Result<()> {
         .and_then(|c| c.as_str())
         .unwrap_or("");
 
-    if current_cmd == WRAPPER_COMMAND {
-        return Ok(());
-    }
-
+    // If wrapper is already set as the command, the passthrough was captured on
+    // first install. Read it from the existing script to preserve it.
+    // If a different command is set, that's our passthrough target.
     let passthrough = if current_cmd.is_empty() || current_cmd == WRAPPER_COMMAND {
-        String::new()
+        // Try to extract passthrough from existing script
+        let script_path = hooks_dir.join("statusline-wrapper.sh");
+        extract_passthrough_from_script(&script_path).unwrap_or_default()
     } else {
         current_cmd.to_string()
     };
 
-    let script = WRAPPER_SCRIPT.replace("__PASSTHROUGH__", &passthrough);
+    // Build script: always write state file, conditionally pipe to downstream
+    let mut script = WRAPPER_SCRIPT_HEAD.to_string();
+    if !passthrough.is_empty() {
+        script.push_str(&format!(
+            "\n# Pipe to downstream command (original statusLine)\nprintf '%s' \"$input\" | {}\n",
+            passthrough
+        ));
+    }
     let script_path = hooks_dir.join("statusline-wrapper.sh");
     fs::write(&script_path, &script)?;
     #[cfg(unix)]
