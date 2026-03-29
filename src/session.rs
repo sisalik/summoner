@@ -101,6 +101,63 @@ pub fn group_by_project(sessions: &[Session]) -> Vec<ProjectGroup> {
     groups
 }
 
+/// RPG stats for a session, updated from JSONL and hooks.
+pub struct SessionStats {
+    pub total_tokens: u64,
+    pub message_count: u32,
+    pub active_tool: Option<String>,
+    pub context_pct: Option<u8>,
+    pub jsonl_offset: u64,
+    pub jsonl_path: Option<std::path::PathBuf>,
+}
+
+impl SessionStats {
+    pub fn new() -> Self {
+        Self {
+            total_tokens: 0,
+            message_count: 0,
+            active_tool: None,
+            context_pct: None,
+            jsonl_offset: 0,
+            jsonl_path: None,
+        }
+    }
+}
+
+/// Global usage stats shown in the dashboard status bar.
+pub struct GlobalStats {
+    pub daily_messages: u32,
+    pub daily_tokens: u64,
+    pub five_hour_pct: Option<u8>,
+    pub five_hour_resets_at: Option<i64>,
+    pub seven_day_pct: Option<u8>,
+    pub seven_day_resets_at: Option<i64>,
+    pub last_daily_reset: chrono::NaiveDate,
+}
+
+impl GlobalStats {
+    pub fn new() -> Self {
+        Self {
+            daily_messages: 0,
+            daily_tokens: 0,
+            five_hour_pct: None,
+            five_hour_resets_at: None,
+            seven_day_pct: None,
+            seven_day_resets_at: None,
+            last_daily_reset: chrono::Local::now().date_naive(),
+        }
+    }
+
+    pub fn check_daily_reset(&mut self) {
+        let today = chrono::Local::now().date_naive();
+        if today != self.last_daily_reset {
+            self.daily_messages = 0;
+            self.daily_tokens = 0;
+            self.last_daily_reset = today;
+        }
+    }
+}
+
 /// Returns flat-position → session-index mapping in appearance order (grouped by project).
 /// Position 0 is F1, position 1 is F2, etc.
 pub fn session_order(sessions: &[Session]) -> Vec<usize> {

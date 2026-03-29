@@ -12,7 +12,8 @@ use crate::config::{AppConfig, RecentDirs, SessionStore, SessionEntry};
 use crate::creature::locomotion::LocomotionState;
 use crate::creature::outline::{rasterize_skeleton, RasterResult};
 use crate::creature::skeleton::{Skeleton, ARCHETYPE_COUNT, archetype_index, archetype_name};
-use crate::session::{Session, SessionState, session_order};
+use crate::session::{Session, SessionState, SessionStats, GlobalStats, session_order};
+use crate::git::GitDiffCache;
 use crate::terminal::PtySession;
 use crate::ui::dashboard::Dashboard;
 use crate::ui::dashboard_nav::DashboardNav;
@@ -44,6 +45,10 @@ struct App {
     confirm_selection: bool,
     last_session: Option<usize>,
     last_save: Instant,
+    session_stats: Vec<SessionStats>,
+    global_stats: GlobalStats,
+    git_cache: GitDiffCache,
+    last_stats_update: Instant,
 }
 
 pub fn display_path(path: &str) -> String {
@@ -78,6 +83,7 @@ impl App {
         let mut vt_parsers = Vec::new();
         let mut locomotions = Vec::new();
         let mut sprites = Vec::new();
+        let mut session_stats = Vec::new();
 
         // Restore disconnected sessions from store
         for entry in &store.sessions {
@@ -99,6 +105,7 @@ impl App {
             vt_parsers.push(vt100::Parser::new(24, 80, 0));
             locomotions.push(LocomotionState::new(skeleton, SessionState::Disconnected));
             sprites.push(raster);
+            session_stats.push(SessionStats::new());
         }
 
         let mut nav = DashboardNav::new();
@@ -140,6 +147,10 @@ impl App {
             confirm_selection: false,
             last_session: None,
             last_save: Instant::now(),
+            session_stats,
+            global_stats: GlobalStats::new(),
+            git_cache: GitDiffCache::new(30),
+            last_stats_update: Instant::now(),
         })
     }
 
@@ -171,6 +182,7 @@ impl App {
         self.vt_parsers.push(vt100::Parser::new(rows, cols, 0));
         self.locomotions.push(LocomotionState::new(skeleton, SessionState::ShellOnly));
         self.sprites.push(raster);
+        self.session_stats.push(SessionStats::new());
 
         // Update recent dirs
         let max = self.config.new_session.recent_dirs_count;
@@ -199,6 +211,7 @@ impl App {
         self.vt_parsers.remove(idx);
         self.locomotions.remove(idx);
         self.sprites.remove(idx);
+        self.session_stats.remove(idx);
 
         self.refresh_nav_layout();
 
