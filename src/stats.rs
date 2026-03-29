@@ -101,3 +101,17 @@ pub fn find_jsonl_path(claude_dir: &Path, project_directory: &str, session_id: &
     }
     None
 }
+
+pub fn tool_display(tool_name: &str) -> String {
+    match tool_name {
+        "Edit" => "✏️ Editing".into(),
+        "Write" => "📝 Writing".into(),
+        "Read" => "📖 Reading".into(),
+        "Bash" => "⚙️ Running".into(),
+        "Glob" | "Grep" => "🔍 Searching".into(),
+        "Agent" => "🤖 Delegating".into(),
+        "WebSearch" => "🌐 Browsing".into(),
+        "WebFetch" => "🌐 Fetching".into(),
+        other => format!("🔧 {}", other),
+    }
+}

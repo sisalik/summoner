@@ -1,4 +1,4 @@
-use summoner::stats::{format_xp, level_from_tokens, parse_jsonl_stats, find_jsonl_path};
+use summoner::stats::{format_xp, level_from_tokens, parse_jsonl_stats, find_jsonl_path, tool_display};
 use std::io::Write;
 
 #[test]
@@ -111,4 +111,22 @@ fn find_jsonl_path_returns_none_when_missing() {
     let dir = tempfile::tempdir().unwrap();
     let result = find_jsonl_path(dir.path(), "/home/test/myproject", "no-such-id");
     assert!(result.is_none());
+}
+
+#[test]
+fn tool_display_known_tools() {
+    assert_eq!(tool_display("Edit"), "✏️ Editing");
+    assert_eq!(tool_display("Write"), "📝 Writing");
+    assert_eq!(tool_display("Read"), "📖 Reading");
+    assert_eq!(tool_display("Bash"), "⚙️ Running");
+    assert_eq!(tool_display("Glob"), "🔍 Searching");
+    assert_eq!(tool_display("Grep"), "🔍 Searching");
+    assert_eq!(tool_display("Agent"), "🤖 Delegating");
+    assert_eq!(tool_display("WebSearch"), "🌐 Browsing");
+    assert_eq!(tool_display("WebFetch"), "🌐 Fetching");
+}
+
+#[test]
+fn tool_display_unknown_tool() {
+    assert_eq!(tool_display("CustomTool"), "🔧 CustomTool");
 }
