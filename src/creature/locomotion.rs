@@ -4,60 +4,14 @@ use crate::session::SessionState;
 use super::physics::{apply_constraints, snap_to_grid, verlet_integrate};
 use super::skeleton::{Skeleton, Vec2};
 
-fn sigmoid(t: f32) -> f32 {
-    1.0 / (1.0 + (-10.0 * (t - 0.5)).exp())
-}
-
-#[derive(Clone)]
-struct FootStep {
-    start_x: f32,
-    target_x: f32,
-    start_y: f32,
-    arc_height: f32,
-    progress: f32,
-    stepping: bool,
-}
-
-impl FootStep {
-    fn new() -> Self {
-        Self { start_x: 0.0, target_x: 0.0, start_y: 0.0, arc_height: 1.5, progress: 0.0, stepping: false }
-    }
-
-    fn begin(&mut self, from_x: f32, to_x: f32, ground_y: f32) {
-        self.start_x = from_x;
-        self.target_x = to_x;
-        self.start_y = ground_y;
-        self.arc_height = 1.5;
-        self.progress = 0.0;
-        self.stepping = true;
-    }
-
-    fn advance(&mut self, dt: f32, speed: f32) -> (f32, f32) {
-        if !self.stepping {
-            return (self.target_x, self.start_y);
-        }
-        self.progress += dt * speed;
-        if self.progress >= 1.0 {
-            self.progress = 1.0;
-            self.stepping = false;
-        }
-        let t = sigmoid(self.progress);
-        let x = self.start_x + (self.target_x - self.start_x) * t;
-        let arc = self.arc_height * 4.0 * t * (1.0 - t);
-        let y = self.start_y - arc;
-        (x, y)
-    }
-}
-
 pub struct LocomotionState {
     skeleton: Skeleton,
     base_widths: Vec<f32>,
-    rest_positions: Vec<Vec2>,  // initial positions for all chain points
-    rest_effectors: Vec<Vec2>,  // initial end effector positions for all limbs
+    rest_positions: Vec<Vec2>,
+    rest_effectors: Vec<Vec2>,
     state: SessionState,
     elapsed: f32,
     archetype: usize,
-    foot_steps: Vec<FootStep>,
     settled: bool,
 }
 
@@ -67,10 +21,9 @@ impl LocomotionState {
         let rest_positions: Vec<Vec2> = skeleton.points.iter().map(|p| p.pos).collect();
         let rest_effectors: Vec<Vec2> = skeleton.limbs.iter().map(|l| l.end_effector).collect();
         let archetype = detect_archetype(&skeleton);
-        let foot_steps = skeleton.limbs.iter().map(|_| FootStep::new()).collect();
         let mut ls = Self {
             skeleton, base_widths, rest_positions, rest_effectors,
-            state, elapsed: 0.0, archetype, foot_steps, settled: false,
+            state, elapsed: 0.0, archetype, settled: false,
         };
         if state == SessionState::Disconnected {
             ls.settle_disconnected();
@@ -467,83 +420,6 @@ impl LocomotionState {
         self.settled = true;
     }
 
-    // --- Foot stepping: only for leg limbs, with fixed ground ---
-
-    fn update_leg_stepping(&mut self, dt: f32, step_speed: f32, ground_y: f32) {
-        if self.skeleton.limbs.is_empty() { return; }
-
-        let com_x: f32 = self.skeleton.points.iter()
-            .map(|p| p.pos.x).sum::<f32>() / self.skeleton.points.len() as f32;
-
-        // For bipedal: limbs 0,1 are arms, 2,3 are legs
-        // For winged: limbs 0,1 are legs (only 2 limbs)
-        // We step all limbs that are legs (anchored to lower body / hips)
-        for (i, limb) in self.skeleton.limbs.iter_mut().enumerate() {
-            if i >= self.foot_steps.len() { continue; }
-
-            // Skip arms (bipedal limbs 0,1 anchored to upper_body idx 2)
-            // Legs are anchored to hip points (idx 4,5) or lower body
-            if self.archetype == 0 && i < 2 { continue; }
-
-            let step = &mut self.foot_steps[i];
-            if !step.stepping {
-                let drift = (com_x - limb.end_effector.x).abs();
-                if drift > 2.0 {
-                    let target_x = com_x + (com_x - limb.end_effector.x).signum() * 1.0;
-                    step.begin(limb.end_effector.x, target_x, ground_y);
-                }
-            }
-
-            if step.stepping {
-                let (fx, fy) = step.advance(dt, step_speed);
-                limb.end_effector.x = fx;
-                limb.end_effector.y = fy;
-            } else {
-                limb.end_effector.y = ground_y;
-            }
-        }
-    }
-
-    /// Quadruped diagonal gait with fixed ground level.
-    fn update_diagonal_gait(&mut self, dt: f32, ground_y: f32) {
-        if self.skeleton.limbs.len() < 4 { return; }
-
-        let com_x: f32 = self.skeleton.points.iter()
-            .map(|p| p.pos.x).sum::<f32>() / self.skeleton.points.len() as f32;
-
-        for li in 0..self.skeleton.limbs.len() {
-            if li >= self.foot_steps.len() { continue; }
-
-            let drift = (com_x - self.skeleton.limbs[li].end_effector.x).abs();
-            if !self.foot_steps[li].stepping && drift > 1.5 {
-                let target_x = com_x + (com_x - self.skeleton.limbs[li].end_effector.x).signum() * 0.8;
-                self.foot_steps[li].begin(self.skeleton.limbs[li].end_effector.x, target_x, ground_y);
-            }
-
-            let step = &mut self.foot_steps[li];
-            if step.stepping {
-                let (fx, fy) = step.advance(dt, 3.0);
-                self.skeleton.limbs[li].end_effector.x = fx;
-                self.skeleton.limbs[li].end_effector.y = fy;
-            } else {
-                self.skeleton.limbs[li].end_effector.y = ground_y;
-            }
-        }
-    }
-
-    /// Smooth sine-based arm swing for bipedal (limbs 0,1 = arms).
-    fn update_arm_swing_smooth(&mut self) {
-        if self.skeleton.limbs.len() < 4 || self.archetype != 0 { return; }
-
-        let swing = (self.elapsed * 0.8 * std::f32::consts::TAU).sin() * 1.0;
-
-        for i in 0..2 {
-            let rest = self.rest_effectors[i];
-            let sign = if i == 0 { 1.0 } else { -1.0 };
-            self.skeleton.limbs[i].end_effector.x = rest.x + swing * sign;
-            self.skeleton.limbs[i].end_effector.y = rest.y;
-        }
-    }
 
     /// Anchor the skeleton vertically to rest position.
     fn restore_vertical_center(&mut self) {
