@@ -262,9 +262,13 @@ impl App {
             // Primary: use Claude Code hooks for state detection
             // Detect Claude state via hooks (primary) or process check (fallback)
             let shell_pid = pty.pid();
-            let (hook_state, hook_session_id, _hook_tool) = shell_pid
+            let (hook_state, hook_session_id, hook_tool) = shell_pid
                 .map(|pid| hooks::read_hook_state(&self.config_dir, pid))
                 .unwrap_or((None, None, None));
+
+            if i < self.session_stats.len() {
+                self.session_stats[i].active_tool = hook_tool;
+            }
 
             // Pick up conversation ID from hooks or fallback
             if self.sessions[i].claude_conversation_id.is_none() {
@@ -667,6 +671,60 @@ impl App {
             self.sprites[i] = rasterize_skeleton(loco.skeleton());
         }
     }
+
+    fn update_stats(&mut self) {
+        let now = Instant::now();
+        if now.duration_since(self.last_stats_update).as_secs() < 60 {
+            return;
+        }
+        self.last_stats_update = now;
+
+        self.global_stats.check_daily_reset();
+
+        let claude_dir = dirs::home_dir()
+            .unwrap_or_else(|| PathBuf::from("."))
+            .join(".claude");
+
+        // Update per-session stats from JSONL
+        for i in 0..self.sessions.len() {
+            let session = &self.sessions[i];
+            let stats = &mut self.session_stats[i];
+
+            if stats.jsonl_path.is_none() {
+                if let Some(ref conv_id) = session.claude_conversation_id {
+                    stats.jsonl_path = crate::stats::find_jsonl_path(&claude_dir, &session.directory, conv_id);
+                }
+            }
+
+            if let Some(ref path) = stats.jsonl_path.clone() {
+                let (new_tokens, new_messages, new_offset) =
+                    crate::stats::parse_jsonl_stats(path, stats.jsonl_offset);
+                stats.total_tokens += new_tokens;
+                stats.message_count += new_messages;
+                stats.jsonl_offset = new_offset;
+                self.global_stats.daily_tokens += new_tokens;
+                self.global_stats.daily_messages += new_messages;
+            }
+        }
+
+        // Update statusLine data
+        let sl_data = crate::statusline::StatusLineData::read_all(&self.config_dir);
+        for sl in &sl_data {
+            for i in 0..self.sessions.len() {
+                if self.sessions[i].claude_conversation_id.as_deref() == Some(&sl.session_id) {
+                    self.session_stats[i].context_pct = sl.context_pct;
+                }
+            }
+            if sl.five_hour_pct.is_some() {
+                self.global_stats.five_hour_pct = sl.five_hour_pct;
+                self.global_stats.five_hour_resets_at = sl.five_hour_resets_at;
+            }
+            if sl.seven_day_pct.is_some() {
+                self.global_stats.seven_day_pct = sl.seven_day_pct;
+                self.global_stats.seven_day_resets_at = sl.seven_day_resets_at;
+            }
+        }
+    }
 }
 
 fn centered_rect(percent_x: u16, percent_y: u16, area: Rect) -> Rect {
@@ -896,6 +954,7 @@ pub fn run(terminal: &mut DefaultTerminal) -> Result<()> {
 
         // Process PTY output
         app.process_pty_output();
+        app.update_stats();
 
         // Periodic state save (every 10 seconds)
         let now = Instant::now();
