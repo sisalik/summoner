@@ -9,9 +9,10 @@ use ratatui::DefaultTerminal;
 use crate::claude::{find_claude_child, find_conversation_id};
 use crate::hooks;
 use crate::config::{AppConfig, RecentDirs, SessionStore, SessionEntry};
-use crate::creature::animate::AnimationState;
-use crate::creature::generate::{generate_sprite, Sprite};
-use crate::creature::templates::{get_template, template_index, template_name, TEMPLATE_COUNT};
+use crate::creature::generate::Sprite;
+use crate::creature::locomotion::LocomotionState;
+use crate::creature::outline::rasterize_skeleton;
+use crate::creature::skeleton::{Skeleton, ARCHETYPE_COUNT, archetype_index, archetype_name};
 use crate::session::{Session, SessionState, session_order};
 use crate::terminal::PtySession;
 use crate::ui::dashboard::Dashboard;
@@ -32,7 +33,7 @@ struct App {
     sessions: Vec<Session>,
     pty_sessions: Vec<Option<PtySession>>,
     vt_parsers: Vec<vt100::Parser>,
-    animations: Vec<AnimationState>,
+    locomotions: Vec<LocomotionState>,
     sprites: Vec<Sprite>,
     nav: DashboardNav,
     dir_picker: Option<DirPicker>,
@@ -76,14 +77,14 @@ impl App {
         let mut sessions = Vec::new();
         let mut pty_sessions = Vec::new();
         let mut vt_parsers = Vec::new();
-        let mut animations = Vec::new();
+        let mut locomotions = Vec::new();
         let mut sprites = Vec::new();
 
         // Restore disconnected sessions from store
         for entry in &store.sessions {
-            let template_idx = template_index(&entry.creature_template);
-            let mask = get_template(template_idx);
-            let sprite = generate_sprite(&mask, entry.creature_seed);
+            let archetype_idx = archetype_index(&entry.creature_template);
+            let skeleton = Skeleton::instantiate(archetype_idx, entry.creature_seed);
+            let sprite = rasterize_skeleton(&skeleton);
 
             let mut session = Session::new(
                 entry.directory.clone(),
@@ -97,7 +98,7 @@ impl App {
             sessions.push(session);
             pty_sessions.push(None);
             vt_parsers.push(vt100::Parser::new(24, 80, 0));
-            animations.push(AnimationState::new(SessionState::Disconnected));
+            locomotions.push(LocomotionState::new(skeleton, SessionState::Disconnected));
             sprites.push(sprite);
         }
 
@@ -128,7 +129,7 @@ impl App {
             sessions,
             pty_sessions,
             vt_parsers,
-            animations,
+            locomotions,
             sprites,
             nav,
             dir_picker,
@@ -151,10 +152,10 @@ impl App {
 
     fn spawn_session(&mut self, directory: String, rows: u16, cols: u16) -> Result<()> {
         let seed = rand_seed();
-        let template_idx = self.sessions.len() % TEMPLATE_COUNT;
-        let creature_template = template_name(template_idx).to_string();
-        let mask = get_template(template_idx);
-        let sprite = generate_sprite(&mask, seed);
+        let archetype_idx = self.sessions.len() % ARCHETYPE_COUNT;
+        let creature_template = archetype_name(archetype_idx).to_string();
+        let skeleton = Skeleton::instantiate(archetype_idx, seed);
+        let sprite = rasterize_skeleton(&skeleton);
 
         let session = Session::new(directory.clone(), seed, creature_template);
 
@@ -169,7 +170,7 @@ impl App {
         self.sessions.push(session);
         self.pty_sessions.push(Some(pty));
         self.vt_parsers.push(vt100::Parser::new(rows, cols, 0));
-        self.animations.push(AnimationState::new(SessionState::ShellOnly));
+        self.locomotions.push(LocomotionState::new(skeleton, SessionState::ShellOnly));
         self.sprites.push(sprite);
 
         // Update recent dirs
@@ -197,7 +198,7 @@ impl App {
         self.sessions.remove(idx);
         self.pty_sessions.remove(idx);
         self.vt_parsers.remove(idx);
-        self.animations.remove(idx);
+        self.locomotions.remove(idx);
         self.sprites.remove(idx);
 
         self.refresh_nav_layout();
@@ -281,7 +282,7 @@ impl App {
 
             if new_state != self.sessions[i].state {
                 self.sessions[i].state = new_state;
-                self.animations[i].set_state(new_state);
+                self.locomotions[i].set_state(new_state);
             }
 
             // Check for child exit
@@ -297,7 +298,7 @@ impl App {
                 } else {
                     // Background session died — mark disconnected
                     self.sessions[i].state = SessionState::Disconnected;
-                    self.animations[i].set_state(SessionState::Disconnected);
+                    self.locomotions[i].set_state(SessionState::Disconnected);
                     // Adjust mode index if needed
                     if let Mode::Session(idx) = self.mode {
                         if idx > i {
@@ -355,7 +356,6 @@ impl App {
                 Mode::Dashboard | Mode::DirPicker => {
                     let dashboard = Dashboard::new(
                         &self.sessions,
-                        &self.animations,
                         &self.sprites,
                         &self.nav,
                     );
@@ -643,15 +643,16 @@ impl App {
         // Reset vt100 parser to current terminal size
         self.vt_parsers[index] = vt100::Parser::new(session_rows, cols, 0);
         self.sessions[index].state = SessionState::ShellOnly;
-        self.animations[index].set_state(SessionState::ShellOnly);
+        self.locomotions[index].set_state(SessionState::ShellOnly);
         self.last_session = Some(index);
         self.mode = Mode::Session(index);
         Ok(())
     }
 
     fn tick_animations(&mut self, dt: Duration) {
-        for anim in &mut self.animations {
-            anim.tick(dt);
+        for (i, loco) in self.locomotions.iter_mut().enumerate() {
+            loco.tick(dt);
+            self.sprites[i] = rasterize_skeleton(loco.skeleton());
         }
     }
 }
