@@ -24,12 +24,12 @@ impl SessionState {
 
     pub fn label(&self) -> &'static str {
         match self {
-            Self::Working => "working",
-            Self::Waiting => "waiting",
-            Self::Idle => "idle",
-            Self::Sleeping => "sleeping",
-            Self::Disconnected => "disconnected",
-            Self::ShellOnly => "shell",
+            Self::Working => "Working",
+            Self::Waiting => "Waiting",
+            Self::Idle => "Idle",
+            Self::Sleeping => "Sleeping",
+            Self::Disconnected => "Disconnected",
+            Self::ShellOnly => "Shell",
         }
     }
 }
@@ -91,4 +91,15 @@ pub fn group_by_project(sessions: &[Session]) -> Vec<ProjectGroup> {
     }
 
     groups
+}
+
+/// Returns flat-position → session-index mapping in appearance order (grouped by project).
+/// Position 0 is F1, position 1 is F2, etc.
+pub fn session_order(sessions: &[Session]) -> Vec<usize> {
+    let groups = group_by_project(sessions);
+    let mut order = Vec::new();
+    for group in &groups {
+        order.extend(&group.sessions);
+    }
+    order
 }

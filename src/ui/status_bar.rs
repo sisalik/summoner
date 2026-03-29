@@ -59,7 +59,7 @@ impl<'a> Widget for StatusBar<'a> {
                 }
             }
 
-            let fkey = format!("F{}", sess_idx + 1);
+            let fkey = format!("F{}", pos + 1);
             let icon = session.state.icon();
             let tab_text = format!(" {} {} {} ", fkey, icon, session.name);
 

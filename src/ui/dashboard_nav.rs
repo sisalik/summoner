@@ -50,6 +50,11 @@ impl DashboardNav {
         self.selected
     }
 
+    /// Convert flat position to actual session index using the given order mapping.
+    pub fn selected_session(&self, session_order: &[usize]) -> Option<usize> {
+        session_order.get(self.selected).copied()
+    }
+
     pub fn grid_cols(&self) -> usize {
         self.grid_cols
     }

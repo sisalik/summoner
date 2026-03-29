@@ -155,6 +155,17 @@ impl<'a> Widget for Dashboard<'a> {
         let (cols, _rows) = grid_layout(groups.len());
         if cols == 0 { return; }
 
+        // Determine which group names need disambiguation (same basename, different path)
+        let basenames: Vec<&str> = groups.iter().map(|g| {
+            std::path::Path::new(&g.directory)
+                .file_name()
+                .and_then(|n| n.to_str())
+                .unwrap_or("unknown")
+        }).collect();
+        let needs_full_path: Vec<bool> = basenames.iter().enumerate().map(|(i, name)| {
+            basenames.iter().enumerate().any(|(j, other)| i != j && name == other)
+        }).collect();
+
         // Creature render height in terminal rows = CREATURE_HEIGHT / 2 (half-block)
         let creature_render_h = (CREATURE_HEIGHT + 1) / 2;
 
@@ -169,8 +180,9 @@ impl<'a> Widget for Dashboard<'a> {
 
         let selected = self.nav.selected();
 
-        // Build a mapping: for each group, which global session indices it contains
-        // and figure out which group contains the selected session
+        // Build flat position mapping: position 0, 1, 2... across all groups
+        let mut flat_pos = 0usize;
+
         for (group_idx, group) in groups.iter().enumerate() {
             let col = group_idx % cols;
             let row = group_idx / cols;
@@ -191,7 +203,11 @@ impl<'a> Widget for Dashboard<'a> {
 
             let border_color = Color::Rgb(60, 60, 80);
 
-            let display_name = crate::app::display_path(&group.directory);
+            let display_name = if needs_full_path[group_idx] {
+                crate::app::display_path(&group.directory)
+            } else {
+                basenames[group_idx].to_string()
+            };
             let title_str = format!(" {} ", display_name);
             let title_style = Style::default().fg(Color::Rgb(140, 140, 160));
 
@@ -240,7 +256,7 @@ impl<'a> Widget for Dashboard<'a> {
                     render_sprite_to_buffer(&icon, &palette, creature_area, buf);
                 }
 
-                // Draw state label below creature
+                // Draw state label below creature (centered under sprite)
                 let name_y = inner.y + creature_render_h;
                 if name_y < card_area.y + card_area.height.saturating_sub(1) {
                     let state_color = match session.state {
@@ -253,12 +269,13 @@ impl<'a> Widget for Dashboard<'a> {
                     };
                     let name_style = Style::default().fg(state_color);
                     let label = session.state.label().to_string();
-                    let truncated: String = label.chars().take(cw as usize).collect();
-                    draw_text(cx, name_y, &truncated, name_style, card_area, buf);
+                    let label_len = label.chars().count() as u16;
+                    let label_x = cx + cw.saturating_sub(label_len) / 2;
+                    draw_text(label_x, name_y, &label, name_style, card_area, buf);
                 }
 
-                // Issue B: Draw selection box around the selected creature
-                if sess_idx == selected {
+                // Draw selection box around the selected creature (by flat position)
+                if flat_pos == selected {
                     // Extend 1 cell in each direction if space allows
                     let box_x = cx.saturating_sub(1).max(card_area.x + 1);
                     let box_y = inner.y.saturating_sub(1).max(card_area.y + 1);
@@ -277,6 +294,8 @@ impl<'a> Widget for Dashboard<'a> {
                         draw_selection_box(box_area, buf, Color::Rgb(150, 150, 255));
                     }
                 }
+
+                flat_pos += 1;
             }
         }
     }

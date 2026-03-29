@@ -11,7 +11,7 @@ use crate::config::{AppConfig, RecentDirs, SessionStore, SessionEntry};
 use crate::creature::animate::AnimationState;
 use crate::creature::generate::{generate_sprite, Sprite};
 use crate::creature::templates::{get_template, template_index, template_name, TEMPLATE_COUNT};
-use crate::session::{Session, SessionState};
+use crate::session::{Session, SessionState, session_order};
 use crate::terminal::PtySession;
 use crate::ui::dashboard::Dashboard;
 use crate::ui::dashboard_nav::DashboardNav;
@@ -487,19 +487,20 @@ impl App {
             return Ok(false);
         }
 
-        // F1-F11 switch to session
+        // F1-F11 switch to session (by appearance order)
         if let KeyCode::F(n) = key.code {
             if n >= 1 && n <= 11 {
-                let idx = (n - 1) as usize;
-                if idx < self.sessions.len() {
+                let pos = (n - 1) as usize;
+                let order = session_order(&self.sessions);
+                if let Some(&sess_idx) = order.get(pos) {
                     // Resize PTY to match terminal
-                    if let Some(Some(pty)) = self.pty_sessions.get(idx) {
+                    if let Some(Some(pty)) = self.pty_sessions.get(sess_idx) {
                         // Status bar takes 1 row
                         let pty_rows = rows.saturating_sub(1);
                         let _ = pty.resize(pty_rows, cols);
                     }
-                    self.last_session = Some(idx);
-                    self.mode = Mode::Session(idx);
+                    self.last_session = Some(sess_idx);
+                    self.mode = Mode::Session(sess_idx);
                 }
                 return Ok(false);
             }
@@ -535,6 +536,9 @@ impl App {
     }
 
     fn handle_dashboard_input(&mut self, key: KeyEvent, rows: u16, cols: u16) -> Result<()> {
+        let order = session_order(&self.sessions);
+        let sel = self.nav.selected_session(&order);
+
         match key.code {
             KeyCode::Char('N') => {
                 // Open dir picker for new directory
@@ -546,9 +550,8 @@ impl App {
             }
             KeyCode::Char('n') => {
                 // New session in same directory as selected session
-                let sel = self.nav.selected();
-                if let Some(session) = self.sessions.get(sel) {
-                    let dir = session.directory.clone();
+                if let Some(sess_idx) = sel {
+                    let dir = self.sessions[sess_idx].directory.clone();
                     let pty_rows = rows.saturating_sub(1);
                     self.spawn_session(dir, pty_rows, cols)?;
                 } else {
@@ -562,16 +565,14 @@ impl App {
             }
             KeyCode::Char('x') => {
                 // Close selected session
-                let sel = self.nav.selected();
-                if sel < self.sessions.len() {
-                    self.close_session(sel);
+                if let Some(sess_idx) = sel {
+                    self.close_session(sess_idx);
                 }
             }
             KeyCode::Char('X') => {
                 // Close all sessions in selected project (with confirmation)
-                let sel = self.nav.selected();
-                if let Some(session) = self.sessions.get(sel) {
-                    self.confirm_close_project = Some(session.directory.clone());
+                if let Some(sess_idx) = sel {
+                    self.confirm_close_project = Some(self.sessions[sess_idx].directory.clone());
                     self.confirm_selection = false; // Default to No (safer)
                 }
             }
@@ -580,19 +581,18 @@ impl App {
             KeyCode::Up => self.nav.move_up(),
             KeyCode::Down => self.nav.move_down(),
             KeyCode::Enter => {
-                let sel = self.nav.selected();
-                if sel < self.sessions.len() {
-                    if self.pty_sessions[sel].is_none() {
-                        // Dead session — restore it (sets last_session inside restore_session)
-                        self.restore_session(sel, rows, cols)?;
+                if let Some(sess_idx) = sel {
+                    if self.pty_sessions[sess_idx].is_none() {
+                        // Dead session — restore it
+                        self.restore_session(sess_idx, rows, cols)?;
                     } else {
                         // Active session — switch to it
                         let pty_rows = rows.saturating_sub(1);
-                        if let Some(Some(pty)) = self.pty_sessions.get(sel) {
+                        if let Some(Some(pty)) = self.pty_sessions.get(sess_idx) {
                             let _ = pty.resize(pty_rows, cols);
                         }
-                        self.last_session = Some(sel);
-                        self.mode = Mode::Session(sel);
+                        self.last_session = Some(sess_idx);
+                        self.mode = Mode::Session(sess_idx);
                     }
                 }
             }
