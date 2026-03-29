@@ -1,4 +1,4 @@
-use summoner::stats::{format_xp, level_from_tokens, parse_jsonl_stats};
+use summoner::stats::{format_xp, level_from_tokens, parse_jsonl_stats, find_jsonl_path};
 use std::io::Write;
 
 #[test]
@@ -90,4 +90,25 @@ fn parse_jsonl_incremental_from_offset() {
     let (tokens2, messages2, _offset2) = parse_jsonl_stats(&path, offset1);
     assert_eq!(tokens2, 500);
     assert_eq!(messages2, 1);
+}
+
+#[test]
+fn find_jsonl_path_locates_file() {
+    let dir = tempfile::tempdir().unwrap();
+    let project_hash = "-home-test-myproject";
+    let session_id = "abc-123";
+    let session_dir = dir.path().join("projects").join(project_hash).join(session_id);
+    std::fs::create_dir_all(&session_dir).unwrap();
+    let jsonl = session_dir.join("agent-xyz.jsonl");
+    std::fs::write(&jsonl, "{}\n").unwrap();
+    let result = find_jsonl_path(dir.path(), "/home/test/myproject", session_id);
+    assert!(result.is_some());
+    assert_eq!(result.unwrap(), jsonl);
+}
+
+#[test]
+fn find_jsonl_path_returns_none_when_missing() {
+    let dir = tempfile::tempdir().unwrap();
+    let result = find_jsonl_path(dir.path(), "/home/test/myproject", "no-such-id");
+    assert!(result.is_none());
 }

@@ -81,3 +81,23 @@ pub fn parse_jsonl_stats(path: &Path, offset: u64) -> (u64, u32, u64) {
 
     (tokens, messages, bytes_read)
 }
+
+use std::path::PathBuf;
+
+fn dir_to_project_hash(directory: &str) -> String {
+    directory.replace('/', "-")
+}
+
+pub fn find_jsonl_path(claude_dir: &Path, project_directory: &str, session_id: &str) -> Option<PathBuf> {
+    let hash = dir_to_project_hash(project_directory);
+    let session_dir = claude_dir.join("projects").join(&hash).join(session_id);
+    if !session_dir.is_dir() { return None; }
+    let entries = std::fs::read_dir(&session_dir).ok()?;
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if path.extension().and_then(|e| e.to_str()) == Some("jsonl") {
+            return Some(path);
+        }
+    }
+    None
+}
