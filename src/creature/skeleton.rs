@@ -125,6 +125,8 @@ pub struct Limb {
     pub anchor: usize,
     pub upper_len: f32,
     pub lower_len: f32,
+    pub upper_width: f32,
+    pub lower_width: f32,
     pub end_effector: Vec2,
     pub side: Side,
 }
@@ -187,12 +189,16 @@ impl Skeleton {
         let arm_lower = Self::vary(rng, 2.5, 0.6);
         let leg_upper = Self::vary(rng, 3.0, 0.75);
         let leg_lower = Self::vary(rng, 3.0, 0.75);
+        let arm_width_upper = Self::vary(rng, 1.2, 0.3).max(0.8);
+        let arm_width_lower = Self::vary(rng, 1.0, 0.2).max(0.6);
+        let leg_width_upper = Self::vary(rng, 1.5, 0.4).max(0.8);
+        let leg_width_lower = Self::vary(rng, 1.2, 0.3).max(0.6);
         let foot_y = lower_y + leg_upper + leg_lower;
         let limbs = vec![
-            Limb { anchor: 2, upper_len: arm_upper.max(1.5), lower_len: arm_lower.max(1.5), end_effector: Vec2::new(cx - 3.0, upper_y + arm_upper + arm_lower), side: Side::Left },
-            Limb { anchor: 2, upper_len: arm_upper.max(1.5), lower_len: arm_lower.max(1.5), end_effector: Vec2::new(cx + 3.0, upper_y + arm_upper + arm_lower), side: Side::Right },
-            Limb { anchor: 4, upper_len: leg_upper.max(2.0), lower_len: leg_lower.max(2.0), end_effector: Vec2::new(cx - 2.0, foot_y.min(23.0)), side: Side::Left },
-            Limb { anchor: 5, upper_len: leg_upper.max(2.0), lower_len: leg_lower.max(2.0), end_effector: Vec2::new(cx + 2.0, foot_y.min(23.0)), side: Side::Right },
+            Limb { anchor: 2, upper_len: arm_upper.max(1.5), lower_len: arm_lower.max(1.5), upper_width: arm_width_upper, lower_width: arm_width_lower, end_effector: Vec2::new(cx - 3.0, upper_y + arm_upper + arm_lower), side: Side::Left },
+            Limb { anchor: 2, upper_len: arm_upper.max(1.5), lower_len: arm_lower.max(1.5), upper_width: arm_width_upper, lower_width: arm_width_lower, end_effector: Vec2::new(cx + 3.0, upper_y + arm_upper + arm_lower), side: Side::Right },
+            Limb { anchor: 4, upper_len: leg_upper.max(2.0), lower_len: leg_lower.max(2.0), upper_width: leg_width_upper, lower_width: leg_width_lower, end_effector: Vec2::new(cx - 2.0, foot_y.min(23.0)), side: Side::Left },
+            Limb { anchor: 5, upper_len: leg_upper.max(2.0), lower_len: leg_lower.max(2.0), upper_width: leg_width_upper, lower_width: leg_width_lower, end_effector: Vec2::new(cx + 2.0, foot_y.min(23.0)), side: Side::Right },
         ];
         Self { points, constraints, limbs }
     }
@@ -235,12 +241,14 @@ impl Skeleton {
         ];
         let leg_upper = Self::vary(rng, 3.0, 0.75);
         let leg_lower = Self::vary(rng, 3.0, 0.75);
+        let leg_width_upper = Self::vary(rng, 1.3, 0.3).max(0.8);
+        let leg_width_lower = Self::vary(rng, 1.0, 0.2).max(0.6);
         let foot_y = cy + leg_upper + leg_lower;
         let limbs = vec![
-            Limb { anchor: 2, upper_len: leg_upper.max(2.0), lower_len: leg_lower.max(2.0), end_effector: Vec2::new(front_x - 1.0, foot_y.min(23.0)), side: Side::Left },
-            Limb { anchor: 2, upper_len: leg_upper.max(2.0), lower_len: leg_lower.max(2.0), end_effector: Vec2::new(front_x + 1.0, foot_y.min(23.0)), side: Side::Right },
-            Limb { anchor: 3, upper_len: leg_upper.max(2.0), lower_len: leg_lower.max(2.0), end_effector: Vec2::new(rear_x - 1.0, foot_y.min(23.0)), side: Side::Left },
-            Limb { anchor: 3, upper_len: leg_upper.max(2.0), lower_len: leg_lower.max(2.0), end_effector: Vec2::new(rear_x + 1.0, foot_y.min(23.0)), side: Side::Right },
+            Limb { anchor: 2, upper_len: leg_upper.max(2.0), lower_len: leg_lower.max(2.0), upper_width: leg_width_upper, lower_width: leg_width_lower, end_effector: Vec2::new(front_x - 1.0, foot_y.min(23.0)), side: Side::Left },
+            Limb { anchor: 2, upper_len: leg_upper.max(2.0), lower_len: leg_lower.max(2.0), upper_width: leg_width_upper, lower_width: leg_width_lower, end_effector: Vec2::new(front_x + 1.0, foot_y.min(23.0)), side: Side::Right },
+            Limb { anchor: 3, upper_len: leg_upper.max(2.0), lower_len: leg_lower.max(2.0), upper_width: leg_width_upper, lower_width: leg_width_lower, end_effector: Vec2::new(rear_x - 1.0, foot_y.min(23.0)), side: Side::Left },
+            Limb { anchor: 3, upper_len: leg_upper.max(2.0), lower_len: leg_lower.max(2.0), upper_width: leg_width_upper, lower_width: leg_width_lower, end_effector: Vec2::new(rear_x + 1.0, foot_y.min(23.0)), side: Side::Right },
         ];
         Self { points, constraints, limbs }
     }
@@ -306,10 +314,12 @@ impl Skeleton {
         ];
         let leg_upper = Self::vary(rng, 3.0, 0.75);
         let leg_lower = Self::vary(rng, 3.0, 0.75);
+        let leg_width_upper = Self::vary(rng, 1.3, 0.3).max(0.8);
+        let leg_width_lower = Self::vary(rng, 1.0, 0.2).max(0.6);
         let foot_y = body_y + leg_upper + leg_lower;
         let limbs = vec![
-            Limb { anchor: 2, upper_len: leg_upper.max(2.0), lower_len: leg_lower.max(2.0), end_effector: Vec2::new(cx - 2.0, foot_y.min(23.0)), side: Side::Left },
-            Limb { anchor: 2, upper_len: leg_upper.max(2.0), lower_len: leg_lower.max(2.0), end_effector: Vec2::new(cx + 2.0, foot_y.min(23.0)), side: Side::Right },
+            Limb { anchor: 2, upper_len: leg_upper.max(2.0), lower_len: leg_lower.max(2.0), upper_width: leg_width_upper, lower_width: leg_width_lower, end_effector: Vec2::new(cx - 2.0, foot_y.min(23.0)), side: Side::Left },
+            Limb { anchor: 2, upper_len: leg_upper.max(2.0), lower_len: leg_lower.max(2.0), upper_width: leg_width_upper, lower_width: leg_width_lower, end_effector: Vec2::new(cx + 2.0, foot_y.min(23.0)), side: Side::Right },
         ];
         Self { points, constraints, limbs }
     }
