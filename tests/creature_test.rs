@@ -154,3 +154,59 @@ fn skeleton_points_fit_within_sprite_bounds() {
         }
     }
 }
+
+use summoner::creature::physics::{verlet_integrate, apply_constraints, solve_two_bone_ik};
+
+#[test]
+fn verlet_integration_moves_points() {
+    let mut skel = Skeleton::instantiate(0, 42);
+    let head_before = skel.points[0].pos;
+    skel.points[0].prev_pos = skel.points[0].pos - Vec2::new(1.0, 0.0);
+    verlet_integrate(&mut skel, 0.98, Vec2::new(0.0, 0.5));
+    let head_after = skel.points[0].pos;
+    assert!(head_after.x > head_before.x, "Head should move right from velocity");
+    assert!(head_after.y > head_before.y, "Head should move down from gravity");
+}
+
+#[test]
+fn verlet_pinned_points_dont_move() {
+    let mut skel = Skeleton::instantiate(0, 42);
+    skel.points[0].pinned = true;
+    let head_before = skel.points[0].pos;
+    skel.points[0].prev_pos = skel.points[0].pos - Vec2::new(1.0, 0.0);
+    verlet_integrate(&mut skel, 0.98, Vec2::new(0.0, 0.5));
+    assert!((skel.points[0].pos.x - head_before.x).abs() < 1e-6);
+    assert!((skel.points[0].pos.y - head_before.y).abs() < 1e-6);
+}
+
+#[test]
+fn constraints_maintain_distances() {
+    let mut skel = Skeleton::instantiate(0, 42);
+    skel.points[0].pos = Vec2::new(0.0, 0.0);
+    apply_constraints(&mut skel, 3);
+    let dist = (skel.points[0].pos - skel.points[1].pos).length();
+    let rest = skel.constraints[0].rest_length;
+    assert!((dist - rest).abs() < 0.5, "Constraint not satisfied: dist={dist}, rest={rest}");
+}
+
+#[test]
+fn two_bone_ik_reaches_target() {
+    let anchor = Vec2::new(9.0, 10.0);
+    let target = Vec2::new(9.0, 16.0);
+    let result = solve_two_bone_ik(anchor, target, 3.0, 3.0);
+    let end_dist = (result.end - target).length();
+    assert!(end_dist < 0.5, "IK end not near target");
+    let upper_dist = (result.mid - anchor).length();
+    let lower_dist = (result.end - result.mid).length();
+    assert!((upper_dist - 3.0).abs() < 0.5);
+    assert!((lower_dist - 3.0).abs() < 0.5);
+}
+
+#[test]
+fn two_bone_ik_clamps_when_target_unreachable() {
+    let anchor = Vec2::new(9.0, 10.0);
+    let target = Vec2::new(9.0, 25.0);
+    let result = solve_two_bone_ik(anchor, target, 3.0, 3.0);
+    let total = (result.end - anchor).length();
+    assert!((total - 6.0).abs() < 0.5, "Should fully extend: total={total}");
+}
