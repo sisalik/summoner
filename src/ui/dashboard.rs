@@ -76,7 +76,8 @@ impl<'a> Dashboard<'a> {
             return;
         }
 
-        let (cols, _rows) = grid_layout(groups.len(), content_area.width);
+        let max_creatures = groups.iter().map(|g| g.sessions.len()).max().unwrap_or(1);
+        let (cols, _rows) = grid_layout(groups.len(), content_area.width, max_creatures);
         if cols == 0 { return; }
 
         // Determine which group names need disambiguation (same basename, different path)
@@ -173,7 +174,23 @@ impl<'a> Dashboard<'a> {
 
                 let creature_spacing = CREATURE_WIDTH + 2; // creature width + 2 cells gap
                 let cx = inner.x + local_idx as u16 * creature_spacing;
-                let cw = CREATURE_WIDTH;
+                // Clamp creature width to not exceed card inner right edge
+                let inner_right = inner.x + inner.width;
+                let cw = CREATURE_WIDTH.min(inner_right.saturating_sub(cx));
+
+                // Skip this creature entirely if it doesn't fit at all
+                if cw == 0 || cx >= inner_right {
+                    flat_pos += 1;
+                    continue;
+                }
+
+                // Clipping rect for this creature's column (stats/bar text clips to this)
+                let creature_col = Rect {
+                    x: cx,
+                    y: card_area.y,
+                    width: cw,
+                    height: card_area.height,
+                };
 
                 let creature_area = Rect {
                     x: cx,
@@ -225,7 +242,7 @@ impl<'a> Dashboard<'a> {
                     let stats_len = stats_text.chars().count() as u16;
                     let stats_x = cx + cw.saturating_sub(stats_len) / 2;
                     let stats_style = Style::default().fg(session.state.color());
-                    draw_text(stats_x, stats_y, &stats_text, stats_style, card_area, buf);
+                    draw_text(stats_x, stats_y, &stats_text, stats_style, creature_col, buf);
                 }
 
                 // Draw health bar: 💚▓▓▓▓░░░░ 42%
@@ -264,16 +281,16 @@ impl<'a> Dashboard<'a> {
                         let bar_x = cx + cw.saturating_sub(bar_content_len as u16) / 2;
 
                         // Draw heart
-                        draw_text(bar_x, bar_y, heart, Style::default().fg(bar_color), card_area, buf);
+                        draw_text(bar_x, bar_y, heart, Style::default().fg(bar_color), creature_col, buf);
                         // Draw filled
                         let filled_str: String = "\u{2593}".repeat(filled);
-                        draw_text(bar_x + 2, bar_y, &filled_str, Style::default().fg(bar_color), card_area, buf);
+                        draw_text(bar_x + 2, bar_y, &filled_str, Style::default().fg(bar_color), creature_col, buf);
                         // Draw empty
                         let empty_str: String = "\u{2591}".repeat(empty);
-                        draw_text(bar_x + 2 + filled as u16, bar_y, &empty_str, Style::default().fg(Color::Rgb(85, 85, 85)), card_area, buf);
+                        draw_text(bar_x + 2 + filled as u16, bar_y, &empty_str, Style::default().fg(Color::Rgb(85, 85, 85)), creature_col, buf);
                         // Draw percentage
                         let pct_color = if pct >= 90 { Color::Rgb(229, 115, 115) } else { Color::Rgb(136, 136, 136) };
-                        draw_text(bar_x + 2 + bar_total as u16, bar_y, &pct_str, Style::default().fg(pct_color), card_area, buf);
+                        draw_text(bar_x + 2 + bar_total as u16, bar_y, &pct_str, Style::default().fg(pct_color), creature_col, buf);
                     }
                 }
 
@@ -304,9 +321,14 @@ impl<'a> Dashboard<'a> {
     }
 }
 
-/// Compute grid layout: (cols, rows) based on group count and available width
-fn grid_layout(count: usize, available_width: u16) -> (usize, usize) {
-    let min_card_width: u16 = 35;
+/// Compute grid layout: (cols, rows) based on group count and available width.
+/// `max_creatures_per_group` is the largest number of sessions in any single group.
+fn grid_layout(count: usize, available_width: u16, max_creatures_per_group: usize) -> (usize, usize) {
+    // Minimum card width: enough to fit the widest group's creatures side by side
+    // Each creature needs CREATURE_WIDTH + 2 gap, plus card border(2) + padding(2)
+    let creatures_w = max_creatures_per_group.max(1) as u16 * (CREATURE_WIDTH + 2);
+    let min_card_width = (creatures_w + 4).max(28); // border(2) + padding(2), floor at 28
+
     // Max columns that fit: (width - 1 outer margin) / (card + 1 gap)
     let max_cols = ((available_width.saturating_sub(1)) / (min_card_width + 1)).max(1) as usize;
 
