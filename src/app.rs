@@ -6,7 +6,7 @@ use crossterm::event::{self, Event, KeyCode, KeyEvent, KeyModifiers};
 use ratatui::layout::{Constraint, Layout, Rect};
 use ratatui::DefaultTerminal;
 
-use crate::claude::{detect_claude_state, find_claude_child, find_conversation_id};
+use crate::claude::{find_claude_child, find_conversation_id};
 use crate::hooks;
 use crate::config::{AppConfig, RecentDirs, SessionStore, SessionEntry};
 use crate::creature::animate::AnimationState;
@@ -143,6 +143,12 @@ impl App {
         })
     }
 
+    fn refresh_nav_layout(&mut self) {
+        let groups = crate::session::group_by_project(&self.sessions);
+        let group_sizes: Vec<usize> = groups.iter().map(|g| g.sessions.len()).collect();
+        self.nav.update_layout(&group_sizes);
+    }
+
     fn spawn_session(&mut self, directory: String, rows: u16, cols: u16) -> Result<()> {
         let seed = rand_seed();
         let template_idx = self.sessions.len() % TEMPLATE_COUNT;
@@ -171,11 +177,7 @@ impl App {
         self.recent_dirs.add(directory, max);
         let _ = self.recent_dirs.save(&self.config_dir);
 
-        {
-            let groups = crate::session::group_by_project(&self.sessions);
-            let group_sizes: Vec<usize> = groups.iter().map(|g| g.sessions.len()).collect();
-            self.nav.update_layout(&group_sizes);
-        }
+        self.refresh_nav_layout();
 
         self.last_session = Some(idx);
         self.mode = Mode::Session(idx);
@@ -198,11 +200,7 @@ impl App {
         self.animations.remove(idx);
         self.sprites.remove(idx);
 
-        {
-            let groups = crate::session::group_by_project(&self.sessions);
-            let group_sizes: Vec<usize> = groups.iter().map(|g| g.sessions.len()).collect();
-            self.nav.update_layout(&group_sizes);
-        }
+        self.refresh_nav_layout();
 
         // Adjust mode
         match self.mode {
@@ -249,42 +247,32 @@ impl App {
             }
 
             // Primary: use Claude Code hooks for state detection
+            // Detect Claude state via hooks (primary) or process check (fallback)
             let shell_pid = pty.pid();
-            let hook_state = shell_pid
-                .and_then(|pid| hooks::read_hook_state(&self.config_dir, pid));
+            let (hook_state, hook_session_id) = shell_pid
+                .map(|pid| hooks::read_hook_state(&self.config_dir, pid))
+                .unwrap_or((None, None));
 
-            // Pick up conversation ID from hooks
+            // Pick up conversation ID from hooks or fallback
             if self.sessions[i].claude_conversation_id.is_none() {
-                if let Some(pid) = shell_pid {
-                    if let Some(sid) = hooks::read_hook_session_id(&self.config_dir, pid) {
-                        self.sessions[i].claude_conversation_id = Some(sid);
-                    } else if let Some(conv_id) = find_conversation_id(pid) {
+                if let Some(sid) = hook_session_id {
+                    self.sessions[i].claude_conversation_id = Some(sid);
+                } else if let Some(pid) = shell_pid {
+                    if let Some(conv_id) = find_conversation_id(pid) {
                         self.sessions[i].claude_conversation_id = Some(conv_id);
                     }
                 }
             }
 
             let new_state = if let Some(state) = hook_state {
-                // Hook gave us a definitive state — trust it
                 state
             } else {
-                // Fallback: screen-based detection
-                let screen = self.vt_parsers[i].screen();
-                let in_alternate_screen = screen.alternate_screen();
-                let detected = detect_claude_state(screen);
-                let claude_running = shell_pid
-                    .and_then(find_claude_child)
-                    .is_some();
-
-                if let Some(state) = detected {
-                    state
-                } else if in_alternate_screen && claude_running {
+                // Fallback: check if claude process is running
+                let claude_running = shell_pid.and_then(find_claude_child).is_some();
+                if claude_running {
                     SessionState::Idle
                 } else {
-                    // Clear conversation ID when Claude is gone
-                    if !claude_running && !in_alternate_screen
-                        && self.sessions[i].claude_conversation_id.is_some()
-                    {
+                    if self.sessions[i].claude_conversation_id.is_some() {
                         self.sessions[i].claude_conversation_id = None;
                     }
                     SessionState::ShellOnly
@@ -292,34 +280,8 @@ impl App {
             };
 
             if new_state != self.sessions[i].state {
-                // Hook-sourced states commit immediately (no hysteresis needed)
-                // Screen-based states use hysteresis to avoid flashing
-                let threshold = if hook_state.is_some() {
-                    1
-                } else if new_state == SessionState::Working || new_state == SessionState::Waiting {
-                    1
-                } else if self.sessions[i].state == SessionState::Working {
-                    8
-                } else {
-                    3
-                };
-
-                if self.sessions[i].pending_state == Some(new_state) {
-                    self.sessions[i].pending_state_count += 1;
-                } else {
-                    self.sessions[i].pending_state = Some(new_state);
-                    self.sessions[i].pending_state_count = 1;
-                }
-
-                if self.sessions[i].pending_state_count >= threshold {
-                    self.sessions[i].state = new_state;
-                    self.animations[i].set_state(new_state);
-                    self.sessions[i].pending_state = None;
-                    self.sessions[i].pending_state_count = 0;
-                }
-            } else {
-                self.sessions[i].pending_state = None;
-                self.sessions[i].pending_state_count = 0;
+                self.sessions[i].state = new_state;
+                self.animations[i].set_state(new_state);
             }
 
             // Check for child exit
@@ -352,11 +314,7 @@ impl App {
         }
 
         if dir_changed {
-            {
-            let groups = crate::session::group_by_project(&self.sessions);
-            let group_sizes: Vec<usize> = groups.iter().map(|g| g.sessions.len()).collect();
-            self.nav.update_layout(&group_sizes);
-        }
+            self.refresh_nav_layout();
         }
     }
 

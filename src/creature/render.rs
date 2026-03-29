@@ -12,37 +12,14 @@ pub struct Palette {
 }
 
 pub fn state_palette(state: SessionState) -> Palette {
+    let body = state.color();
     match state {
-        SessionState::Working => Palette {
-            body: Color::Rgb(0, 200, 120),
-            border: Color::Rgb(0, 100, 60),
-            highlight: Color::Rgb(100, 255, 180),
-        },
-        SessionState::Waiting => Palette {
-            body: Color::Rgb(255, 180, 50),
-            border: Color::Rgb(180, 100, 0),
-            highlight: Color::Rgb(255, 220, 100),
-        },
-        SessionState::Idle => Palette {
-            body: Color::Rgb(100, 120, 220),
-            border: Color::Rgb(50, 60, 140),
-            highlight: Color::Rgb(150, 170, 255),
-        },
-        SessionState::Sleeping => Palette {
-            body: Color::Rgb(80, 90, 120),
-            border: Color::Rgb(40, 45, 60),
-            highlight: Color::Rgb(100, 110, 140),
-        },
-        SessionState::Disconnected => Palette {
-            body: Color::Rgb(100, 100, 100),
-            border: Color::Rgb(60, 60, 60),
-            highlight: Color::Rgb(130, 130, 130),
-        },
-        SessionState::ShellOnly => Palette {
-            body: Color::Rgb(200, 200, 210),
-            border: Color::Rgb(140, 140, 150),
-            highlight: Color::Rgb(240, 240, 255),
-        },
+        SessionState::Working => Palette { body, border: Color::Rgb(0, 100, 60), highlight: Color::Rgb(100, 255, 180) },
+        SessionState::Waiting => Palette { body, border: Color::Rgb(180, 100, 0), highlight: Color::Rgb(255, 220, 100) },
+        SessionState::Idle => Palette { body, border: Color::Rgb(50, 60, 140), highlight: Color::Rgb(150, 170, 255) },
+        SessionState::Sleeping => Palette { body, border: Color::Rgb(40, 45, 60), highlight: Color::Rgb(100, 110, 140) },
+        SessionState::Disconnected => Palette { body, border: Color::Rgb(60, 60, 60), highlight: Color::Rgb(130, 130, 130) },
+        SessionState::ShellOnly => Palette { body, border: Color::Rgb(140, 140, 150), highlight: Color::Rgb(240, 240, 255) },
     }
 }
 

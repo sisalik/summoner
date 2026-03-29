@@ -111,20 +111,8 @@ impl<'a> Widget for StatusBar<'a> {
 }
 
 fn tab_style(state: SessionState, active: bool) -> Style {
-    let fg = state_color(state);
     let bg = if active { Color::Rgb(50, 50, 70) } else { Color::Rgb(30, 30, 40) };
-    let mut style = Style::default().fg(fg).bg(bg);
+    let mut style = Style::default().fg(state.color()).bg(bg);
     if active { style = style.add_modifier(Modifier::BOLD); }
     style
-}
-
-fn state_color(state: SessionState) -> Color {
-    match state {
-        SessionState::Working => Color::Rgb(0, 200, 120),
-        SessionState::Waiting => Color::Rgb(255, 180, 50),
-        SessionState::Idle => Color::Rgb(100, 120, 220),
-        SessionState::Sleeping => Color::Rgb(80, 90, 120),
-        SessionState::Disconnected => Color::Rgb(100, 100, 100),
-        SessionState::ShellOnly => Color::Rgb(200, 200, 210),
-    }
 }

@@ -1,3 +1,4 @@
+use ratatui::style::Color;
 use uuid::Uuid;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -32,6 +33,17 @@ impl SessionState {
             Self::ShellOnly => "Shell",
         }
     }
+
+    pub fn color(&self) -> Color {
+        match self {
+            Self::Working => Color::Rgb(0, 200, 120),
+            Self::Waiting => Color::Rgb(255, 180, 50),
+            Self::Idle => Color::Rgb(100, 120, 220),
+            Self::Sleeping => Color::Rgb(80, 90, 120),
+            Self::Disconnected => Color::Rgb(100, 100, 100),
+            Self::ShellOnly => Color::Rgb(200, 200, 210),
+        }
+    }
 }
 
 pub struct Session {
@@ -42,8 +54,6 @@ pub struct Session {
     pub state: SessionState,
     pub claude_conversation_id: Option<String>,
     pub name: String,
-    pub pending_state: Option<SessionState>,
-    pub pending_state_count: u8,
 }
 
 impl Session {
@@ -62,8 +72,6 @@ impl Session {
             state: SessionState::ShellOnly,
             claude_conversation_id: None,
             name,
-            pending_state: None,
-            pending_state_count: 0,
         }
     }
 }

@@ -73,16 +73,18 @@ pub fn clear_all_state_files(summoner_dir: &Path) {
 
 /// Remove the state file for a specific shell PID.
 pub fn clear_state_file(summoner_dir: &Path, shell_pid: u32) {
-    let state_file = summoner_dir.join("claude-states").join(shell_pid.to_string());
-    let _ = fs::remove_file(&state_file);
+    let _ = fs::remove_file(state_file_path(summoner_dir, shell_pid));
 }
 
 fn install_hook_script(summoner_dir: &Path) -> std::io::Result<()> {
     let hooks_dir = summoner_dir.join("hooks");
     fs::create_dir_all(&hooks_dir)?;
     let script_path = hooks_dir.join("claude-state.sh");
+    // Skip write if content already matches
+    if fs::read_to_string(&script_path).ok().as_deref() == Some(HOOK_SCRIPT) {
+        return Ok(());
+    }
     fs::write(&script_path, HOOK_SCRIPT)?;
-    // Make executable
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
@@ -121,6 +123,7 @@ fn configure_claude_settings() -> std::io::Result<()> {
         "type": "command",
         "command": HOOK_COMMAND
     });
+    let mut changed = false;
 
     for &event in HOOK_EVENTS {
         let event_hooks = hooks_obj
@@ -147,49 +150,47 @@ fn configure_claude_settings() -> std::io::Result<()> {
                 "matcher": "",
                 "hooks": [our_hook]
             }));
+            changed = true;
         }
     }
 
-    let content = serde_json::to_string_pretty(&settings)
-        .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e))?;
-    fs::write(&settings_path, content)?;
+    if changed {
+        let content = serde_json::to_string_pretty(&settings)
+            .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e))?;
+        fs::write(&settings_path, content)?;
+    }
     Ok(())
 }
 
-/// Read the hook-reported state for a given shell PID.
-/// Hook state files are authoritative until overwritten by a new event or SessionEnd.
-pub fn read_hook_state(summoner_dir: &Path, shell_pid: u32) -> Option<SessionState> {
-    let state_file = summoner_dir.join("claude-states").join(shell_pid.to_string());
-    let content = fs::read_to_string(&state_file).ok()?;
-    let event = content.split_whitespace().next()?;
+fn state_file_path(summoner_dir: &Path, shell_pid: u32) -> PathBuf {
+    summoner_dir.join("claude-states").join(shell_pid.to_string())
+}
 
-    match event {
+/// Read hook state and session ID in a single file read.
+/// Returns (state, session_id) where state is None if no hook data or Claude exited.
+pub fn read_hook_state(summoner_dir: &Path, shell_pid: u32) -> (Option<SessionState>, Option<String>) {
+    let state_file = state_file_path(summoner_dir, shell_pid);
+    let content = match fs::read_to_string(&state_file) {
+        Ok(c) => c,
+        Err(_) => return (None, None),
+    };
+    let mut parts = content.split_whitespace();
+    let event = match parts.next() {
+        Some(e) => e,
+        None => return (None, None),
+    };
+    let session_id = parts.next().map(|s| s.to_string());
+
+    let state = match event {
         "UserPromptSubmit" => Some(SessionState::Working),
-        "Stop" => Some(SessionState::Idle),
-        "SessionStart" => Some(SessionState::Idle),
+        "Stop" | "SessionStart" => Some(SessionState::Idle),
         "Notification" => Some(SessionState::Waiting),
         "SessionEnd" => {
-            // Claude exited — clean up the state file
             let _ = fs::remove_file(&state_file);
-            None // Will fall through to ShellOnly
+            return (None, None);
         }
         _ => None,
-    }
-}
+    };
 
-/// Extract the Claude session/conversation ID from the hook state file.
-pub fn read_hook_session_id(summoner_dir: &Path, shell_pid: u32) -> Option<String> {
-    let state_file = summoner_dir.join("claude-states").join(shell_pid.to_string());
-    let content = fs::read_to_string(&state_file).ok()?;
-    let mut parts = content.split_whitespace();
-    let event = parts.next()?;
-    if event == "SessionEnd" {
-        return None;
-    }
-    parts.next().map(|s| s.to_string())
-}
-
-/// Get the path to the claude-states directory.
-pub fn states_dir(summoner_dir: &Path) -> PathBuf {
-    summoner_dir.join("claude-states")
+    (state, session_id)
 }

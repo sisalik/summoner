@@ -259,15 +259,7 @@ impl<'a> Widget for Dashboard<'a> {
                 // Draw state label below creature (centered under sprite)
                 let name_y = inner.y + creature_render_h;
                 if name_y < card_area.y + card_area.height.saturating_sub(1) {
-                    let state_color = match session.state {
-                        SessionState::Working => Color::Rgb(0, 200, 120),
-                        SessionState::Waiting => Color::Rgb(255, 180, 50),
-                        SessionState::Idle => Color::Rgb(100, 120, 220),
-                        SessionState::Sleeping => Color::Rgb(80, 90, 120),
-                        SessionState::Disconnected => Color::Rgb(100, 100, 100),
-                        SessionState::ShellOnly => Color::Rgb(200, 200, 210),
-                    };
-                    let name_style = Style::default().fg(state_color);
+                    let name_style = Style::default().fg(session.state.color());
                     let label = session.state.label().to_string();
                     let label_len = label.chars().count() as u16;
                     let label_x = cx + cw.saturating_sub(label_len) / 2;
