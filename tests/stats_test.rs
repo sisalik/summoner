@@ -115,18 +115,18 @@ fn find_jsonl_path_returns_none_when_missing() {
 
 #[test]
 fn tool_display_known_tools() {
-    assert_eq!(tool_display("Edit"), "✏️ Editing");
-    assert_eq!(tool_display("Write"), "📝 Writing");
-    assert_eq!(tool_display("Read"), "📖 Reading");
-    assert_eq!(tool_display("Bash"), "⚙️ Running");
-    assert_eq!(tool_display("Glob"), "🔍 Searching");
-    assert_eq!(tool_display("Grep"), "🔍 Searching");
-    assert_eq!(tool_display("Agent"), "🤖 Delegating");
-    assert_eq!(tool_display("WebSearch"), "🌐 Browsing");
-    assert_eq!(tool_display("WebFetch"), "🌐 Fetching");
+    assert_eq!(tool_display("Edit"), "\u{270e} Editing");
+    assert_eq!(tool_display("Write"), "\u{270e} Writing");
+    assert_eq!(tool_display("Read"), "\u{25b7} Reading");
+    assert_eq!(tool_display("Bash"), "\u{25b8} Running");
+    assert_eq!(tool_display("Glob"), "\u{2315} Searching");
+    assert_eq!(tool_display("Grep"), "\u{2315} Searching");
+    assert_eq!(tool_display("Agent"), "\u{2234} Delegating");
+    assert_eq!(tool_display("WebSearch"), "\u{2301} Browsing");
+    assert_eq!(tool_display("WebFetch"), "\u{2301} Fetching");
 }
 
 #[test]
 fn tool_display_unknown_tool() {
-    assert_eq!(tool_display("CustomTool"), "🔧 CustomTool");
+    assert_eq!(tool_display("CustomTool"), "\u{2022} CustomTool");
 }

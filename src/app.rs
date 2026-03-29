@@ -11,7 +11,7 @@ use crate::hooks;
 use crate::config::{AppConfig, RecentDirs, SessionStore, SessionEntry};
 use crate::creature::locomotion::LocomotionState;
 use crate::creature::outline::{rasterize_skeleton, RasterResult};
-use crate::creature::skeleton::{Skeleton, ARCHETYPE_COUNT, archetype_index, archetype_name};
+use crate::creature::skeleton::{Skeleton, archetype_index, archetype_name};
 use crate::session::{Session, SessionState, SessionStats, GlobalStats, session_order};
 use crate::git::GitDiffCache;
 use crate::terminal::PtySession;
@@ -176,7 +176,8 @@ impl App {
 
     fn spawn_session(&mut self, directory: String, rows: u16, cols: u16) -> Result<()> {
         let seed = rand_seed();
-        let archetype_idx = self.sessions.len() % ARCHETYPE_COUNT;
+        let enabled = crate::creature::skeleton::ENABLED_ARCHETYPES;
+        let archetype_idx = enabled[self.sessions.len() % enabled.len()];
         let creature_template = archetype_name(archetype_idx).to_string();
         let skeleton = Skeleton::instantiate(archetype_idx, seed);
         let raster = rasterize_skeleton(&skeleton);
@@ -945,6 +946,8 @@ pub fn run(terminal: &mut DefaultTerminal) -> Result<()> {
 
     loop {
         app.render(terminal)?;
+        // Keep nav grid_cols in sync with rendered layout (depends on terminal width)
+        app.refresh_nav_layout();
 
         let timeout = match app.mode {
             Mode::Dashboard | Mode::DirPicker => Duration::from_millis(33),

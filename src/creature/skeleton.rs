@@ -76,6 +76,10 @@ use crate::creature::generate::Xorshift;
 
 pub const ARCHETYPE_COUNT: usize = 5;
 
+/// Archetypes enabled for new session assignment.
+/// Others remain implemented but won't be auto-assigned.
+pub const ENABLED_ARCHETYPES: &[usize] = &[0, 2, 4]; // bipedal, blob, serpentine
+
 pub fn archetype_name(index: usize) -> &'static str {
     match index % ARCHETYPE_COUNT {
         0 => "bipedal",

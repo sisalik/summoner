@@ -80,3 +80,18 @@ Ok better, but still some issues:
 - The ccstatusline redirection trick seems to have killed my status line display and taken over its output entirely. I thought we were supposed to tee it?
 - When 3 directories are shown in a 2x2 grid, up and down arrow keys don't work for navigation. Pressing down from either box 0, 0 or 0, 1 should move to 1, 0 (since 1, 1 doesn't exist). Up arrow doesn't work either.
 
+Ok better, but still some issues:
+- The health bar is too wide now actually, it seems. It's cut off on the left and right by the selection highlight box. Also, for some reason, the heart emoji still doesn't line up with the icon/emoji on the line above - is it because one is an emoji and the other is a unicode char? Perhaps we should use unicode for the heart too then? In that case we may be able to keep the left edge position.
+- Let's not show the level and health bar for disconnected sessions of any sort
+- Let's move the overall stats bar to the top of the window and use emojis for all of the icons, and add a space between the emoji and the value
+- The usage values are slightly off and take a while to update initially. How does it really work? I would've expected the values to load as soon as I launch a Claude session within Summoner and a status line is shown, but they always appear after a minute or few after the app has started. Strangely enough, sometimes the values show up even if there isn't an active Claude Code session in progress.
+- Also, the usage values seem stale - ccstatusline in the session shows accurate data.
+
+Ok better, but still some issues:
+- Waiting state detection is now broken? The agent stopped waiting for me to approve a Bash command, but its state showed Idle
+- Check the latest screenshot: the heart symbol is partially obscured by the health bar, and we shouldn't use emojis for the other state indicators there either (e.g. the gear emoji)
+- Let's make the health bar fully green to begin with, and then gradually start filling it with red as the context fills up, simulating "damage"
+- Let's rearrange things a bit: move the health bar to the top of the creature draw box, and split the state and lvl/xp texts so that the status is always at the bottom and the lvl/xp are on the line above
+- Can we use a filled heart symbol for the health bar?
+- In the dashboard, vertical navigation between rows with Up/Down arrow keys still doesn't work at all
+- Let's only enable the bipedal, blob and serpentine archetypes for now - leave the others implemented but don't enable them to be associated with a session. We'll come back to tweak them later to get them to look better.

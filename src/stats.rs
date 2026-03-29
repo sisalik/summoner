@@ -103,14 +103,14 @@ pub fn find_jsonl_path(claude_dir: &Path, project_directory: &str, session_id: &
 
 pub fn tool_display(tool_name: &str) -> String {
     match tool_name {
-        "Edit" => "✏️ Editing".into(),
-        "Write" => "📝 Writing".into(),
-        "Read" => "📖 Reading".into(),
-        "Bash" => "⚙️ Running".into(),
-        "Glob" | "Grep" => "🔍 Searching".into(),
-        "Agent" => "🤖 Delegating".into(),
-        "WebSearch" => "🌐 Browsing".into(),
-        "WebFetch" => "🌐 Fetching".into(),
-        other => format!("🔧 {}", other),
+        "Edit" => "\u{270e} Editing".into(),     // ✎
+        "Write" => "\u{270e} Writing".into(),     // ✎
+        "Read" => "\u{25b7} Reading".into(),      // ▷
+        "Bash" => "\u{25b8} Running".into(),      // ▸
+        "Glob" | "Grep" => "\u{2315} Searching".into(), // ⌕
+        "Agent" => "\u{2234} Delegating".into(),  // ∴
+        "WebSearch" => "\u{2301} Browsing".into(), // ⌁
+        "WebFetch" => "\u{2301} Fetching".into(),  // ⌁
+        other => format!("\u{2022} {}", other),    // •
     }
 }

@@ -16,6 +16,11 @@ extract() {
 event=$(extract hook_event_name)
 sid=$(extract session_id)
 tool=$(extract tool_name)
+notif_type=$(extract notification_type)
+
+# For Notification events, pass notification_type as third field instead of tool
+extra="$tool"
+[ "$event" = "Notification" ] && extra="$notif_type"
 
 # Hook process tree: shell → claude → bash → this script
 # Walk up to find the shell PID
@@ -41,7 +46,7 @@ shell_pid=$(find_shell_pid)
 
 dir="$HOME/.summoner/claude-states"
 mkdir -p "$dir" 2>/dev/null
-echo "$event $sid $tool" > "$dir/$shell_pid"
+echo "$event $sid $extra" > "$dir/$shell_pid"
 "#;
 
 const HOOK_COMMAND: &str = "bash ~/.summoner/hooks/claude-state.sh";
@@ -189,10 +194,14 @@ pub fn read_hook_state(summoner_dir: &Path, shell_pid: u32) -> (Option<SessionSt
     let state = match event {
         "UserPromptSubmit" => Some(SessionState::Working),
         "Stop" | "SessionStart" => Some(SessionState::Idle),
-        // Notification fires for idle_prompt, permission_prompt, etc.
-        // We can't distinguish types in the hook script, and idle_prompt
-        // shouldn't change state. Ignore Notification to avoid spurious Waiting.
-        "Notification" => None,
+        // Notification: only permission_prompt means "waiting for user"
+        "Notification" => {
+            if tool_name.as_deref() == Some("permission_prompt") {
+                Some(SessionState::Waiting)
+            } else {
+                None // idle_prompt, auth_success, etc. — don't change state
+            }
+        }
         "PreToolUse" => Some(SessionState::Working),
         "PostToolUse" => Some(SessionState::Working),
         "SessionEnd" => {

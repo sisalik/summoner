@@ -113,6 +113,16 @@ impl DashboardNav {
                 let pos = self.position_in_group();
                 let (start, size) = self.group_ranges[target_group];
                 self.selected = start + pos.min(size - 1);
+            } else if self.grid_cols > 1 {
+                // Incomplete last row: try the last group if it's in the next row
+                let current_row = g / self.grid_cols;
+                let last_group = self.group_ranges.len() - 1;
+                let last_row = last_group / self.grid_cols;
+                if last_row > current_row {
+                    let pos = self.position_in_group();
+                    let (start, size) = self.group_ranges[last_group];
+                    self.selected = start + pos.min(size - 1);
+                }
             }
         }
     }
