@@ -45,6 +45,8 @@ struct App {
     last_tick: Instant,
     confirm_close_project: Option<String>,
     confirm_selection: bool,
+    confirm_quit: bool,
+    confirm_quit_selection: bool,
     last_session: Option<usize>,
     last_save: Instant,
     last_term_width: u16,
@@ -152,6 +154,8 @@ impl App {
             last_tick: Instant::now(),
             confirm_close_project: None,
             confirm_selection: false,
+            confirm_quit: false,
+            confirm_quit_selection: true,
             last_session: None,
             last_save: Instant::now(),
             last_term_width: 80, // default, updated on first render/resize
@@ -429,6 +433,12 @@ impl App {
                 }
             }
 
+            // Render quit confirmation overlay
+            if self.confirm_quit {
+                let popup_area = centered_rect(40, 20, main_area);
+                render_quit_overlay(frame, popup_area, self.confirm_quit_selection);
+            }
+
             // Render status bar
             let active_index = match self.mode {
                 Mode::Session(idx) => Some(idx),
@@ -442,7 +452,30 @@ impl App {
     }
 
     fn handle_input(&mut self, key: KeyEvent, rows: u16, cols: u16) -> Result<bool> {
-        // Handle confirmation overlay first
+        // Handle quit confirmation overlay
+        if self.confirm_quit {
+            match key.code {
+                KeyCode::Left | KeyCode::Right => {
+                    self.confirm_quit_selection = !self.confirm_quit_selection;
+                }
+                KeyCode::Enter => {
+                    if self.confirm_quit_selection {
+                        return Ok(true);
+                    }
+                    self.confirm_quit = false;
+                    self.confirm_quit_selection = true;
+                }
+                KeyCode::Char('y') => return Ok(true),
+                KeyCode::Char('n') | KeyCode::Esc => {
+                    self.confirm_quit = false;
+                    self.confirm_quit_selection = true;
+                }
+                _ => {}
+            }
+            return Ok(false);
+        }
+
+        // Handle close-project confirmation overlay
         if self.confirm_close_project.is_some() {
             match key.code {
                 KeyCode::Left | KeyCode::Right => {
@@ -487,11 +520,13 @@ impl App {
             return Ok(false);
         }
 
-        // Ctrl+C or Ctrl+Q always quits
+        // Ctrl+Q shows quit confirmation
         if key.modifiers.contains(KeyModifiers::CONTROL)
-            && (key.code == KeyCode::Char('c') || key.code == KeyCode::Char('q'))
+            && key.code == KeyCode::Char('q')
         {
-            return Ok(true);
+            self.confirm_quit = true;
+            self.confirm_quit_selection = true;
+            return Ok(false);
         }
 
         // F12 toggles between dashboard and last session
@@ -818,6 +853,56 @@ fn render_confirm_overlay(frame: &mut ratatui::Frame, area: Rect, project_dir: &
         frame.buffer_mut().set_string(inner.x + yes_label.len() as u16 + 4, btn_y, no_label, no_style);
 
         // Navigation hint
+        let hint_style = Style::default().fg(Color::Rgb(100, 100, 120));
+        let hint = "◄ ► to switch  Enter to confirm";
+        if inner.height >= 5 {
+            frame.buffer_mut().set_string(inner.x, inner.y + 4, hint, hint_style);
+        }
+    }
+}
+
+fn render_quit_overlay(frame: &mut ratatui::Frame, area: Rect, yes_selected: bool) {
+    use ratatui::widgets::{Block, Borders, Clear, Padding};
+    use ratatui::style::{Color, Modifier, Style};
+
+    Clear.render(area, frame.buffer_mut());
+
+    let block = Block::default()
+        .title(" Quit Summoner ")
+        .title_style(Style::default().fg(Color::Rgb(255, 100, 100)).add_modifier(Modifier::BOLD))
+        .borders(Borders::ALL)
+        .border_style(Style::default().fg(Color::Rgb(200, 80, 80)))
+        .padding(Padding::uniform(1));
+
+    let inner = block.inner(area);
+    block.render(area, frame.buffer_mut());
+
+    if inner.height >= 3 && inner.width >= 20 {
+        let msg = "Quit Summoner?";
+        let msg_style = Style::default().fg(Color::Rgb(220, 220, 240));
+        frame.buffer_mut().set_string(inner.x, inner.y, msg, msg_style);
+
+        let btn_y = inner.y + 2;
+        let yes_label = "[ Yes ]";
+        let no_label  = "[ No ]";
+
+        let selected_style = Style::default()
+            .fg(Color::Rgb(20, 20, 30))
+            .bg(Color::Rgb(200, 80, 80))
+            .add_modifier(Modifier::BOLD);
+        let normal_style = Style::default()
+            .fg(Color::Rgb(150, 150, 170))
+            .add_modifier(Modifier::DIM);
+
+        let (yes_style, no_style) = if yes_selected {
+            (selected_style, normal_style)
+        } else {
+            (normal_style, selected_style)
+        };
+
+        frame.buffer_mut().set_string(inner.x, btn_y, yes_label, yes_style);
+        frame.buffer_mut().set_string(inner.x + yes_label.len() as u16 + 4, btn_y, no_label, no_style);
+
         let hint_style = Style::default().fg(Color::Rgb(100, 100, 120));
         let hint = "◄ ► to switch  Enter to confirm";
         if inner.height >= 5 {
