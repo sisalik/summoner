@@ -111,6 +111,12 @@ pub struct SessionStats {
     pub jsonl_path: Option<std::path::PathBuf>,
 }
 
+impl Default for SessionStats {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl SessionStats {
     pub fn new() -> Self {
         Self {
@@ -133,6 +139,12 @@ pub struct GlobalStats {
     pub seven_day_pct: Option<u8>,
     pub seven_day_resets_at: Option<i64>,
     pub last_daily_reset: chrono::NaiveDate,
+}
+
+impl Default for GlobalStats {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl GlobalStats {

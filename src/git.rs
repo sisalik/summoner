@@ -11,11 +11,10 @@ pub fn parse_shortstat(output: &str) -> (u32, u32) {
             if let Some(n) = part.split_whitespace().next().and_then(|s| s.parse().ok()) {
                 adds = n;
             }
-        } else if part.contains("deletion") {
-            if let Some(n) = part.split_whitespace().next().and_then(|s| s.parse().ok()) {
+        } else if part.contains("deletion")
+            && let Some(n) = part.split_whitespace().next().and_then(|s| s.parse().ok()) {
                 dels = n;
             }
-        }
     }
     (adds, dels)
 }
@@ -62,11 +61,10 @@ impl GitDiffCache {
 
     pub fn get(&mut self, directory: &str) -> (u32, u32) {
         let now = Instant::now();
-        if let Some(cached) = self.cache.get(directory) {
-            if now.duration_since(cached.last_checked).as_secs() < self.poll_interval_secs {
+        if let Some(cached) = self.cache.get(directory)
+            && now.duration_since(cached.last_checked).as_secs() < self.poll_interval_secs {
                 return (cached.additions, cached.deletions);
             }
-        }
         let (adds, dels) = run_git_shortstat(directory);
         self.cache.insert(directory.to_string(), CachedDiff {
             additions: adds, deletions: dels, last_checked: now,

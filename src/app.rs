@@ -247,8 +247,8 @@ impl App {
             }
 
             // Update working directory from /proc/PID/cwd
-            if let Some(cwd) = pty.cwd() {
-                if cwd != self.sessions[i].directory {
+            if let Some(cwd) = pty.cwd()
+                && cwd != self.sessions[i].directory {
                     self.sessions[i].directory = cwd.clone();
                     self.sessions[i].name = std::path::Path::new(&cwd)
                         .file_name()
@@ -257,7 +257,6 @@ impl App {
                         .to_string();
                     dir_changed = true;
                 }
-            }
 
             // Primary: use Claude Code hooks for state detection
             // Detect Claude state via hooks (primary) or process check (fallback)
@@ -274,11 +273,10 @@ impl App {
             if self.sessions[i].claude_conversation_id.is_none() {
                 if let Some(sid) = hook_session_id {
                     self.sessions[i].claude_conversation_id = Some(sid);
-                } else if let Some(pid) = shell_pid {
-                    if let Some(conv_id) = find_conversation_id(pid) {
+                } else if let Some(pid) = shell_pid
+                    && let Some(conv_id) = find_conversation_id(pid) {
                         self.sessions[i].claude_conversation_id = Some(conv_id);
                     }
-                }
             }
 
             let new_state = if let Some(state) = hook_state {
@@ -316,11 +314,10 @@ impl App {
                     self.sessions[i].state = SessionState::Disconnected;
                     self.locomotions[i].set_state(SessionState::Disconnected);
                     // Adjust mode index if needed
-                    if let Mode::Session(idx) = self.mode {
-                        if idx > i {
+                    if let Mode::Session(idx) = self.mode
+                        && idx > i {
                             self.mode = Mode::Session(idx - 1);
                         }
-                    }
                 }
             }
         }
@@ -388,12 +385,11 @@ impl App {
                     }
 
                     // Render dir picker overlay
-                    if self.mode == Mode::DirPicker {
-                        if let Some(ref picker) = self.dir_picker {
+                    if self.mode == Mode::DirPicker
+                        && let Some(ref picker) = self.dir_picker {
                             let popup_area = centered_rect(60, 60, main_area);
                             frame.render_widget(picker, popup_area);
                         }
-                    }
                 }
                 Mode::Session(idx) => {
                     let is_disconnected = idx < self.pty_sessions.len()
@@ -479,12 +475,11 @@ impl App {
             match self.mode {
                 Mode::Dashboard | Mode::DirPicker => {
                     // Go back to last session if one exists (active or disconnected)
-                    if let Some(idx) = self.last_session {
-                        if idx < self.sessions.len() {
+                    if let Some(idx) = self.last_session
+                        && idx < self.sessions.len() {
                             self.mode = Mode::Session(idx);
                             return Ok(false);
                         }
-                    }
                     // No session to return to
                 }
                 Mode::Session(idx) => {
@@ -496,8 +491,8 @@ impl App {
         }
 
         // F1-F11 switch to session (by appearance order)
-        if let KeyCode::F(n) = key.code {
-            if n >= 1 && n <= 11 {
+        if let KeyCode::F(n) = key.code
+            && (1..=11).contains(&n) {
                 let pos = (n - 1) as usize;
                 let order = session_order(&self.sessions);
                 if let Some(&sess_idx) = order.get(pos) {
@@ -512,7 +507,6 @@ impl App {
                 }
                 return Ok(false);
             }
-        }
 
         match self.mode {
             Mode::DirPicker => {
@@ -693,11 +687,10 @@ impl App {
             let session = &self.sessions[i];
             let stats = &mut self.session_stats[i];
 
-            if stats.jsonl_path.is_none() {
-                if let Some(ref conv_id) = session.claude_conversation_id {
+            if stats.jsonl_path.is_none()
+                && let Some(ref conv_id) = session.claude_conversation_id {
                     stats.jsonl_path = crate::stats::find_jsonl_path(&claude_dir, &session.directory, conv_id);
                 }
-            }
 
             if let Some(ref path) = stats.jsonl_path.clone() {
                 let (new_tokens, new_messages, new_offset) =
@@ -941,10 +934,8 @@ pub fn run(terminal: &mut DefaultTerminal) -> Result<()> {
                 Event::Resize(cols, rows) => {
                     let session_rows = rows.saturating_sub(1);
                     // Resize all active PTY sessions
-                    for pty_opt in &app.pty_sessions {
-                        if let Some(pty) = pty_opt {
-                            let _ = pty.resize(session_rows, cols);
-                        }
+                    for pty in app.pty_sessions.iter().flatten() {
+                        let _ = pty.resize(session_rows, cols);
                     }
                     // Also resize all vt parsers
                     for parser in &mut app.vt_parsers {

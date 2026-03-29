@@ -41,11 +41,10 @@ pub fn parse_jsonl_stats(path: &Path, offset: u64) -> (u64, u32, u64) {
         Err(_) => return (0, 0, offset),
     };
 
-    if offset > 0 {
-        if file.seek(SeekFrom::Start(offset)).is_err() {
+    if offset > 0
+        && file.seek(SeekFrom::Start(offset)).is_err() {
             return (0, 0, offset);
         }
-    }
 
     let reader = BufReader::new(&file);
     let mut tokens: u64 = 0;

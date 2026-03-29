@@ -8,16 +8,14 @@ use ratatui::style::{Color, Modifier, Style};
 use ratatui::widgets::{Block, Borders, Clear, Padding, Widget};
 
 fn expand_path(path: &str) -> String {
-    if let Some(rest) = path.strip_prefix("~/") {
-        if let Some(home) = dirs::home_dir() {
+    if let Some(rest) = path.strip_prefix("~/")
+        && let Some(home) = dirs::home_dir() {
             return format!("{}/{}", home.display(), rest);
         }
-    }
-    if path == "~" {
-        if let Some(home) = dirs::home_dir() {
+    if path == "~"
+        && let Some(home) = dirs::home_dir() {
             return home.display().to_string();
         }
-    }
     path.to_string()
 }
 

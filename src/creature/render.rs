@@ -33,7 +33,7 @@ pub fn render_sprite_to_buffer(
     area: Rect,
     buf: &mut Buffer,
 ) {
-    let rows = (sprite.height + 1) / 2;
+    let rows = sprite.height.div_ceil(2);
 
     for row in 0..rows.min(area.height as usize) {
         for col in 0..sprite.width.min(area.width as usize) {
@@ -106,7 +106,7 @@ pub fn capsule_shade_offset(id: u8) -> i16 {
         1 => 40,
         2..=99 => 0,
         100..=199 => {
-            if id % 2 == 0 {
+            if id.is_multiple_of(2) {
                 -20 // upper limb (even)
             } else {
                 -40 // lower limb (odd)
@@ -131,7 +131,7 @@ pub fn render_sprite_shaded(
     area: Rect,
     buf: &mut Buffer,
 ) {
-    let rows = (sprite.height + 1) / 2;
+    let rows = sprite.height.div_ceil(2);
 
     for row in 0..rows.min(area.height as usize) {
         for col in 0..sprite.width.min(area.width as usize) {
@@ -186,7 +186,7 @@ pub fn render_sprite_shaded(
 }
 
 pub fn sprite_cell_size(sprite: &Sprite) -> (u16, u16) {
-    (sprite.width as u16, ((sprite.height + 1) / 2) as u16)
+    (sprite.width as u16, sprite.height.div_ceil(2) as u16)
 }
 
 pub fn terminal_icon_sprite() -> Sprite {

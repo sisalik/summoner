@@ -47,7 +47,7 @@ impl<'a> Widget for StatusBar<'a> {
             // Add separator between groups
             if pos > 0 && group_boundaries.contains(&pos) {
                 let sep = "\u{2502}";
-                if x + 1 <= max_tab_x {
+                if x < max_tab_x {
                     let sep_style = Style::default()
                         .fg(Color::Rgb(60, 60, 80))
                         .bg(Color::Rgb(30, 30, 40));

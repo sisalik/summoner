@@ -91,7 +91,7 @@ impl<'a> Dashboard<'a> {
         }).collect();
 
         // Creature render height in terminal rows = CREATURE_HEIGHT / 2 (half-block)
-        let creature_render_h = (CREATURE_HEIGHT + 1) / 2;
+        let creature_render_h = CREATURE_HEIGHT.div_ceil(2);
 
         // Card dimensions: each group gets its own card slot
         let total_margin_x = (cols as u16) + 1;
@@ -314,11 +314,11 @@ fn grid_layout(count: usize, available_width: u16) -> (usize, usize) {
         0 => return (0, 0),
         1 => 1,
         2 | 3 => count,
-        4 | 5 | 6 => 3,
+        4..=6 => 3,
         _ => 3,
     };
     let cols = desired.min(max_cols);
-    let rows = (count + cols - 1) / cols;
+    let rows = count.div_ceil(cols);
     (cols, rows)
 }
 

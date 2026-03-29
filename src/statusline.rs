@@ -77,7 +77,7 @@ fn install_wrapper_inner(summoner_dir: &Path) -> std::io::Result<()> {
     });
 
     let content = serde_json::to_string_pretty(&settings)
-        .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e))?;
+        .map_err(|e| std::io::Error::other(e))?;
     fs::write(&settings_path, content)?;
 
     Ok(())
@@ -140,13 +140,11 @@ impl StatusLineData {
         let mut results = Vec::new();
         for entry in entries.flatten() {
             let path = entry.path();
-            if path.extension().and_then(|e| e.to_str()) == Some("json") {
-                if let Ok(content) = fs::read_to_string(&path) {
-                    if let Some(data) = Self::from_json(&content) {
+            if path.extension().and_then(|e| e.to_str()) == Some("json")
+                && let Ok(content) = fs::read_to_string(&path)
+                    && let Some(data) = Self::from_json(&content) {
                         results.push(data);
                     }
-                }
-            }
         }
         results
     }

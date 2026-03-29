@@ -160,7 +160,7 @@ fn configure_claude_settings() -> std::io::Result<()> {
 
     if changed {
         let content = serde_json::to_string_pretty(&settings)
-            .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e))?;
+            .map_err(|e| std::io::Error::other(e))?;
         fs::write(&settings_path, content)?;
     }
     Ok(())

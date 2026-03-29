@@ -17,6 +17,12 @@ pub struct DashboardNav {
     group_ranges: Vec<(usize, usize)>,
 }
 
+impl Default for DashboardNav {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl DashboardNav {
     pub fn new() -> Self {
         Self {
@@ -86,14 +92,13 @@ impl DashboardNav {
     }
 
     pub fn move_up(&mut self) {
-        if let Some(g) = self.current_group() {
-            if g >= self.grid_cols {
+        if let Some(g) = self.current_group()
+            && g >= self.grid_cols {
                 let target_group = g - self.grid_cols;
                 let pos = self.position_in_group();
                 let (start, size) = self.group_ranges[target_group];
                 self.selected = start + pos.min(size - 1);
             }
-        }
     }
 
     pub fn move_down(&mut self) {

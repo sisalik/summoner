@@ -410,8 +410,8 @@ fn ring_interior_fill(cells: &mut [CellKind], ids: &mut [u8], w: usize, h: usize
                 right_id = ids[idx];
             }
         }
-        if let (Some(l), Some(r)) = (left, right) {
-            if r > l + 1 {
+        if let (Some(l), Some(r)) = (left, right)
+            && r > l + 1 {
                 let mid = (l + r) / 2;
                 for x in (l + 1)..r {
                     let idx = y * w + x;
@@ -421,7 +421,6 @@ fn ring_interior_fill(cells: &mut [CellKind], ids: &mut [u8], w: usize, h: usize
                     }
                 }
             }
-        }
     }
 }
 
