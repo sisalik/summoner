@@ -1118,6 +1118,19 @@ pub fn run(terminal: &mut DefaultTerminal) -> Result<()> {
                         parser.screen_mut().set_size(session_rows, cols);
                     }
                 }
+                Event::Paste(text) => {
+                    if let Mode::Session(idx) = app.mode {
+                        if let Some(ref pty) = app.pty_sessions[idx] {
+                            // Wrap in bracketed paste sequences so the child app
+                            // (e.g. Claude Code) treats it as a single paste event
+                            let mut buf = Vec::with_capacity(text.len() + 12);
+                            buf.extend_from_slice(b"\x1b[200~");
+                            buf.extend_from_slice(text.as_bytes());
+                            buf.extend_from_slice(b"\x1b[201~");
+                            let _ = pty.write(&buf);
+                        }
+                    }
+                }
                 Event::Mouse(mouse) => {
                     if let Mode::Session(idx) = app.mode {
                         if idx < app.vt_parsers.len() {

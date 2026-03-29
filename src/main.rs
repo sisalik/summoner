@@ -191,9 +191,17 @@ fn main() -> Result<()> {
         }
         _ => {
             let mut terminal = ratatui::init();
-            crossterm::execute!(std::io::stdout(), crossterm::event::EnableMouseCapture)?;
+            crossterm::execute!(
+                std::io::stdout(),
+                crossterm::event::EnableMouseCapture,
+                crossterm::event::EnableBracketedPaste,
+            )?;
             let result = summoner::app::run(&mut terminal);
-            let _ = crossterm::execute!(std::io::stdout(), crossterm::event::DisableMouseCapture);
+            let _ = crossterm::execute!(
+                std::io::stdout(),
+                crossterm::event::DisableMouseCapture,
+                crossterm::event::DisableBracketedPaste,
+            );
             ratatui::restore();
             result
         }
