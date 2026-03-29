@@ -52,6 +52,7 @@ impl FootStep {
 pub struct LocomotionState {
     skeleton: Skeleton,
     base_widths: Vec<f32>,
+    rest_y_positions: Vec<f32>, // initial Y positions to anchor against
     state: SessionState,
     elapsed: f32,
     archetype: usize,
@@ -62,10 +63,11 @@ pub struct LocomotionState {
 impl LocomotionState {
     pub fn new(skeleton: Skeleton, state: SessionState) -> Self {
         let base_widths: Vec<f32> = skeleton.points.iter().map(|p| p.width).collect();
+        let rest_y_positions: Vec<f32> = skeleton.points.iter().map(|p| p.pos.y).collect();
         let archetype = detect_archetype(&skeleton);
         let foot_steps = skeleton.limbs.iter().map(|_| FootStep::new()).collect();
         let mut ls = Self {
-            skeleton, base_widths, state, elapsed: 0.0, archetype, foot_steps, settled: false,
+            skeleton, base_widths, rest_y_positions, state, elapsed: 0.0, archetype, foot_steps, settled: false,
         };
         if state == SessionState::Disconnected {
             ls.settle_disconnected();
@@ -116,10 +118,11 @@ impl LocomotionState {
     fn drive_working_bipedal(&mut self, dt: f32) {
         let offset = (self.elapsed * 2.0 * std::f32::consts::TAU).sin() * 3.0;
         if let Some(head) = self.skeleton.points.first_mut() { head.pos.x = 9.0 + offset; }
-        verlet_integrate(&mut self.skeleton, 0.98, Vec2::new(0.0, 0.1));
+        verlet_integrate(&mut self.skeleton, 0.98, Vec2::zero());
         apply_constraints(&mut self.skeleton, 3);
         self.update_foot_stepping_with_arc(dt, 5.0);
         self.update_arm_swing();
+        self.restore_vertical_center();
         snap_to_grid(&mut self.skeleton, 0.7);
         self.clamp_to_bounds();
     }
@@ -127,9 +130,10 @@ impl LocomotionState {
     fn drive_working_quadruped(&mut self, dt: f32) {
         let offset = (self.elapsed * 1.5 * std::f32::consts::TAU).sin() * 2.0;
         if let Some(head) = self.skeleton.points.first_mut() { head.pos.x += offset * dt * 3.0; }
-        verlet_integrate(&mut self.skeleton, 0.98, Vec2::new(0.0, 0.1));
+        verlet_integrate(&mut self.skeleton, 0.98, Vec2::zero());
         apply_constraints(&mut self.skeleton, 3);
         self.update_diagonal_gait(dt);
+        self.restore_vertical_center();
         snap_to_grid(&mut self.skeleton, 0.7);
         self.clamp_to_bounds();
     }
@@ -144,8 +148,9 @@ impl LocomotionState {
             self.skeleton.points[i].width = (bw + squeeze * 0.3).max(0.5);
             self.skeleton.points[i].pos.x += point_phase.cos() * 0.05;
         }
-        verlet_integrate(&mut self.skeleton, 0.98, Vec2::new(0.0, 0.05));
+        verlet_integrate(&mut self.skeleton, 0.98, Vec2::zero());
         apply_constraints(&mut self.skeleton, 3);
+        self.restore_vertical_center();
         snap_to_grid(&mut self.skeleton, 0.7);
         self.clamp_to_bounds();
     }
@@ -159,9 +164,10 @@ impl LocomotionState {
                 pt.pos.y += flap_phase.sin() * 2.0 * 0.1;
             }
         }
-        verlet_integrate(&mut self.skeleton, 0.98, Vec2::new(0.0, 0.1));
+        verlet_integrate(&mut self.skeleton, 0.98, Vec2::zero());
         apply_constraints(&mut self.skeleton, 3);
         self.update_foot_stepping_with_arc(dt, 5.0);
+        self.restore_vertical_center();
         snap_to_grid(&mut self.skeleton, 0.7);
         self.clamp_to_bounds();
     }
@@ -175,8 +181,9 @@ impl LocomotionState {
         }
         let drift = (self.elapsed * 0.5 * std::f32::consts::TAU).sin() * 2.0;
         if let Some(head) = self.skeleton.points.first_mut() { head.pos.x += drift * 0.02; }
-        verlet_integrate(&mut self.skeleton, 0.98, Vec2::new(0.0, 0.0));
+        verlet_integrate(&mut self.skeleton, 0.98, Vec2::zero());
         apply_constraints(&mut self.skeleton, 3);
+        self.restore_vertical_center();
         snap_to_grid(&mut self.skeleton, 0.7);
         self.clamp_to_bounds();
     }
@@ -184,8 +191,9 @@ impl LocomotionState {
     fn drive_waiting(&mut self, _dt: f32) {
         let offset = (self.elapsed * std::f32::consts::TAU).sin() * 1.5;
         if let Some(head) = self.skeleton.points.first_mut() { head.pos.x = 9.0 + offset; }
-        verlet_integrate(&mut self.skeleton, 0.95, Vec2::new(0.0, 0.1));
+        verlet_integrate(&mut self.skeleton, 0.95, Vec2::zero());
         apply_constraints(&mut self.skeleton, 3);
+        self.restore_vertical_center();
         snap_to_grid(&mut self.skeleton, 0.7);
         self.clamp_to_bounds();
     }
@@ -197,8 +205,9 @@ impl LocomotionState {
         }
         let head_nudge = (self.elapsed * 0.3 * std::f32::consts::TAU).sin() * 0.5;
         if let Some(head) = self.skeleton.points.first_mut() { head.pos.x = 9.0 + head_nudge; }
-        verlet_integrate(&mut self.skeleton, 0.90, Vec2::new(0.0, 0.05));
+        verlet_integrate(&mut self.skeleton, 0.90, Vec2::zero());
         apply_constraints(&mut self.skeleton, 2);
+        self.restore_vertical_center();
         snap_to_grid(&mut self.skeleton, 0.7);
         self.clamp_to_bounds();
     }
@@ -208,8 +217,9 @@ impl LocomotionState {
         for (pt, &bw) in self.skeleton.points.iter_mut().zip(self.base_widths.iter()) {
             pt.width = bw + breath * 0.15;
         }
-        verlet_integrate(&mut self.skeleton, 0.85, Vec2::new(0.0, 0.02));
+        verlet_integrate(&mut self.skeleton, 0.85, Vec2::zero());
         apply_constraints(&mut self.skeleton, 2);
+        self.restore_vertical_center();
         snap_to_grid(&mut self.skeleton, 0.7);
         self.clamp_to_bounds();
     }
@@ -290,6 +300,23 @@ impl LocomotionState {
         self.skeleton.limbs[0].end_effector.y = anchor_l.y + self.skeleton.limbs[0].upper_len + self.skeleton.limbs[0].lower_len * 0.5;
         self.skeleton.limbs[1].end_effector.x = anchor_r.x - (leg_l_x - anchor_l.x).signum() * arm_swing;
         self.skeleton.limbs[1].end_effector.y = anchor_r.y + self.skeleton.limbs[1].upper_len + self.skeleton.limbs[1].lower_len * 0.5;
+    }
+
+    /// Anchor the skeleton vertically: shift all points so the spine's average Y
+    /// matches the rest position. This prevents drift from Verlet integration while
+    /// still allowing relative vertical movement (breathing, bouncing).
+    fn restore_vertical_center(&mut self) {
+        let current_y: f32 = self.skeleton.points.iter()
+            .map(|p| p.pos.y).sum::<f32>() / self.skeleton.points.len() as f32;
+        let rest_y: f32 = self.rest_y_positions.iter().sum::<f32>()
+            / self.rest_y_positions.len() as f32;
+        let drift = current_y - rest_y;
+        if drift.abs() > 0.01 {
+            for pt in &mut self.skeleton.points {
+                pt.pos.y -= drift;
+                pt.prev_pos.y -= drift;
+            }
+        }
     }
 
     fn clamp_to_bounds(&mut self) {
