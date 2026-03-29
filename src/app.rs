@@ -459,14 +459,14 @@ impl App {
         if key.code == KeyCode::F(12) {
             match self.mode {
                 Mode::Dashboard | Mode::DirPicker => {
-                    // Go back to last session if one exists
+                    // Go back to last session if one exists (active or disconnected)
                     if let Some(idx) = self.last_session {
-                        if idx < self.sessions.len() && self.pty_sessions.get(idx).is_some_and(|p| p.is_some()) {
+                        if idx < self.sessions.len() {
                             self.mode = Mode::Session(idx);
                             return Ok(false);
                         }
                     }
-                    // No active session to return to
+                    // No session to return to
                 }
                 Mode::Session(idx) => {
                     self.last_session = Some(idx);
@@ -579,8 +579,9 @@ impl App {
             KeyCode::Enter => {
                 if let Some(sess_idx) = sel {
                     if self.pty_sessions[sess_idx].is_none() {
-                        // Dead session — restore it
-                        self.restore_session(sess_idx, rows, cols)?;
+                        // Disconnected session — show resume dialog (like F-keys)
+                        self.last_session = Some(sess_idx);
+                        self.mode = Mode::Session(sess_idx);
                     } else {
                         // Active session — switch to it
                         let pty_rows = rows.saturating_sub(1);
