@@ -879,17 +879,26 @@ use ratatui::widgets::Widget;
 fn key_to_bytes(key: KeyEvent) -> Vec<u8> {
     let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
     let alt = key.modifiers.contains(KeyModifiers::ALT);
+    let shift = key.modifiers.contains(KeyModifiers::SHIFT);
+
+    // xterm modifier parameter: 1 + (shift=1, alt=2, ctrl=4)
+    let xterm_mod = 1
+        + if shift { 1 } else { 0 }
+        + if alt { 2 } else { 0 }
+        + if ctrl { 4 } else { 0 };
+    let has_mod = xterm_mod > 1;
 
     match key.code {
+        // Ctrl+char: control byte (optionally with Alt ESC prefix)
         KeyCode::Char(c) if ctrl => {
-            // Ctrl+A = 0x01, Ctrl+B = 0x02, etc.
             let byte = (c as u8).wrapping_sub(b'a').wrapping_add(1);
             if byte <= 26 {
-                vec![byte]
+                if alt { vec![0x1b, byte] } else { vec![byte] }
             } else {
                 vec![]
             }
         }
+        // Alt+char: ESC prefix
         KeyCode::Char(c) if alt => {
             let mut bytes = vec![0x1b];
             let mut buf = [0u8; 4];
@@ -901,35 +910,64 @@ fn key_to_bytes(key: KeyEvent) -> Vec<u8> {
             c.encode_utf8(&mut buf).as_bytes().to_vec()
         }
         KeyCode::Enter => vec![b'\r'],
-        KeyCode::Backspace => vec![0x7f],
+        KeyCode::Backspace => if alt { vec![0x1b, 0x7f] } else { vec![0x7f] },
         KeyCode::Tab => vec![b'\t'],
+        KeyCode::BackTab => b"\x1b[Z".to_vec(),
         KeyCode::Esc => vec![0x1b],
-        KeyCode::Up => b"\x1b[A".to_vec(),
-        KeyCode::Down => b"\x1b[B".to_vec(),
-        KeyCode::Right => b"\x1b[C".to_vec(),
-        KeyCode::Left => b"\x1b[D".to_vec(),
-        KeyCode::Home => b"\x1b[H".to_vec(),
-        KeyCode::End => b"\x1b[F".to_vec(),
-        KeyCode::PageUp => b"\x1b[5~".to_vec(),
-        KeyCode::PageDown => b"\x1b[6~".to_vec(),
-        KeyCode::Delete => b"\x1b[3~".to_vec(),
-        KeyCode::Insert => b"\x1b[2~".to_vec(),
-        KeyCode::F(n) => match n {
-            1 => b"\x1bOP".to_vec(),
-            2 => b"\x1bOQ".to_vec(),
-            3 => b"\x1bOR".to_vec(),
-            4 => b"\x1bOS".to_vec(),
-            5 => b"\x1b[15~".to_vec(),
-            6 => b"\x1b[17~".to_vec(),
-            7 => b"\x1b[18~".to_vec(),
-            8 => b"\x1b[19~".to_vec(),
-            9 => b"\x1b[20~".to_vec(),
-            10 => b"\x1b[21~".to_vec(),
-            11 => b"\x1b[23~".to_vec(),
-            12 => b"\x1b[24~".to_vec(),
-            _ => vec![],
-        },
+        // Cursor keys: unmodified ESC[X, modified ESC[1;<mod>X
+        KeyCode::Up    => csi_final(b'A', xterm_mod, has_mod),
+        KeyCode::Down  => csi_final(b'B', xterm_mod, has_mod),
+        KeyCode::Right => csi_final(b'C', xterm_mod, has_mod),
+        KeyCode::Left  => csi_final(b'D', xterm_mod, has_mod),
+        KeyCode::Home  => csi_final(b'H', xterm_mod, has_mod),
+        KeyCode::End   => csi_final(b'F', xterm_mod, has_mod),
+        // Tilde keys: unmodified ESC[<n>~, modified ESC[<n>;<mod>~
+        KeyCode::PageUp   => csi_tilde(5, xterm_mod, has_mod),
+        KeyCode::PageDown => csi_tilde(6, xterm_mod, has_mod),
+        KeyCode::Delete   => csi_tilde(3, xterm_mod, has_mod),
+        KeyCode::Insert   => csi_tilde(2, xterm_mod, has_mod),
+        // F-keys: F1-4 use SS3 unmodified / CSI 1;<mod> modified; F5+ use tilde form
+        KeyCode::F(n) => f_key_bytes(n, xterm_mod, has_mod),
         _ => vec![],
+    }
+}
+
+/// CSI sequence ending with a letter: ESC[X or ESC[1;<mod>X
+fn csi_final(letter: u8, xterm_mod: u8, has_mod: bool) -> Vec<u8> {
+    if has_mod {
+        format!("\x1b[1;{}{}", xterm_mod, letter as char).into_bytes()
+    } else {
+        vec![0x1b, b'[', letter]
+    }
+}
+
+/// CSI tilde sequence: ESC[<n>~ or ESC[<n>;<mod>~
+fn csi_tilde(n: u8, xterm_mod: u8, has_mod: bool) -> Vec<u8> {
+    if has_mod {
+        format!("\x1b[{};{}~", n, xterm_mod).into_bytes()
+    } else {
+        format!("\x1b[{}~", n).into_bytes()
+    }
+}
+
+/// F-key escape sequences with optional xterm modifier
+fn f_key_bytes(n: u8, xterm_mod: u8, has_mod: bool) -> Vec<u8> {
+    // F1-F4: SS3 P/Q/R/S unmodified, CSI 1;<mod> P/Q/R/S modified
+    if n <= 4 {
+        let letter = b'P' + (n - 1);
+        if has_mod {
+            format!("\x1b[1;{}{}", xterm_mod, letter as char).into_bytes()
+        } else {
+            vec![0x1b, b'O', letter]
+        }
+    } else {
+        // F5-F12 tilde codes (with the standard gaps at 16 and 22)
+        let code: u8 = match n {
+            5 => 15, 6 => 17, 7 => 18, 8 => 19,
+            9 => 20, 10 => 21, 11 => 23, 12 => 24,
+            _ => return vec![],
+        };
+        csi_tilde(code, xterm_mod, has_mod)
     }
 }
 
