@@ -249,9 +249,9 @@ impl App {
             // Primary: use Claude Code hooks for state detection
             // Detect Claude state via hooks (primary) or process check (fallback)
             let shell_pid = pty.pid();
-            let (hook_state, hook_session_id) = shell_pid
+            let (hook_state, hook_session_id, _hook_tool) = shell_pid
                 .map(|pid| hooks::read_hook_state(&self.config_dir, pid))
-                .unwrap_or((None, None));
+                .unwrap_or((None, None, None));
 
             // Pick up conversation ID from hooks or fallback
             if self.sessions[i].claude_conversation_id.is_none() {
