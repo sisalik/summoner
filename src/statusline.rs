@@ -151,6 +151,7 @@ fn uninstall_wrapper_inner() -> std::io::Result<()> {
 #[derive(Debug, Clone)]
 pub struct StatusLineData {
     pub session_id: String,
+    pub transcript_path: Option<String>,
     pub context_pct: Option<u8>,
     pub five_hour_pct: Option<u8>,
     pub five_hour_resets_at: Option<i64>,
@@ -162,6 +163,9 @@ impl StatusLineData {
     pub fn from_json(json: &str) -> Option<Self> {
         let v: serde_json::Value = serde_json::from_str(json).ok()?;
         let session_id = v.get("session_id")?.as_str()?.to_string();
+        let transcript_path = v.get("transcript_path")
+            .and_then(|t| t.as_str())
+            .map(|s| s.to_string());
 
         let context_pct = v.get("context_window")
             .and_then(|cw| cw.get("used_percentage"))
@@ -188,6 +192,7 @@ impl StatusLineData {
 
         Some(Self {
             session_id,
+            transcript_path,
             context_pct,
             five_hour_pct,
             five_hour_resets_at,

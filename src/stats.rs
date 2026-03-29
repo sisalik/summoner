@@ -72,8 +72,8 @@ pub fn parse_jsonl_stats(path: &Path, offset: u64) -> (u64, u32, u64) {
         }
 
         if let Some(usage) = parsed.get("message").and_then(|m| m.get("usage")) {
-            let input = usage.get("inputTokens").and_then(|v| v.as_u64()).unwrap_or(0);
-            let output = usage.get("outputTokens").and_then(|v| v.as_u64()).unwrap_or(0);
+            let input = usage.get("input_tokens").and_then(|v| v.as_u64()).unwrap_or(0);
+            let output = usage.get("output_tokens").and_then(|v| v.as_u64()).unwrap_or(0);
             tokens += input + output;
         }
     }
@@ -89,16 +89,8 @@ fn dir_to_project_hash(directory: &str) -> String {
 
 pub fn find_jsonl_path(claude_dir: &Path, project_directory: &str, session_id: &str) -> Option<PathBuf> {
     let hash = dir_to_project_hash(project_directory);
-    let session_dir = claude_dir.join("projects").join(&hash).join(session_id);
-    if !session_dir.is_dir() { return None; }
-    let entries = std::fs::read_dir(&session_dir).ok()?;
-    for entry in entries.flatten() {
-        let path = entry.path();
-        if path.extension().and_then(|e| e.to_str()) == Some("jsonl") {
-            return Some(path);
-        }
-    }
-    None
+    let path = claude_dir.join("projects").join(&hash).join(format!("{}.jsonl", session_id));
+    if path.is_file() { Some(path) } else { None }
 }
 
 /// Tool display for creature status line — uses emojis with space separator.

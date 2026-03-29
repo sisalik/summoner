@@ -63,8 +63,8 @@ fn parse_jsonl_counts_tokens_and_messages() {
     let path = dir.path().join("test.jsonl");
     let mut f = std::fs::File::create(&path).unwrap();
     writeln!(f, r#"{{"type":"user","message":{{"role":"user","content":"hello"}}}}"#).unwrap();
-    writeln!(f, r#"{{"type":"assistant","message":{{"role":"assistant","content":"hi","usage":{{"inputTokens":100,"outputTokens":50,"cacheReadInputTokens":20,"cacheCreationInputTokens":10}}}}}}"#).unwrap();
-    writeln!(f, r#"{{"type":"assistant","message":{{"role":"assistant","content":"ok","usage":{{"inputTokens":200,"outputTokens":100,"cacheReadInputTokens":0,"cacheCreationInputTokens":0}}}}}}"#).unwrap();
+    writeln!(f, r#"{{"type":"assistant","message":{{"role":"assistant","content":"hi","usage":{{"input_tokens":100,"output_tokens":50,"cache_read_input_tokens":20,"cache_creation_input_tokens":10}}}}}}"#).unwrap();
+    writeln!(f, r#"{{"type":"assistant","message":{{"role":"assistant","content":"ok","usage":{{"input_tokens":200,"output_tokens":100,"cache_read_input_tokens":0,"cache_creation_input_tokens":0}}}}}}"#).unwrap();
 
     let (tokens, messages, offset) = parse_jsonl_stats(&path, 0);
     assert_eq!(tokens, 450); // 100+50 + 200+100
@@ -78,14 +78,14 @@ fn parse_jsonl_incremental_from_offset() {
     let path = dir.path().join("test.jsonl");
     let mut f = std::fs::File::create(&path).unwrap();
     writeln!(f, r#"{{"type":"user","message":{{"role":"user","content":"hello"}}}}"#).unwrap();
-    writeln!(f, r#"{{"type":"assistant","message":{{"role":"assistant","content":"hi","usage":{{"inputTokens":100,"outputTokens":50,"cacheReadInputTokens":0,"cacheCreationInputTokens":0}}}}}}"#).unwrap();
+    writeln!(f, r#"{{"type":"assistant","message":{{"role":"assistant","content":"hi","usage":{{"input_tokens":100,"output_tokens":50,"cache_read_input_tokens":0,"cache_creation_input_tokens":0}}}}}}"#).unwrap();
 
     let (tokens1, messages1, offset1) = parse_jsonl_stats(&path, 0);
     assert_eq!(tokens1, 150);
     assert_eq!(messages1, 2);
 
     let mut f = std::fs::OpenOptions::new().append(true).open(&path).unwrap();
-    writeln!(f, r#"{{"type":"assistant","message":{{"role":"assistant","content":"more","usage":{{"inputTokens":300,"outputTokens":200,"cacheReadInputTokens":0,"cacheCreationInputTokens":0}}}}}}"#).unwrap();
+    writeln!(f, r#"{{"type":"assistant","message":{{"role":"assistant","content":"more","usage":{{"input_tokens":300,"output_tokens":200,"cache_read_input_tokens":0,"cache_creation_input_tokens":0}}}}}}"#).unwrap();
 
     let (tokens2, messages2, _offset2) = parse_jsonl_stats(&path, offset1);
     assert_eq!(tokens2, 500);
@@ -97,9 +97,9 @@ fn find_jsonl_path_locates_file() {
     let dir = tempfile::tempdir().unwrap();
     let project_hash = "-home-test-myproject";
     let session_id = "abc-123";
-    let session_dir = dir.path().join("projects").join(project_hash).join(session_id);
-    std::fs::create_dir_all(&session_dir).unwrap();
-    let jsonl = session_dir.join("agent-xyz.jsonl");
+    let project_dir = dir.path().join("projects").join(project_hash);
+    std::fs::create_dir_all(&project_dir).unwrap();
+    let jsonl = project_dir.join(format!("{}.jsonl", session_id));
     std::fs::write(&jsonl, "{}\n").unwrap();
     let result = find_jsonl_path(dir.path(), "/home/test/myproject", session_id);
     assert!(result.is_some());

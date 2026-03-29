@@ -752,6 +752,13 @@ impl App {
                 for i in 0..self.sessions.len() {
                     if self.sessions[i].claude_conversation_id.as_deref() == Some(&sl.session_id) {
                         self.session_stats[i].context_pct = sl.context_pct;
+                        if self.session_stats[i].jsonl_path.is_none()
+                            && let Some(ref tp) = sl.transcript_path {
+                                let p = std::path::PathBuf::from(tp);
+                                if p.is_file() {
+                                    self.session_stats[i].jsonl_path = Some(p);
+                                }
+                            }
                     }
                 }
                 if sl.five_hour_pct.is_some() {
