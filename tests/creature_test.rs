@@ -1,4 +1,6 @@
-use summoner::creature::generate::{Sprite, generate_sprite, CellKind, Xorshift};
+use summoner::creature::generate::{CellKind, Xorshift};
+use summoner::creature::skeleton::Vec2;
+use summoner::creature::skeleton::{Skeleton, ARCHETYPE_COUNT, archetype_name, archetype_index};
 
 #[test]
 fn xorshift_is_deterministic() {
@@ -19,165 +21,338 @@ fn xorshift_different_seeds_produce_different_output() {
 }
 
 #[test]
-fn sprite_has_correct_dimensions() {
-    let mask = vec![
-        vec![0, 0, 1, 1],
-        vec![0, 1, 1, 1],
-        vec![0, 1, 2, 2],
-        vec![0, 0, 1, 1],
-    ];
-    let sprite = generate_sprite(&mask, 42);
-    // Width = mask[0].len() * 2 (mirrored), height = mask.len()
-    assert_eq!(sprite.width, 8);
-    assert_eq!(sprite.height, 4);
+fn vec2_add_sub() {
+    let a = Vec2::new(3.0, 4.0);
+    let b = Vec2::new(1.0, 2.0);
+    let sum = a + b;
+    assert!((sum.x - 4.0).abs() < 1e-6);
+    assert!((sum.y - 6.0).abs() < 1e-6);
+    let diff = a - b;
+    assert!((diff.x - 2.0).abs() < 1e-6);
+    assert!((diff.y - 2.0).abs() < 1e-6);
 }
 
 #[test]
-fn sprite_is_horizontally_symmetric() {
-    let mask = vec![
-        vec![0, 1, 1, 2],
-        vec![1, 1, 2, 2],
-        vec![0, 1, 1, 1],
-    ];
-    let sprite = generate_sprite(&mask, 42);
-    for y in 0..sprite.height {
-        for x in 0..sprite.width / 2 {
-            let mirror_x = sprite.width - 1 - x;
-            assert_eq!(
-                sprite.get(x, y),
-                sprite.get(mirror_x, y),
-                "Asymmetry at y={y}, x={x} vs x={mirror_x}"
-            );
+fn vec2_scale() {
+    let v = Vec2::new(3.0, 4.0);
+    let scaled = v * 2.0;
+    assert!((scaled.x - 6.0).abs() < 1e-6);
+    assert!((scaled.y - 8.0).abs() < 1e-6);
+}
+
+#[test]
+fn vec2_length() {
+    let v = Vec2::new(3.0, 4.0);
+    assert!((v.length() - 5.0).abs() < 1e-6);
+}
+
+#[test]
+fn vec2_perpendicular() {
+    let v = Vec2::new(1.0, 0.0);
+    let perp = v.perpendicular();
+    assert!((perp.x).abs() < 1e-6);
+    assert!((perp.y.abs() - 1.0).abs() < 1e-6);
+}
+
+#[test]
+fn vec2_normalize() {
+    let v = Vec2::new(3.0, 4.0);
+    let n = v.normalized();
+    assert!((n.length() - 1.0).abs() < 1e-6);
+    assert!((n.x - 0.6).abs() < 1e-6);
+    assert!((n.y - 0.8).abs() < 1e-6);
+}
+
+#[test]
+fn vec2_normalize_zero_returns_zero() {
+    let v = Vec2::new(0.0, 0.0);
+    let n = v.normalized();
+    assert!((n.x).abs() < 1e-6);
+    assert!((n.y).abs() < 1e-6);
+}
+
+#[test]
+fn skeleton_instantiate_bipedal_has_correct_topology() {
+    let skel = Skeleton::instantiate(0, 42);
+    assert!(skel.points.len() >= 6, "Bipedal should have at least 6 chain points, got {}", skel.points.len());
+    assert_eq!(skel.limbs.len(), 4, "Bipedal should have 4 limbs");
+    assert!(skel.constraints.len() >= 5, "Bipedal should have at least 5 constraints");
+}
+
+#[test]
+fn skeleton_instantiate_quadruped_has_correct_topology() {
+    let skel = Skeleton::instantiate(1, 42);
+    assert!(skel.points.len() >= 7);
+    assert_eq!(skel.limbs.len(), 4);
+}
+
+#[test]
+fn skeleton_instantiate_blob_has_no_limbs() {
+    let skel = Skeleton::instantiate(2, 42);
+    assert!(skel.points.len() >= 6);
+    assert_eq!(skel.limbs.len(), 0);
+}
+
+#[test]
+fn skeleton_instantiate_winged_has_wings_and_legs() {
+    let skel = Skeleton::instantiate(3, 42);
+    assert!(skel.points.len() >= 9);
+    assert_eq!(skel.limbs.len(), 2);
+}
+
+#[test]
+fn skeleton_instantiate_serpentine_has_long_chain() {
+    let skel = Skeleton::instantiate(4, 42);
+    assert!(skel.points.len() >= 6);
+    assert_eq!(skel.limbs.len(), 0);
+}
+
+#[test]
+fn different_seeds_produce_different_skeletons() {
+    let s1 = Skeleton::instantiate(0, 100);
+    let s2 = Skeleton::instantiate(0, 200);
+    assert_eq!(s1.points.len(), s2.points.len());
+    assert_eq!(s1.limbs.len(), s2.limbs.len());
+    let widths_differ = s1.points.iter().zip(s2.points.iter())
+        .any(|(a, b)| (a.width - b.width).abs() > 0.01);
+    assert!(widths_differ, "Different seeds should produce different body proportions");
+}
+
+#[test]
+fn same_seed_produces_identical_skeleton() {
+    let s1 = Skeleton::instantiate(0, 42);
+    let s2 = Skeleton::instantiate(0, 42);
+    for (a, b) in s1.points.iter().zip(s2.points.iter()) {
+        assert!((a.width - b.width).abs() < 1e-6);
+        assert!((a.pos.x - b.pos.x).abs() < 1e-6);
+        assert!((a.pos.y - b.pos.y).abs() < 1e-6);
+    }
+}
+
+#[test]
+fn archetype_count_is_five() {
+    assert_eq!(ARCHETYPE_COUNT, 5);
+}
+
+#[test]
+fn archetype_name_roundtrips() {
+    for i in 0..ARCHETYPE_COUNT {
+        let name = archetype_name(i);
+        assert_eq!(archetype_index(name), i);
+    }
+}
+
+#[test]
+fn skeleton_points_fit_within_sprite_bounds() {
+    for archetype in 0..ARCHETYPE_COUNT {
+        let skel = Skeleton::instantiate(archetype, 42);
+        for pt in &skel.points {
+            assert!(pt.pos.x >= 0.0 && pt.pos.x <= 18.0,
+                "Archetype {} point {} x={} out of bounds", archetype, pt.name, pt.pos.x);
+            assert!(pt.pos.y >= 0.0 && pt.pos.y <= 24.0,
+                "Archetype {} point {} y={} out of bounds", archetype, pt.name, pt.pos.y);
         }
     }
 }
 
+use summoner::creature::physics::{verlet_integrate, apply_constraints, solve_two_bone_ik};
+
 #[test]
-fn same_seed_produces_same_sprite() {
-    let mask = vec![
-        vec![0, 1, 2, 1],
-        vec![1, 1, 2, 2],
-    ];
-    let s1 = generate_sprite(&mask, 12345);
-    let s2 = generate_sprite(&mask, 12345);
-    assert_eq!(s1.cells, s2.cells);
+fn verlet_integration_moves_points() {
+    let mut skel = Skeleton::instantiate(0, 42);
+    let head_before = skel.points[0].pos;
+    skel.points[0].prev_pos = skel.points[0].pos - Vec2::new(1.0, 0.0);
+    verlet_integrate(&mut skel, 0.98, Vec2::new(0.0, 0.5));
+    let head_after = skel.points[0].pos;
+    assert!(head_after.x > head_before.x, "Head should move right from velocity");
+    assert!(head_after.y > head_before.y, "Head should move down from gravity");
 }
 
 #[test]
-fn different_seeds_produce_different_sprites() {
-    let mask = vec![
-        vec![0, 1, 2, 1],
-        vec![1, 1, 2, 2],
-        vec![1, 2, 2, 1],
-        vec![0, 1, 1, 0],
-    ];
-    let s1 = generate_sprite(&mask, 100);
-    let s2 = generate_sprite(&mask, 200);
-    assert_ne!(s1.cells, s2.cells);
+fn verlet_pinned_points_dont_move() {
+    let mut skel = Skeleton::instantiate(0, 42);
+    skel.points[0].pinned = true;
+    let head_before = skel.points[0].pos;
+    skel.points[0].prev_pos = skel.points[0].pos - Vec2::new(1.0, 0.0);
+    verlet_integrate(&mut skel, 0.98, Vec2::new(0.0, 0.5));
+    assert!((skel.points[0].pos.x - head_before.x).abs() < 1e-6);
+    assert!((skel.points[0].pos.y - head_before.y).abs() < 1e-6);
 }
 
 #[test]
-fn borders_surround_body_cells() {
-    let mask = vec![
-        vec![0, 0, 0, 0],
-        vec![0, 1, 1, 0],
-        vec![0, 1, 1, 0],
-        vec![0, 0, 0, 0],
-    ];
-    let sprite = generate_sprite(&mask, 1);
-    let mut has_body = false;
-    let mut has_border = false;
-    for y in 0..sprite.height {
-        for x in 0..sprite.width {
-            match sprite.get(x, y) {
-                CellKind::Body => has_body = true,
-                CellKind::Border => has_border = true,
-                CellKind::Empty => {}
-            }
-        }
+fn constraints_maintain_distances() {
+    let mut skel = Skeleton::instantiate(0, 42);
+    skel.points[0].pos = Vec2::new(0.0, 0.0);
+    apply_constraints(&mut skel, 3);
+    let dist = (skel.points[0].pos - skel.points[1].pos).length();
+    let rest = skel.constraints[0].rest_length;
+    assert!((dist - rest).abs() < 0.5, "Constraint not satisfied: dist={dist}, rest={rest}");
+}
+
+#[test]
+fn two_bone_ik_reaches_target() {
+    let anchor = Vec2::new(9.0, 10.0);
+    let target = Vec2::new(9.0, 16.0);
+    let result = solve_two_bone_ik(anchor, target, 3.0, 3.0);
+    let end_dist = (result.end - target).length();
+    assert!(end_dist < 0.5, "IK end not near target");
+    let upper_dist = (result.mid - anchor).length();
+    let lower_dist = (result.end - result.mid).length();
+    assert!((upper_dist - 3.0).abs() < 0.5);
+    assert!((lower_dist - 3.0).abs() < 0.5);
+}
+
+#[test]
+fn two_bone_ik_clamps_when_target_unreachable() {
+    let anchor = Vec2::new(9.0, 10.0);
+    let target = Vec2::new(9.0, 25.0);
+    let result = solve_two_bone_ik(anchor, target, 3.0, 3.0);
+    let total = (result.end - anchor).length();
+    assert!((total - 6.0).abs() < 0.5, "Should fully extend: total={total}");
+}
+
+use summoner::creature::outline::rasterize_skeleton;
+
+#[test]
+fn rasterize_bipedal_produces_non_empty_sprite() {
+    let skel = Skeleton::instantiate(0, 42);
+    let result = rasterize_skeleton(&skel);
+    assert_eq!(result.sprite.width, 18);
+    assert_eq!(result.sprite.height, 24);
+    let filled = result.sprite.cells.iter().filter(|c| **c != CellKind::Empty).count();
+    assert!(filled > 10, "Rasterized bipedal should have significant fill, got {filled}");
+}
+
+#[test]
+fn rasterize_all_archetypes_produce_visible_sprites() {
+    for archetype in 0..ARCHETYPE_COUNT {
+        let skel = Skeleton::instantiate(archetype, 42);
+        let result = rasterize_skeleton(&skel);
+        let filled = result.sprite.cells.iter().filter(|c| **c != CellKind::Empty).count();
+        assert!(filled > 5, "Archetype {} produced only {filled} filled cells", archetype_name(archetype));
     }
-    assert!(has_body || has_border, "Sprite should have some filled cells");
-}
-
-use summoner::creature::templates::{get_template, template_name, TEMPLATE_COUNT};
-
-#[test]
-fn all_templates_produce_valid_sprites() {
-    for i in 0..TEMPLATE_COUNT {
-        let mask = get_template(i);
-        let sprite = generate_sprite(&mask, 42);
-        assert!(sprite.width > 0);
-        assert!(sprite.height > 0);
-        let filled = sprite.cells.iter().filter(|c| **c != CellKind::Empty).count();
-        assert!(filled > 0, "Template {} produced empty sprite", template_name(i));
-    }
 }
 
 #[test]
-fn template_selection_wraps_with_modulo() {
-    let t1 = get_template(0);
-    let t2 = get_template(TEMPLATE_COUNT);
-    assert_eq!(t1.len(), t2.len());
+fn rasterized_sprite_has_borders_around_body() {
+    let skel = Skeleton::instantiate(0, 42);
+    let result = rasterize_skeleton(&skel);
+    let has_body = result.sprite.cells.iter().any(|c| *c == CellKind::Body);
+    let has_border = result.sprite.cells.iter().any(|c| *c == CellKind::Border);
+    assert!(has_body, "Should have Body cells");
+    assert!(has_border, "Should have Border cells");
 }
 
-use summoner::creature::render::{render_sprite_to_buffer, state_palette};
-use summoner::creature::animate::{AnimationState, animate_sprite};
+#[test]
+fn rasterize_same_skeleton_is_deterministic() {
+    let skel = Skeleton::instantiate(0, 42);
+    let s1 = rasterize_skeleton(&skel);
+    let s2 = rasterize_skeleton(&skel);
+    assert_eq!(s1.sprite.cells, s2.sprite.cells);
+}
+
+use summoner::creature::locomotion::LocomotionState;
 use summoner::session::SessionState;
+use std::time::Duration;
+use summoner::creature::render::{render_sprite_to_buffer, state_palette, sprite_cell_size};
 use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;
 
 #[test]
-fn render_sprite_fills_buffer_cells() {
-    let mask = vec![
-        vec![0, 1, 1],
-        vec![1, 1, 1],
-        vec![1, 1, 0],
-        vec![0, 1, 0],
-    ];
-    let sprite = generate_sprite(&mask, 42);
-    let area = Rect::new(0, 0, sprite.width as u16, (sprite.height / 2 + sprite.height % 2) as u16);
-    let mut buf = Buffer::empty(area);
-    let palette = state_palette(SessionState::Working);
-    render_sprite_to_buffer(&sprite, &palette, area, &mut buf);
-    let non_empty = (0..area.height)
-        .flat_map(|y| (0..area.width).map(move |x| (x, y)))
-        .filter(|(x, y)| {
-            let cell = &buf[ratatui::layout::Position { x: *x, y: *y }];
-            cell.symbol() != " "
-        })
-        .count();
-    assert!(non_empty > 0, "Rendered sprite should have visible cells");
+fn locomotion_new_creates_valid_state() {
+    let skel = Skeleton::instantiate(0, 42);
+    let loco = LocomotionState::new(skel, SessionState::Working);
+    assert_eq!(loco.state(), SessionState::Working);
 }
 
 #[test]
-fn animation_state_advances_frames() {
-    let mut anim = AnimationState::new(SessionState::Working);
-    let frame0 = anim.current_frame();
-    anim.tick(std::time::Duration::from_millis(250));
-    let frame1 = anim.current_frame();
-    assert!(frame0 == 0);
-    assert!(frame1 > 0 || anim.total_frames() == 1);
+fn locomotion_tick_modifies_skeleton() {
+    let skel = Skeleton::instantiate(0, 42);
+    let mut loco = LocomotionState::new(skel, SessionState::Working);
+    let before = loco.skeleton().points[0].pos;
+    for _ in 0..10 {
+        loco.tick(Duration::from_millis(33));
+    }
+    let after = loco.skeleton().points[0].pos;
+    let moved = (after.x - before.x).abs() > 0.1 || (after.y - before.y).abs() > 0.1;
+    assert!(moved, "Working locomotion should move the head: before={:?} after={:?}", before, after);
 }
 
 #[test]
-fn animation_state_changes_reset_frame() {
-    let mut anim = AnimationState::new(SessionState::Working);
-    anim.tick(std::time::Duration::from_millis(500));
-    anim.set_state(SessionState::Idle);
-    assert_eq!(anim.current_frame(), 0);
+fn locomotion_sleeping_is_static() {
+    let skel = Skeleton::instantiate(0, 42);
+    let mut loco = LocomotionState::new(skel, SessionState::Sleeping);
+    for _ in 0..20 {
+        loco.tick(Duration::from_millis(33));
+    }
+    let before = loco.skeleton().points[0].pos;
+    for _ in 0..10 {
+        loco.tick(Duration::from_millis(33));
+    }
+    let after = loco.skeleton().points[0].pos;
+    let dx = (after.x - before.x).abs();
+    let dy = (after.y - before.y).abs();
+    assert!(dx < 2.0 && dy < 2.0, "Sleeping should have minimal movement: dx={dx}, dy={dy}");
 }
 
 #[test]
-fn animate_sprite_returns_modified_sprite() {
-    let mask = vec![
-        vec![0, 1, 1],
-        vec![1, 1, 1],
-        vec![1, 1, 0],
-        vec![0, 1, 0],
-    ];
-    let base = generate_sprite(&mask, 42);
-    let anim = AnimationState::new(SessionState::Idle);
-    let animated = animate_sprite(&base, &anim);
-    assert!(animated.width == base.width);
-    assert!(animated.height >= base.height - 1 && animated.height <= base.height + 2);
+fn locomotion_state_change_resets() {
+    let skel = Skeleton::instantiate(0, 42);
+    let mut loco = LocomotionState::new(skel, SessionState::Working);
+    for _ in 0..5 {
+        loco.tick(Duration::from_millis(33));
+    }
+    loco.set_state(SessionState::Idle);
+    assert_eq!(loco.state(), SessionState::Idle);
+}
+
+#[test]
+fn locomotion_disconnected_is_frozen() {
+    let skel = Skeleton::instantiate(0, 42);
+    let mut loco = LocomotionState::new(skel, SessionState::Disconnected);
+    for _ in 0..15 {
+        loco.tick(Duration::from_millis(33));
+    }
+    let before: Vec<Vec2> = loco.skeleton().points.iter().map(|p| p.pos).collect();
+    for _ in 0..10 {
+        loco.tick(Duration::from_millis(33));
+    }
+    let after: Vec<Vec2> = loco.skeleton().points.iter().map(|p| p.pos).collect();
+    for (b, a) in before.iter().zip(after.iter()) {
+        assert!((b.x - a.x).abs() < 0.01 && (b.y - a.y).abs() < 0.01,
+            "Disconnected should freeze after settling");
+    }
+}
+
+#[test]
+fn full_pipeline_skeleton_to_rendered_buffer() {
+    for archetype in 0..ARCHETYPE_COUNT {
+        let skel = Skeleton::instantiate(archetype, 42);
+        let result = rasterize_skeleton(&skel);
+        let (w, h) = sprite_cell_size(&result.sprite);
+        let area = Rect::new(0, 0, w, h);
+        let mut buf = Buffer::empty(area);
+        let palette = state_palette(SessionState::Working);
+        render_sprite_to_buffer(&result.sprite, &palette, area, &mut buf);
+        let non_empty = (0..area.height)
+            .flat_map(|y| (0..area.width).map(move |x| (x, y)))
+            .filter(|(x, y)| {
+                let cell = &buf[ratatui::layout::Position { x: *x, y: *y }];
+                cell.symbol() != " "
+            })
+            .count();
+        assert!(non_empty > 0, "Archetype {} rendered nothing", archetype_name(archetype));
+    }
+}
+
+#[test]
+fn locomotion_produces_changing_sprites_over_time() {
+    let skel = Skeleton::instantiate(0, 42);
+    let mut loco = LocomotionState::new(skel, SessionState::Working);
+    let r1 = rasterize_skeleton(loco.skeleton());
+    for _ in 0..20 {
+        loco.tick(Duration::from_millis(33));
+    }
+    let r2 = rasterize_skeleton(loco.skeleton());
+    assert_ne!(r1.sprite.cells, r2.sprite.cells, "Working animation should change sprite over time");
 }
