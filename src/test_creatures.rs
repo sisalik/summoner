@@ -6,10 +6,9 @@ use ratatui::layout::{Position, Rect};
 use ratatui::style::{Color, Style};
 use ratatui::DefaultTerminal;
 
-use crate::creature::generate::{CellKind, Sprite};
 use crate::creature::locomotion::LocomotionState;
-use crate::creature::outline::rasterize_skeleton;
-use crate::creature::render::{render_sprite_to_buffer, state_palette, Palette};
+use crate::creature::outline::{rasterize_skeleton, rasterize_skeleton_scaled};
+use crate::creature::render::{render_sprite_to_buffer, state_palette};
 use crate::creature::skeleton::{Skeleton, ARCHETYPE_COUNT, archetype_name};
 use crate::session::SessionState;
 
@@ -85,78 +84,6 @@ impl ZoomView {
 
     fn tick(&mut self, dt: Duration) {
         self.loco.tick(dt);
-    }
-}
-
-/// Render a sprite scaled up: each sub-pixel becomes `scale` columns wide,
-/// and each pair of sub-pixel rows becomes `scale` terminal rows tall.
-/// Uses half-block rendering within each scaled row.
-fn render_sprite_scaled(
-    sprite: &Sprite,
-    palette: &Palette,
-    area: Rect,
-    buf: &mut ratatui::buffer::Buffer,
-    scale: u16,
-) {
-    let rows = (sprite.height + 1) / 2; // number of half-block row pairs
-
-    for row in 0..rows {
-        let upper_y = row * 2;
-        let lower_y = row * 2 + 1;
-
-        for col in 0..sprite.width {
-            let upper = sprite.get(col, upper_y);
-            let lower = if lower_y < sprite.height {
-                sprite.get(col, lower_y)
-            } else {
-                CellKind::Empty
-            };
-
-            // Determine symbol and colors for this half-block pair
-            let (symbol, fg, bg) = match (upper, lower) {
-                (CellKind::Empty, CellKind::Empty) => continue,
-                (CellKind::Empty, lk) => ("\u{2584}", kind_color(&lk, palette), Color::Reset),
-                (uk, CellKind::Empty) => ("\u{2580}", kind_color(&uk, palette), Color::Reset),
-                (uk, lk) => {
-                    let fg_c = kind_color(&lk, palette);
-                    let bg_c = kind_color(&uk, palette);
-                    if fg_c == bg_c {
-                        ("\u{2588}", fg_c, Color::Reset)
-                    } else {
-                        ("\u{2584}", fg_c, bg_c)
-                    }
-                }
-            };
-
-            let style = if bg == Color::Reset {
-                Style::default().fg(fg)
-            } else {
-                Style::default().fg(fg).bg(bg)
-            };
-
-            // Fill a scale×scale block of terminal cells
-            for sy in 0..scale {
-                for sx in 0..scale {
-                    let px = area.x + col as u16 * scale + sx;
-                    let py = area.y + row as u16 * scale + sy;
-                    if px >= area.x + area.width || py >= area.y + area.height {
-                        continue;
-                    }
-                    if let Some(cell) = buf.cell_mut(Position { x: px, y: py }) {
-                        cell.set_symbol(symbol);
-                        cell.set_style(style);
-                    }
-                }
-            }
-        }
-    }
-}
-
-fn kind_color(kind: &CellKind, palette: &Palette) -> Color {
-    match kind {
-        CellKind::Body => palette.body,
-        CellKind::Border => palette.border,
-        CellKind::Empty => Color::Reset,
     }
 }
 
@@ -326,19 +253,24 @@ fn render_zoom(zoom: &ZoomView, area: Rect, buf: &mut ratatui::buffer::Buffer) {
     let title_style = Style::default().fg(Color::Rgb(200, 200, 220)).bg(Color::Rgb(30, 30, 50));
     draw_text(area.x, area.y, &title, title_style, area, buf);
 
-    // Compute scale to fill the terminal
-    let sprite_w: u16 = 18;
-    let sprite_h: u16 = 12; // terminal rows at 1x (24 sub-px / 2)
-    let avail_w = area.width.saturating_sub(4); // margin
-    let avail_h = area.height.saturating_sub(4); // title + margin
-    let scale_x = avail_w / sprite_w;
-    let scale_y = avail_h / sprite_h;
+    // Compute the rasterization scale that fits the terminal.
+    // At scale N, the sprite is (18*N) wide x (24*N) tall sub-pixels,
+    // which renders to (18*N) cols x (12*N) terminal rows via half-blocks.
+    let avail_w = area.width.saturating_sub(4) as usize;
+    let avail_h = area.height.saturating_sub(4) as usize; // title + bottom hint
+    let scale_x = avail_w / 18;
+    let scale_y = avail_h / 12;
     let scale = scale_x.min(scale_y).max(1);
 
-    let rendered_w = sprite_w * scale;
-    let rendered_h = sprite_h * scale;
+    // Rasterize at higher resolution
+    let sprite = rasterize_skeleton_scaled(zoom.loco.skeleton(), scale);
+    let palette = state_palette(state);
+
+    // Render 1:1 with the standard half-block renderer, centered
+    let rendered_w = sprite.width as u16;    // 18 * scale
+    let rendered_h = ((sprite.height + 1) / 2) as u16; // 12 * scale
     let offset_x = area.x + (area.width.saturating_sub(rendered_w)) / 2;
-    let offset_y = area.y + 2 + (avail_h.saturating_sub(rendered_h)) / 2;
+    let offset_y = area.y + 2 + (avail_h as u16).saturating_sub(rendered_h) / 2;
 
     let creature_area = Rect {
         x: offset_x,
@@ -346,17 +278,14 @@ fn render_zoom(zoom: &ZoomView, area: Rect, buf: &mut ratatui::buffer::Buffer) {
         width: rendered_w,
         height: rendered_h,
     };
-
-    let sprite = rasterize_skeleton(zoom.loco.skeleton());
-    let palette = state_palette(state);
-    render_sprite_scaled(&sprite, &palette, creature_area, buf, scale);
+    render_sprite_to_buffer(&sprite, &palette, creature_area, buf);
 
     // Navigation hints at bottom
     let hint = format!(
-        " \u{2191}\u{2193} archetype ({}/{})  \u{2190}\u{2192} state ({}/{})  scale: {}x ",
+        " \u{2191}\u{2193} archetype ({}/{})  \u{2190}\u{2192} state ({}/{})  resolution: {}x ({}x{} sub-px) ",
         zoom.archetype + 1, ARCHETYPE_COUNT,
         zoom.state_idx + 1, STATES.len(),
-        scale,
+        scale, sprite.width, sprite.height,
     );
     let hint_style = Style::default().fg(Color::Rgb(120, 120, 140));
     let hint_y = area.y + area.height - 1;
