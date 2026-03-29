@@ -354,7 +354,7 @@ impl App {
         let _ = store.save(&self.config_dir);
     }
 
-    fn render(&self, terminal: &mut DefaultTerminal) -> Result<()> {
+    fn render(&mut self, terminal: &mut DefaultTerminal) -> Result<()> {
         terminal.draw(|frame| {
             let area = frame.area();
 
@@ -370,12 +370,15 @@ impl App {
             // Render main content
             match self.mode {
                 Mode::Dashboard | Mode::DirPicker => {
-                    let dashboard = Dashboard::new(
+                    let mut dashboard = Dashboard::new(
                         &self.sessions,
+                        &self.session_stats,
+                        &self.global_stats,
                         &self.sprites,
                         &self.nav,
+                        &mut self.git_cache,
                     );
-                    frame.render_widget(dashboard, main_area);
+                    dashboard.render(main_area, frame.buffer_mut());
 
                     // Render confirmation overlay for project close
                     if let Some(ref project_dir) = self.confirm_close_project {
