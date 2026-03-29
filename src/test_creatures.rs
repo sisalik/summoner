@@ -6,8 +6,9 @@ use ratatui::layout::{Position, Rect};
 use ratatui::style::{Color, Style};
 use ratatui::DefaultTerminal;
 
+use crate::creature::generate::{CellKind, Sprite};
 use crate::creature::locomotion::LocomotionState;
-use crate::creature::outline::{rasterize_skeleton, rasterize_skeleton_scaled};
+use crate::creature::outline::{rasterize_skeleton, rasterize_skeleton_debug, rasterize_skeleton_scaled};
 use crate::creature::render::{render_sprite_to_buffer, state_palette};
 use crate::creature::skeleton::{Skeleton, ARCHETYPE_COUNT, archetype_name};
 use crate::session::SessionState;
@@ -15,7 +16,7 @@ use crate::session::SessionState;
 const CELL_W: u16 = 20;
 const CELL_H: u16 = 14;
 
-const STATES: &[SessionState] = &[
+const ANIM_STATES: &[SessionState] = &[
     SessionState::Working,
     SessionState::Waiting,
     SessionState::Idle,
@@ -23,11 +24,64 @@ const STATES: &[SessionState] = &[
     SessionState::Disconnected,
 ];
 
+/// Extended state labels for the test grid, including "Rest" pseudo-state.
+const STATE_COUNT: usize = 6; // 5 real + 1 Rest
+
+fn state_label(idx: usize) -> &'static str {
+    if idx < ANIM_STATES.len() {
+        ANIM_STATES[idx].label()
+    } else {
+        "Rest"
+    }
+}
+
+fn state_color(idx: usize) -> Color {
+    if idx < ANIM_STATES.len() {
+        ANIM_STATES[idx].color()
+    } else {
+        Color::Rgb(180, 180, 200)
+    }
+}
+
+/// Distinctive colors for component-ID debug rendering.
+const COMPONENT_COLORS: &[Color] = &[
+    Color::Rgb(255, 100, 100), // 1: head — red
+    Color::Rgb(100, 255, 100), // 2: spine seg 0 — green
+    Color::Rgb(100, 100, 255), // 3: spine seg 1 — blue
+    Color::Rgb(255, 255, 100), // 4: spine seg 2 — yellow
+    Color::Rgb(255, 100, 255), // 5: spine seg 3 — magenta
+    Color::Rgb(100, 255, 255), // 6: spine seg 4 — cyan
+    Color::Rgb(255, 180, 100), // 7: spine seg 5 — orange
+    Color::Rgb(180, 100, 255), // 8: spine seg 6 — purple
+    Color::Rgb(100, 200, 150), // 9: spine seg 7 — teal
+    Color::Rgb(200, 200, 100), // 10: spine seg 8 — olive
+];
+
+const LIMB_COLORS: &[Color] = &[
+    Color::Rgb(255, 80, 80),   // limb 0 — bright red
+    Color::Rgb(80, 200, 255),  // limb 1 — sky blue
+    Color::Rgb(255, 200, 80),  // limb 2 — gold
+    Color::Rgb(80, 255, 160),  // limb 3 — mint
+];
+
+fn component_color(id: u8) -> Color {
+    if id == 0 {
+        Color::Reset
+    } else if id >= 100 {
+        let li = (id - 100) as usize;
+        LIMB_COLORS[li % LIMB_COLORS.len()]
+    } else {
+        let i = (id as usize).saturating_sub(1);
+        COMPONENT_COLORS[i % COMPONENT_COLORS.len()]
+    }
+}
+
 // --- Grid mode ---
 
 struct TestGrid {
     seed: u64,
-    locomotions: Vec<Vec<LocomotionState>>,
+    // [archetype][state_idx] — state_idx 0..4 are animated, 5 is rest (None locomotion)
+    locomotions: Vec<Vec<Option<LocomotionState>>>,
 }
 
 impl TestGrid {
@@ -35,9 +89,13 @@ impl TestGrid {
         let mut locomotions = Vec::new();
         for archetype in 0..ARCHETYPE_COUNT {
             let mut row = Vec::new();
-            for &state in STATES {
-                let skel = Skeleton::instantiate(archetype, seed);
-                row.push(LocomotionState::new(skel, state));
+            for state_idx in 0..STATE_COUNT {
+                if state_idx < ANIM_STATES.len() {
+                    let skel = Skeleton::instantiate(archetype, seed);
+                    row.push(Some(LocomotionState::new(skel, ANIM_STATES[state_idx])));
+                } else {
+                    row.push(None); // Rest — static skeleton
+                }
             }
             locomotions.push(row);
         }
@@ -54,9 +112,18 @@ impl TestGrid {
 
     fn tick(&mut self, dt: Duration) {
         for row in &mut self.locomotions {
-            for loco in row {
+            for loco in row.iter_mut().flatten() {
                 loco.tick(dt);
             }
+        }
+    }
+
+    fn skeleton_for(&self, archetype: usize, state_idx: usize) -> Skeleton {
+        if let Some(Some(loco)) = self.locomotions.get(archetype).and_then(|r| r.get(state_idx)) {
+            loco.skeleton().clone()
+        } else {
+            // Rest state — fresh skeleton
+            Skeleton::instantiate(archetype, self.seed)
         }
     }
 }
@@ -66,24 +133,43 @@ impl TestGrid {
 struct ZoomView {
     seed: u64,
     archetype: usize,
-    state_idx: usize,
-    loco: LocomotionState,
+    state_idx: usize, // 0..5 (5 = Rest)
+    loco: Option<LocomotionState>,
+    color_by_limb: bool,
 }
 
 impl ZoomView {
     fn new(seed: u64, archetype: usize, state_idx: usize) -> Self {
-        let skel = Skeleton::instantiate(archetype, seed);
-        let loco = LocomotionState::new(skel, STATES[state_idx]);
-        Self { seed, archetype, state_idx, loco }
+        let loco = if state_idx < ANIM_STATES.len() {
+            let skel = Skeleton::instantiate(archetype, seed);
+            Some(LocomotionState::new(skel, ANIM_STATES[state_idx]))
+        } else {
+            None
+        };
+        Self { seed, archetype, state_idx, loco, color_by_limb: false }
     }
 
     fn rebuild(&mut self) {
-        let skel = Skeleton::instantiate(self.archetype, self.seed);
-        self.loco = LocomotionState::new(skel, STATES[self.state_idx]);
+        self.loco = if self.state_idx < ANIM_STATES.len() {
+            let skel = Skeleton::instantiate(self.archetype, self.seed);
+            Some(LocomotionState::new(skel, ANIM_STATES[self.state_idx]))
+        } else {
+            None
+        };
     }
 
     fn tick(&mut self, dt: Duration) {
-        self.loco.tick(dt);
+        if let Some(loco) = &mut self.loco {
+            loco.tick(dt);
+        }
+    }
+
+    fn current_skeleton(&self) -> Skeleton {
+        if let Some(loco) = &self.loco {
+            loco.skeleton().clone()
+        } else {
+            Skeleton::instantiate(self.archetype, self.seed)
+        }
     }
 }
 
@@ -149,13 +235,14 @@ pub fn run(terminal: &mut DefaultTerminal) -> Result<()> {
                     Mode::Grid(grid) => match key.code {
                         KeyCode::Char('q') | KeyCode::Esc => break,
                         KeyCode::Char('r') => grid.randomize(),
-                        KeyCode::Enter | KeyCode::Char('z') => {
+                        KeyCode::Enter | KeyCode::Char('z') | KeyCode::Char('Z') => {
                             mode = Mode::Zoom(ZoomView::new(grid.seed, 0, 0));
                         }
                         _ => {}
                     },
                     Mode::Zoom(zoom) => match key.code {
-                        KeyCode::Char('q') | KeyCode::Esc => {
+                        KeyCode::Char('q') | KeyCode::Esc
+                        | KeyCode::Char('z') | KeyCode::Char('Z') => {
                             mode = Mode::Grid(TestGrid::new(zoom.seed));
                         }
                         KeyCode::Char('r') => {
@@ -164,6 +251,9 @@ pub fn run(terminal: &mut DefaultTerminal) -> Result<()> {
                                 .unwrap_or_default()
                                 .as_nanos() as u64;
                             zoom.rebuild();
+                        }
+                        KeyCode::Char('c') => {
+                            zoom.color_by_limb = !zoom.color_by_limb;
                         }
                         KeyCode::Up => {
                             zoom.archetype = (zoom.archetype + ARCHETYPE_COUNT - 1) % ARCHETYPE_COUNT;
@@ -174,11 +264,11 @@ pub fn run(terminal: &mut DefaultTerminal) -> Result<()> {
                             zoom.rebuild();
                         }
                         KeyCode::Left => {
-                            zoom.state_idx = (zoom.state_idx + STATES.len() - 1) % STATES.len();
+                            zoom.state_idx = (zoom.state_idx + STATE_COUNT - 1) % STATE_COUNT;
                             zoom.rebuild();
                         }
                         KeyCode::Right => {
-                            zoom.state_idx = (zoom.state_idx + 1) % STATES.len();
+                            zoom.state_idx = (zoom.state_idx + 1) % STATE_COUNT;
                             zoom.rebuild();
                         }
                         _ => {}
@@ -193,7 +283,7 @@ pub fn run(terminal: &mut DefaultTerminal) -> Result<()> {
 
 fn render_grid(grid: &TestGrid, area: Rect, buf: &mut ratatui::buffer::Buffer) {
     let title = format!(
-        " Creature Test — seed: {} — [r] randomize  [z/Enter] zoom  [q] quit ",
+        " Creature Test — seed: {} — [r] randomize  [z] zoom  [q] quit ",
         grid.seed
     );
     let title_style = Style::default().fg(Color::Rgb(200, 200, 220)).bg(Color::Rgb(30, 30, 50));
@@ -202,10 +292,11 @@ fn render_grid(grid: &TestGrid, area: Rect, buf: &mut ratatui::buffer::Buffer) {
     let grid_y = area.y + 2;
     let label_w: u16 = 12;
 
-    for (col, &state) in STATES.iter().enumerate() {
+    // Column headers — 6 columns (5 states + Rest)
+    for col in 0..STATE_COUNT {
         let x = area.x + label_w + col as u16 * CELL_W;
-        let style = Style::default().fg(state.color());
-        draw_text(x, grid_y, state.label(), style, area, buf);
+        let style = Style::default().fg(state_color(col));
+        draw_text(x, grid_y, state_label(col), style, area, buf);
     }
 
     let content_y = grid_y + 1;
@@ -219,7 +310,7 @@ fn render_grid(grid: &TestGrid, area: Rect, buf: &mut ratatui::buffer::Buffer) {
             draw_text(area.x, label_y, name, label_style, area, buf);
         }
 
-        for (col, &state) in STATES.iter().enumerate() {
+        for col in 0..STATE_COUNT {
             let cell_x = area.x + label_w + col as u16 * CELL_W;
             let cell_y = row_y;
             if cell_y + CELL_H > area.y + area.height { break; }
@@ -232,62 +323,135 @@ fn render_grid(grid: &TestGrid, area: Rect, buf: &mut ratatui::buffer::Buffer) {
                 height: 12,
             };
 
-            let loco = &grid.locomotions[archetype][col];
-            let sprite = rasterize_skeleton(loco.skeleton());
-            let palette = state_palette(state);
+            let skel = grid.skeleton_for(archetype, col);
+            let sprite = rasterize_skeleton(&skel);
+            let palette = if col < ANIM_STATES.len() {
+                state_palette(ANIM_STATES[col])
+            } else {
+                state_palette(SessionState::Idle) // neutral colors for Rest
+            };
             render_sprite_to_buffer(&sprite, &palette, creature_area, buf);
         }
     }
 }
 
 fn render_zoom(zoom: &ZoomView, area: Rect, buf: &mut ratatui::buffer::Buffer) {
-    let state = STATES[zoom.state_idx];
+    let state_name = state_label(zoom.state_idx);
+    let limb_indicator = if zoom.color_by_limb { " [LIMB COLORS]" } else { "" };
 
-    // Title bar
     let title = format!(
-        " ZOOM: {} / {} — seed: {} — [arrows] navigate  [r] randomize  [q/Esc] back ",
-        archetype_name(zoom.archetype),
-        state.label(),
-        zoom.seed,
+        " ZOOM: {} / {}{} — seed: {} — [arrows] nav  [c] limb colors  [r] seed  [z] back ",
+        archetype_name(zoom.archetype), state_name, limb_indicator, zoom.seed,
     );
     let title_style = Style::default().fg(Color::Rgb(200, 200, 220)).bg(Color::Rgb(30, 30, 50));
     draw_text(area.x, area.y, &title, title_style, area, buf);
 
-    // Compute the rasterization scale that fits the terminal.
-    // At scale N, the sprite is (18*N) wide x (24*N) tall sub-pixels,
-    // which renders to (18*N) cols x (12*N) terminal rows via half-blocks.
     let avail_w = area.width.saturating_sub(4) as usize;
-    let avail_h = area.height.saturating_sub(4) as usize; // title + bottom hint
+    let avail_h = area.height.saturating_sub(4) as usize;
     let scale_x = avail_w / 18;
     let scale_y = avail_h / 12;
     let scale = scale_x.min(scale_y).max(1);
 
-    // Rasterize at higher resolution
-    let sprite = rasterize_skeleton_scaled(zoom.loco.skeleton(), scale);
-    let palette = state_palette(state);
+    let skel = zoom.current_skeleton();
 
-    // Render 1:1 with the standard half-block renderer, centered
-    let rendered_w = sprite.width as u16;    // 18 * scale
-    let rendered_h = ((sprite.height + 1) / 2) as u16; // 12 * scale
-    let offset_x = area.x + (area.width.saturating_sub(rendered_w)) / 2;
-    let offset_y = area.y + 2 + (avail_h as u16).saturating_sub(rendered_h) / 2;
+    if zoom.color_by_limb {
+        // Debug render with component colors
+        let (sprite, comp) = rasterize_skeleton_debug(&skel, scale);
+        let rendered_w = sprite.width as u16;
+        let rendered_h = ((sprite.height + 1) / 2) as u16;
+        let offset_x = area.x + (area.width.saturating_sub(rendered_w)) / 2;
+        let offset_y = area.y + 2 + (avail_h as u16).saturating_sub(rendered_h) / 2;
 
-    let creature_area = Rect {
-        x: offset_x,
-        y: offset_y,
-        width: rendered_w,
-        height: rendered_h,
-    };
-    render_sprite_to_buffer(&sprite, &palette, creature_area, buf);
+        let creature_area = Rect {
+            x: offset_x, y: offset_y, width: rendered_w, height: rendered_h,
+        };
+        render_sprite_with_components(&sprite, &comp, creature_area, buf);
+    } else {
+        // Normal render
+        let sprite = rasterize_skeleton_scaled(&skel, scale);
+        let palette = if zoom.state_idx < ANIM_STATES.len() {
+            state_palette(ANIM_STATES[zoom.state_idx])
+        } else {
+            state_palette(SessionState::Idle)
+        };
+        let rendered_w = sprite.width as u16;
+        let rendered_h = ((sprite.height + 1) / 2) as u16;
+        let offset_x = area.x + (area.width.saturating_sub(rendered_w)) / 2;
+        let offset_y = area.y + 2 + (avail_h as u16).saturating_sub(rendered_h) / 2;
 
-    // Navigation hints at bottom
+        let creature_area = Rect {
+            x: offset_x, y: offset_y, width: rendered_w, height: rendered_h,
+        };
+        render_sprite_to_buffer(&sprite, &palette, creature_area, buf);
+    }
+
     let hint = format!(
-        " \u{2191}\u{2193} archetype ({}/{})  \u{2190}\u{2192} state ({}/{})  resolution: {}x ({}x{} sub-px) ",
+        " \u{2191}\u{2193} archetype ({}/{})  \u{2190}\u{2192} state ({}/{})  {}x ",
         zoom.archetype + 1, ARCHETYPE_COUNT,
-        zoom.state_idx + 1, STATES.len(),
-        scale, sprite.width, sprite.height,
+        zoom.state_idx + 1, STATE_COUNT,
+        scale,
     );
     let hint_style = Style::default().fg(Color::Rgb(120, 120, 140));
-    let hint_y = area.y + area.height - 1;
-    draw_text(area.x, hint_y, &hint, hint_style, area, buf);
+    draw_text(area.x, area.y + area.height - 1, &hint, hint_style, area, buf);
+}
+
+/// Render a sprite using the component ID map for coloring.
+fn render_sprite_with_components(
+    sprite: &Sprite,
+    comp: &[u8],
+    area: Rect,
+    buf: &mut ratatui::buffer::Buffer,
+) {
+    let rows = (sprite.height + 1) / 2;
+
+    for row in 0..rows.min(area.height as usize) {
+        for col in 0..sprite.width.min(area.width as usize) {
+            let upper_y = row * 2;
+            let lower_y = row * 2 + 1;
+
+            let upper = sprite.get(col, upper_y);
+            let lower = if lower_y < sprite.height {
+                sprite.get(col, lower_y)
+            } else {
+                CellKind::Empty
+            };
+
+            let upper_id = comp[upper_y * sprite.width + col];
+            let lower_id = if lower_y < sprite.height {
+                comp[lower_y * sprite.width + col]
+            } else {
+                0
+            };
+
+            let pos = Position {
+                x: area.x + col as u16,
+                y: area.y + row as u16,
+            };
+
+            if let Some(cell) = buf.cell_mut(pos) {
+                match (upper, lower) {
+                    (CellKind::Empty, CellKind::Empty) => {}
+                    (CellKind::Empty, _) => {
+                        cell.set_symbol("\u{2584}");
+                        cell.set_style(Style::default().fg(component_color(lower_id)));
+                    }
+                    (_, CellKind::Empty) => {
+                        cell.set_symbol("\u{2580}");
+                        cell.set_style(Style::default().fg(component_color(upper_id)));
+                    }
+                    (_, _) => {
+                        let fg = component_color(lower_id);
+                        let bg = component_color(upper_id);
+                        if fg == bg {
+                            cell.set_symbol("\u{2588}");
+                            cell.set_style(Style::default().fg(fg));
+                        } else {
+                            cell.set_symbol("\u{2584}");
+                            cell.set_style(Style::default().fg(fg).bg(bg));
+                        }
+                    }
+                }
+            }
+        }
+    }
 }
