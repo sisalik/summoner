@@ -61,8 +61,8 @@ impl<'a> Widget for TerminalView<'a> {
             }
         }
 
-        // Render cursor only when not scrolled back
-        if self.screen.scrollback() == 0 {
+        // Render cursor only when visible and not scrolled back
+        if !self.screen.hide_cursor() && self.screen.scrollback() == 0 {
             let (cur_row, cur_col) = self.screen.cursor_position();
             let cursor_pos = Position {
                 x: area.x + cur_col,
