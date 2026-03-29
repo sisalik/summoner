@@ -80,8 +80,9 @@ fn animate_locomotion(base: &Sprite, frame: usize) -> Sprite {
 }
 
 fn animate_bounce(base: &Sprite, frame: usize) -> Sprite {
-    let shift_up = match frame { 0 => 0, 1 => 3, 2 => 1, _ => 0 };
-    shift_vertical(base, shift_up)
+    // Negative offset = move content up (bounce up)
+    let offset: i32 = match frame { 0 => 0, 1 => -2, 2 => -1, _ => 0 };
+    shift_vertical_inplace(base, offset)
 }
 
 fn animate_breathe(base: &Sprite, frame: usize) -> Sprite {
@@ -127,13 +128,17 @@ fn shift_horizontal(sprite: &Sprite, offset: i32) -> Sprite {
     Sprite { width: sprite.width, height: sprite.height, cells }
 }
 
-fn shift_vertical(sprite: &Sprite, up_pixels: usize) -> Sprite {
-    let new_height = sprite.height + up_pixels;
-    let mut cells = vec![CellKind::Empty; sprite.width * new_height];
+/// Shift sprite content vertically within the same dimensions.
+/// Negative offset = move up, positive = move down.
+fn shift_vertical_inplace(sprite: &Sprite, offset: i32) -> Sprite {
+    let mut cells = vec![CellKind::Empty; sprite.width * sprite.height];
     for y in 0..sprite.height {
-        for x in 0..sprite.width {
-            cells[y * sprite.width + x] = sprite.get(x, y);
+        let src_y = y as i32 - offset;
+        if src_y >= 0 && (src_y as usize) < sprite.height {
+            for x in 0..sprite.width {
+                cells[y * sprite.width + x] = sprite.get(x, src_y as usize);
+            }
         }
     }
-    Sprite { width: sprite.width, height: new_height, cells }
+    Sprite { width: sprite.width, height: sprite.height, cells }
 }

@@ -419,7 +419,12 @@ impl App {
                     }
                 }
                 Mode::Session(idx) => {
-                    if idx < self.vt_parsers.len() {
+                    let is_disconnected = idx < self.pty_sessions.len()
+                        && self.pty_sessions[idx].is_none();
+
+                    if is_disconnected && idx < self.sessions.len() {
+                        render_resume_dialog(frame, main_area, &self.sessions[idx]);
+                    } else if idx < self.vt_parsers.len() {
                         let screen = self.vt_parsers[idx].screen();
                         let view = TerminalView::new(screen);
                         frame.render_widget(view, main_area);
@@ -554,7 +559,14 @@ impl App {
                 self.handle_dashboard_input(key, rows, cols)?;
             }
             Mode::Session(idx) => {
-                self.handle_session_input(key, idx)?;
+                // Disconnected session: any key resumes it
+                if idx < self.pty_sessions.len() && self.pty_sessions[idx].is_none() {
+                    if idx < self.sessions.len() {
+                        self.restore_session(idx, rows, cols)?;
+                    }
+                } else {
+                    self.handle_session_input(key, idx)?;
+                }
             }
         }
 
@@ -744,6 +756,65 @@ fn render_confirm_overlay(frame: &mut ratatui::Frame, area: Rect, project_dir: &
             frame.buffer_mut().set_string(inner.x, inner.y + 4, hint, hint_style);
         }
     }
+}
+
+fn render_resume_dialog(frame: &mut ratatui::Frame, area: Rect, session: &Session) {
+    use ratatui::widgets::{Block, Borders, Clear, Padding};
+    use ratatui::style::{Color, Modifier, Style};
+
+    let bg = Style::default().bg(Color::Rgb(20, 20, 30));
+    for y in area.y..area.y + area.height {
+        for x in area.x..area.x + area.width {
+            if let Some(cell) = frame.buffer_mut().cell_mut(ratatui::layout::Position { x, y }) {
+                cell.set_symbol(" ");
+                cell.set_style(bg);
+            }
+        }
+    }
+
+    let popup_area = centered_rect(60, 30, area);
+    Clear.render(popup_area, frame.buffer_mut());
+
+    let block = Block::default()
+        .title(" Disconnected Session ")
+        .title_style(Style::default().fg(Color::Rgb(255, 180, 50)).add_modifier(Modifier::BOLD))
+        .borders(Borders::ALL)
+        .border_style(Style::default().fg(Color::Rgb(100, 100, 140)))
+        .padding(Padding::uniform(1));
+
+    let inner = block.inner(popup_area);
+    block.render(popup_area, frame.buffer_mut());
+
+    if inner.height < 3 || inner.width < 10 {
+        return;
+    }
+
+    let label_style = Style::default().fg(Color::Rgb(100, 100, 130));
+    let value_style = Style::default().fg(Color::Rgb(220, 220, 240));
+
+    let dir_label = "Directory: ";
+    let dir_value = display_path(&session.directory);
+    frame.buffer_mut().set_string(inner.x, inner.y, dir_label, label_style);
+    frame.buffer_mut().set_string(inner.x + dir_label.len() as u16, inner.y, &dir_value, value_style);
+
+    let claude_label = "Claude session: ";
+    let claude_value = if let Some(ref id) = session.claude_conversation_id {
+        id.clone()
+    } else {
+        "none".to_string()
+    };
+    frame.buffer_mut().set_string(inner.x, inner.y + 2, claude_label, label_style);
+    frame.buffer_mut().set_string(inner.x + claude_label.len() as u16, inner.y + 2, &claude_value, value_style);
+
+    // "Press any key to resume" centered at bottom
+    let hint = "Press any key to resume this session";
+    let hint_len = hint.len() as u16;
+    let hint_x = inner.x + inner.width.saturating_sub(hint_len) / 2;
+    let hint_y = inner.y + inner.height.saturating_sub(1);
+    let hint_style = Style::default()
+        .fg(Color::Rgb(150, 150, 200))
+        .add_modifier(Modifier::BOLD);
+    frame.buffer_mut().set_string(hint_x, hint_y, hint, hint_style);
 }
 
 use ratatui::widgets::Widget;
