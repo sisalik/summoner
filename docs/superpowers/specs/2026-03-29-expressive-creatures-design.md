@@ -192,6 +192,37 @@ Winged creatures add wing flap (wing chain oscillation) layered on top of bipeda
 - `creature/physics.rs` — Verlet integration, distance constraint solver, 2-bone IK. ~100-150 lines.
 - `creature/outline.rs` — Chain-to-outline conversion, scanline fill, Bresenham line drawing. ~100-150 lines.
 
+## Creature Test Mode
+
+A standalone visual test mode for rapid iteration on creature generation and animation, launched via CLI:
+
+```bash
+summoner --test-creatures
+```
+
+### Layout
+
+A grid filling the terminal:
+- **Rows** = archetypes (bipedal, quadruped, blob, winged, serpentine)
+- **Columns** = session states (Working, Waiting, Idle, Sleeping, Disconnected)
+- Each cell renders one animated creature at the standard 18x12 terminal cell size
+- Row labels (archetype name) on the left, column headers (state name, colored) along the top
+- All creatures in a row share the same seed, so you see one body plan across all states
+
+### Controls
+
+| Key | Action |
+|-----|--------|
+| `r` | Randomize seed — all creatures regenerate with a new random seed |
+| `q` / `Esc` | Quit |
+
+### Implementation
+
+- Parsed as a CLI flag in `main.rs` (before normal app startup)
+- Runs its own Ratatui event loop (simpler than the full app — no sessions, no PTY, no config)
+- Reuses the same skeleton instantiation, physics, and rendering pipeline as the real app
+- Useful both during development and as a demo/showcase
+
 ## Migration
 
 - Existing sessions retain their `creature_seed` and `creature_template` — these map directly to the new system (seed parameterizes the skeleton, template selects the archetype)
