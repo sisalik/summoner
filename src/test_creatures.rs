@@ -9,7 +9,7 @@ use ratatui::DefaultTerminal;
 use crate::creature::generate::{CellKind, Sprite};
 use crate::creature::locomotion::LocomotionState;
 use crate::creature::outline::{rasterize_skeleton, rasterize_skeleton_scaled, rasterize_skeleton_wireframe};
-use crate::creature::render::{render_sprite_to_buffer, state_palette};
+use crate::creature::render::{render_sprite_shaded, state_palette};
 use crate::creature::skeleton::{Skeleton, ARCHETYPE_COUNT, archetype_name};
 use crate::session::SessionState;
 
@@ -130,23 +130,23 @@ impl TestGrid {
 
 #[derive(Clone, Copy, PartialEq)]
 enum ColorMode {
-    State,     // normal state-based palette
-    Limb,      // filled body, colored by component
-    Wireframe, // skeleton lines only, colored by component
+    Shaded,    // state palette + per-capsule shading
+    Limb,      // rainbow colors by component ID
+    Wireframe, // skeleton lines only
 }
 
 impl ColorMode {
     fn next(self) -> Self {
         match self {
-            Self::State => Self::Limb,
+            Self::Shaded => Self::Limb,
             Self::Limb => Self::Wireframe,
-            Self::Wireframe => Self::State,
+            Self::Wireframe => Self::Shaded,
         }
     }
 
     fn label(self) -> &'static str {
         match self {
-            Self::State => "state colors",
+            Self::Shaded => "shaded",
             Self::Limb => "limb colors",
             Self::Wireframe => "wireframe",
         }
@@ -161,6 +161,8 @@ struct ZoomView {
     state_idx: usize, // 0..5 (5 = Rest)
     loco: Option<LocomotionState>,
     color_mode: ColorMode,
+    paused: bool,
+    tick_count: u32,
 }
 
 impl ZoomView {
@@ -171,7 +173,7 @@ impl ZoomView {
         } else {
             None
         };
-        Self { seed, archetype, state_idx, loco, color_mode: ColorMode::State }
+        Self { seed, archetype, state_idx, loco, color_mode: ColorMode::Shaded, paused: false, tick_count: 0 }
     }
 
     fn rebuild(&mut self) {
@@ -181,12 +183,34 @@ impl ZoomView {
         } else {
             None
         };
+        self.tick_count = 0;
     }
 
     fn tick(&mut self, dt: Duration) {
+        if self.paused { return; }
         if let Some(loco) = &mut self.loco {
             loco.tick(dt);
+            self.tick_count += 1;
         }
+    }
+
+    fn step_forward(&mut self) {
+        if let Some(loco) = &mut self.loco {
+            loco.tick(Duration::from_millis(33));
+            self.tick_count += 1;
+        }
+    }
+
+    fn step_backward(&mut self) {
+        if self.tick_count == 0 { return; }
+        let target = self.tick_count - 1;
+        self.rebuild();
+        for _ in 0..target {
+            if let Some(loco) = &mut self.loco {
+                loco.tick(Duration::from_millis(33));
+            }
+        }
+        self.tick_count = target;
     }
 
     fn current_skeleton(&self) -> Skeleton {
@@ -277,6 +301,9 @@ pub fn run(terminal: &mut DefaultTerminal) -> Result<()> {
                                 .as_nanos() as u64;
                             zoom.rebuild();
                         }
+                        KeyCode::Char(' ') => { zoom.paused = !zoom.paused; }
+                        KeyCode::Char('.') => { if zoom.paused { zoom.step_forward(); } }
+                        KeyCode::Char(',') => { if zoom.paused { zoom.step_backward(); } }
                         KeyCode::Char('c') => {
                             zoom.color_mode = zoom.color_mode.next();
                         }
@@ -349,13 +376,13 @@ fn render_grid(grid: &TestGrid, area: Rect, buf: &mut ratatui::buffer::Buffer) {
             };
 
             let skel = grid.skeleton_for(archetype, col);
-            let sprite = rasterize_skeleton(&skel).sprite;
+            let raster = rasterize_skeleton(&skel);
             let palette = if col < ANIM_STATES.len() {
                 state_palette(ANIM_STATES[col])
             } else {
-                state_palette(SessionState::Idle) // neutral colors for Rest
+                state_palette(SessionState::Idle)
             };
-            render_sprite_to_buffer(&sprite, &palette, creature_area, buf);
+            render_sprite_shaded(&raster.sprite, &raster.capsule_ids, &palette, creature_area, buf);
         }
     }
 }
@@ -363,9 +390,10 @@ fn render_grid(grid: &TestGrid, area: Rect, buf: &mut ratatui::buffer::Buffer) {
 fn render_zoom(zoom: &ZoomView, area: Rect, buf: &mut ratatui::buffer::Buffer) {
     let state_name = state_label(zoom.state_idx);
 
+    let pause_str = if zoom.paused { " PAUSED" } else { "" };
     let title = format!(
-        " ZOOM: {} / {} [{}] — seed: {} — [arrows] nav  [c] color mode  [r] seed  [z] back ",
-        archetype_name(zoom.archetype), state_name, zoom.color_mode.label(), zoom.seed,
+        " ZOOM: {} / {} [{}]{} — seed: {} — [space] pause  [,/.] step  [arrows] nav  [c] color  [r] seed  [z] back ",
+        archetype_name(zoom.archetype), state_name, zoom.color_mode.label(), pause_str, zoom.seed,
     );
     let title_style = Style::default().fg(Color::Rgb(200, 200, 220)).bg(Color::Rgb(30, 30, 50));
     draw_text(area.x, area.y, &title, title_style, area, buf);
@@ -378,23 +406,13 @@ fn render_zoom(zoom: &ZoomView, area: Rect, buf: &mut ratatui::buffer::Buffer) {
 
     let skel = zoom.current_skeleton();
 
-    let (sprite, maybe_comp) = match zoom.color_mode {
-        ColorMode::State => {
-            let r = rasterize_skeleton_scaled(&skel, scale);
-            (r.sprite, None)
-        }
-        ColorMode::Limb => {
-            let r = rasterize_skeleton_scaled(&skel, scale);
-            (r.sprite, Some(r.capsule_ids))
-        }
-        ColorMode::Wireframe => {
-            let r = rasterize_skeleton_wireframe(&skel, scale);
-            (r.sprite, Some(r.capsule_ids))
-        }
+    let raster = match zoom.color_mode {
+        ColorMode::Shaded | ColorMode::Limb => rasterize_skeleton_scaled(&skel, scale),
+        ColorMode::Wireframe => rasterize_skeleton_wireframe(&skel, scale),
     };
 
-    let rendered_w = sprite.width as u16;
-    let rendered_h = ((sprite.height + 1) / 2) as u16;
+    let rendered_w = raster.sprite.width as u16;
+    let rendered_h = ((raster.sprite.height + 1) / 2) as u16;
     let offset_x = area.x + (area.width.saturating_sub(rendered_w)) / 2;
     let offset_y = area.y + 2 + (avail_h as u16).saturating_sub(rendered_h) / 2;
 
@@ -402,15 +420,18 @@ fn render_zoom(zoom: &ZoomView, area: Rect, buf: &mut ratatui::buffer::Buffer) {
         x: offset_x, y: offset_y, width: rendered_w, height: rendered_h,
     };
 
-    if let Some(comp) = maybe_comp {
-        render_sprite_with_components(&sprite, &comp, creature_area, buf);
-    } else {
-        let palette = if zoom.state_idx < ANIM_STATES.len() {
-            state_palette(ANIM_STATES[zoom.state_idx])
-        } else {
-            state_palette(SessionState::Idle)
-        };
-        render_sprite_to_buffer(&sprite, &palette, creature_area, buf);
+    match zoom.color_mode {
+        ColorMode::Shaded => {
+            let palette = if zoom.state_idx < ANIM_STATES.len() {
+                state_palette(ANIM_STATES[zoom.state_idx])
+            } else {
+                state_palette(SessionState::Idle)
+            };
+            render_sprite_shaded(&raster.sprite, &raster.capsule_ids, &palette, creature_area, buf);
+        }
+        ColorMode::Limb | ColorMode::Wireframe => {
+            render_sprite_with_components(&raster.sprite, &raster.capsule_ids, creature_area, buf);
+        }
     }
 
     let hint = format!(
