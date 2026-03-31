@@ -2,7 +2,7 @@ use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
 use anyhow::Result;
-use crossterm::event::{self, Event, KeyCode, KeyEvent, KeyModifiers, MouseEventKind};
+use crossterm::event::{self, Event, KeyCode, KeyEvent, KeyModifiers, MouseButton, MouseEventKind};
 use ratatui::layout::{Constraint, Layout, Rect};
 use ratatui::DefaultTerminal;
 
@@ -18,6 +18,7 @@ use crate::terminal::PtySession;
 use crate::ui::dashboard::Dashboard;
 use crate::ui::dashboard_nav::DashboardNav;
 use crate::ui::dir_picker::{DirPicker, DirPickerAction};
+use crate::ui::selection::{self, Selection};
 use crate::ui::session_view::TerminalView;
 use crate::ui::status_bar::StatusBar;
 
@@ -55,6 +56,8 @@ struct App {
     git_cache: GitDiffCache,
     last_stats_update: Instant,
     last_statusline_check: Instant,
+    selection: Option<Selection>,
+    session_area: Rect,
 }
 
 pub fn display_path(path: &str) -> String {
@@ -164,6 +167,8 @@ impl App {
             git_cache: GitDiffCache::new(30),
             last_stats_update: Instant::now(),
             last_statusline_check: Instant::now(),
+            selection: None,
+            session_area: Rect::default(),
         })
     }
 
@@ -389,6 +394,11 @@ impl App {
             let main_area = layout[0];
             let status_area = layout[1];
 
+            // Clear selection when not in session mode
+            if !matches!(self.mode, Mode::Session(_)) {
+                self.selection = None;
+            }
+
             // Render main content
             match self.mode {
                 Mode::Dashboard | Mode::DirPicker => {
@@ -425,8 +435,10 @@ impl App {
                     if is_disconnected && idx < self.sessions.len() {
                         render_resume_dialog(frame, main_area, &self.sessions[idx]);
                     } else if idx < self.vt_parsers.len() {
+                        self.session_area = main_area;
                         let screen = self.vt_parsers[idx].screen();
-                        let view = TerminalView::new(screen);
+                        let view = TerminalView::new(screen)
+                            .with_selection(self.selection.as_ref());
                         frame.render_widget(view, main_area);
                     }
                 }
@@ -590,6 +602,25 @@ impl App {
                 self.handle_dashboard_input(key, rows, cols)?;
             }
             Mode::Session(idx) => {
+                // Ctrl+C with active selection: copy and clear
+                if key.modifiers.contains(KeyModifiers::CONTROL)
+                    && key.code == KeyCode::Char('c')
+                    && self.selection.is_some()
+                {
+                    if let Some(ref sel) = self.selection {
+                        if !sel.is_empty() && idx < self.vt_parsers.len() {
+                            let text = selection::extract_text(
+                                self.vt_parsers[idx].screen_mut(),
+                                sel,
+                            );
+                            if !text.is_empty() {
+                                selection::copy_to_clipboard(&text);
+                            }
+                        }
+                    }
+                    self.selection = None;
+                    return Ok(false);
+                }
                 // Disconnected session: any key resumes it
                 if idx < self.pty_sessions.len() && self.pty_sessions[idx].is_none() {
                     if idx < self.sessions.len() {
@@ -675,7 +706,7 @@ impl App {
         if idx >= self.pty_sessions.len() {
             return Ok(());
         }
-
+        self.selection = None;
         if idx < self.vt_parsers.len() && self.vt_parsers[idx].screen().scrollback() > 0 {
             self.vt_parsers[idx].screen_mut().set_scrollback(0);
         }
@@ -1078,6 +1109,7 @@ pub fn run(terminal: &mut DefaultTerminal) -> Result<()> {
                 Event::Resize(cols, rows) => {
                     let session_rows = rows.saturating_sub(1);
                     app.last_term_width = cols;
+                    app.selection = None;
                     app.refresh_nav_layout();
                     // Resize all active PTY sessions
                     for pty in app.pty_sessions.iter().flatten() {
@@ -1104,15 +1136,63 @@ pub fn run(terminal: &mut DefaultTerminal) -> Result<()> {
                 Event::Mouse(mouse) => {
                     if let Mode::Session(idx) = app.mode {
                         if idx < app.vt_parsers.len() {
+                            let area = app.session_area;
                             let screen = app.vt_parsers[idx].screen();
-                            let current = screen.scrollback();
-                            let new_offset = match mouse.kind {
-                                MouseEventKind::ScrollUp => current.saturating_add(3),
-                                MouseEventKind::ScrollDown => current.saturating_sub(3),
-                                _ => current,
-                            };
-                            if new_offset != current {
-                                app.vt_parsers[idx].screen_mut().set_scrollback(new_offset);
+                            let scrollback = screen.scrollback();
+                            match mouse.kind {
+                                MouseEventKind::ScrollUp => {
+                                    let new = scrollback.saturating_add(3);
+                                    if new != scrollback {
+                                        app.vt_parsers[idx].screen_mut().set_scrollback(new);
+                                    }
+                                }
+                                MouseEventKind::ScrollDown => {
+                                    let new = scrollback.saturating_sub(3);
+                                    if new != scrollback {
+                                        app.vt_parsers[idx].screen_mut().set_scrollback(new);
+                                    }
+                                }
+                                MouseEventKind::Down(MouseButton::Left) => {
+                                    app.selection = None;
+                                    if mouse.row >= area.y
+                                        && mouse.row < area.y + area.height
+                                        && mouse.column >= area.x
+                                        && mouse.column < area.x + area.width
+                                    {
+                                        let (abs_row, col) = selection::mouse_to_abs(
+                                            mouse.row, mouse.column,
+                                            area.y, area.x, area.height, area.width,
+                                            scrollback,
+                                        );
+                                        app.selection = Some(Selection::new(abs_row, col));
+                                    }
+                                }
+                                MouseEventKind::Drag(MouseButton::Left) => {
+                                    if let Some(ref mut sel) = app.selection {
+                                        // Edge auto-scroll
+                                        if mouse.row < area.y {
+                                            let new = scrollback.saturating_add(1);
+                                            app.vt_parsers[idx].screen_mut().set_scrollback(new);
+                                        } else if mouse.row >= area.y + area.height {
+                                            let new = scrollback.saturating_sub(1);
+                                            app.vt_parsers[idx].screen_mut().set_scrollback(new);
+                                        }
+                                        let current_sb = app.vt_parsers[idx].screen().scrollback();
+                                        let (abs_row, col) = selection::mouse_to_abs(
+                                            mouse.row, mouse.column,
+                                            area.y, area.x, area.height, area.width,
+                                            current_sb,
+                                        );
+                                        sel.moving = (abs_row, col);
+                                    }
+                                }
+                                MouseEventKind::Up(MouseButton::Left) => {
+                                    // Clear empty selections (click without drag)
+                                    if app.selection.as_ref().is_some_and(|s| s.is_empty()) {
+                                        app.selection = None;
+                                    }
+                                }
+                                _ => {}
                             }
                         }
                     }

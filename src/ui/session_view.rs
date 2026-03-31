@@ -3,19 +3,28 @@ use ratatui::layout::{Position, Rect};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::widgets::Widget;
 
+use super::selection::Selection;
+
 pub struct TerminalView<'a> {
     screen: &'a vt100::Screen,
+    selection: Option<&'a Selection>,
 }
 
 impl<'a> TerminalView<'a> {
     pub fn new(screen: &'a vt100::Screen) -> Self {
-        Self { screen }
+        Self { screen, selection: None }
+    }
+
+    pub fn with_selection(mut self, selection: Option<&'a Selection>) -> Self {
+        self.selection = selection;
+        self
     }
 }
 
 impl<'a> Widget for TerminalView<'a> {
     fn render(self, area: Rect, buf: &mut Buffer) {
         let (vt_rows, vt_cols) = self.screen.size();
+        let scrollback = self.screen.scrollback();
 
         for row in 0..area.height.min(vt_rows) {
             for col in 0..area.width.min(vt_cols) {
@@ -50,6 +59,13 @@ impl<'a> Widget for TerminalView<'a> {
                             modifiers |= Modifier::UNDERLINED;
                         }
                         if vt_cell.inverse() {
+                            modifiers |= Modifier::REVERSED;
+                        }
+
+                        let abs_row = row as isize - scrollback as isize;
+                        let selected = self.selection
+                            .is_some_and(|sel| sel.contains(abs_row, col));
+                        if selected {
                             modifiers |= Modifier::REVERSED;
                         }
 
