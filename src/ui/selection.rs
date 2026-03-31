@@ -8,6 +8,7 @@
 pub struct Selection {
     pub anchor: (isize, u16),
     pub moving: (isize, u16),
+    pub dragged: bool,
 }
 
 impl Selection {
@@ -15,6 +16,7 @@ impl Selection {
         Self {
             anchor: (abs_row, col),
             moving: (abs_row, col),
+            dragged: false,
         }
     }
 
@@ -35,6 +37,9 @@ impl Selection {
 
     /// Whether the cell at (abs_row, col) falls within the selection.
     pub fn contains(&self, abs_row: isize, col: u16) -> bool {
+        if !self.dragged {
+            return false;
+        }
         let ((sr, sc), (er, ec)) = self.normalised();
         if abs_row < sr || abs_row > er {
             return false;

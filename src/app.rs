@@ -1169,6 +1169,7 @@ pub fn run(terminal: &mut DefaultTerminal) -> Result<()> {
                                 }
                                 MouseEventKind::Drag(MouseButton::Left) => {
                                     if let Some(ref mut sel) = app.selection {
+                                        sel.dragged = true;
                                         // Edge auto-scroll
                                         if mouse.row < area.y {
                                             let new = scrollback.saturating_add(1);
