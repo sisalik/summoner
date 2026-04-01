@@ -1,20 +1,13 @@
-// Navigation state — flat navigation across all sessions, with grid-aware up/down
-
-pub fn grid_cols_for_count(count: usize) -> usize {
-    match count {
-        0 | 1 => 1,
-        2 | 3 => count,
-        _ => 3,
-    }
-}
+// Navigation state — flat navigation across all sessions, with row-aware up/down
 
 #[derive(Debug)]
 pub struct DashboardNav {
     selected: usize,
     total: usize,
-    grid_cols: usize,
     /// group_ranges[i] = (start_session_idx, count)
     group_ranges: Vec<(usize, usize)>,
+    /// row_groups[row] = [group_idx, ...] — which groups are on each visual row
+    row_groups: Vec<Vec<usize>>,
 }
 
 impl Default for DashboardNav {
@@ -28,18 +21,13 @@ impl DashboardNav {
         Self {
             selected: 0,
             total: 0,
-            grid_cols: 1,
             group_ranges: Vec::new(),
+            row_groups: Vec::new(),
         }
     }
 
-    pub fn update_layout(&mut self, group_sizes: &[usize]) {
-        self.update_layout_with_cols(group_sizes, grid_cols_for_count(group_sizes.len()));
-    }
-
-    /// Update layout with an explicit column count (from the actual rendered grid).
-    pub fn update_layout_with_cols(&mut self, group_sizes: &[usize], cols: usize) {
-        self.grid_cols = cols;
+    pub fn update_layout_with_rows(&mut self, group_sizes: &[usize], row_groups: Vec<Vec<usize>>) {
+        self.row_groups = row_groups;
         self.total = group_sizes.iter().sum();
         let mut start = 0;
         self.group_ranges = group_sizes
@@ -66,8 +54,8 @@ impl DashboardNav {
         session_order.get(self.selected).copied()
     }
 
-    pub fn grid_cols(&self) -> usize {
-        self.grid_cols
+    pub fn row_groups(&self) -> &[Vec<usize>] {
+        &self.row_groups
     }
 
     fn current_group(&self) -> Option<usize> {
@@ -84,6 +72,14 @@ impl DashboardNav {
         }
     }
 
+    fn group_row(&self, group_idx: usize) -> Option<usize> {
+        self.row_groups.iter().position(|row| row.contains(&group_idx))
+    }
+
+    fn group_col_in_row(&self, group_idx: usize, row: usize) -> Option<usize> {
+        self.row_groups.get(row).and_then(|r| r.iter().position(|&g| g == group_idx))
+    }
+
     pub fn move_left(&mut self) {
         if self.selected > 0 {
             self.selected -= 1;
@@ -97,33 +93,28 @@ impl DashboardNav {
     }
 
     pub fn move_up(&mut self) {
-        if let Some(g) = self.current_group()
-            && g >= self.grid_cols {
-                let target_group = g - self.grid_cols;
-                let pos = self.position_in_group();
-                let (start, size) = self.group_ranges[target_group];
-                self.selected = start + pos.min(size - 1);
-            }
+        let Some(g) = self.current_group() else { return };
+        let Some(row) = self.group_row(g) else { return };
+        if row == 0 { return; }
+
+        let col = self.group_col_in_row(g, row).unwrap_or(0);
+        let target_row = &self.row_groups[row - 1];
+        let target_group = target_row[col.min(target_row.len() - 1)];
+        let pos = self.position_in_group();
+        let (start, size) = self.group_ranges[target_group];
+        self.selected = start + pos.min(size - 1);
     }
 
     pub fn move_down(&mut self) {
-        if let Some(g) = self.current_group() {
-            let target_group = g + self.grid_cols;
-            if target_group < self.group_ranges.len() {
-                let pos = self.position_in_group();
-                let (start, size) = self.group_ranges[target_group];
-                self.selected = start + pos.min(size - 1);
-            } else if self.grid_cols > 1 {
-                // Incomplete last row: try the last group if it's in the next row
-                let current_row = g / self.grid_cols;
-                let last_group = self.group_ranges.len() - 1;
-                let last_row = last_group / self.grid_cols;
-                if last_row > current_row {
-                    let pos = self.position_in_group();
-                    let (start, size) = self.group_ranges[last_group];
-                    self.selected = start + pos.min(size - 1);
-                }
-            }
-        }
+        let Some(g) = self.current_group() else { return };
+        let Some(row) = self.group_row(g) else { return };
+        if row + 1 >= self.row_groups.len() { return; }
+
+        let col = self.group_col_in_row(g, row).unwrap_or(0);
+        let target_row = &self.row_groups[row + 1];
+        let target_group = target_row[col.min(target_row.len() - 1)];
+        let pos = self.position_in_group();
+        let (start, size) = self.group_ranges[target_group];
+        self.selected = start + pos.min(size - 1);
     }
 }

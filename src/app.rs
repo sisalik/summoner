@@ -124,7 +124,8 @@ impl App {
         {
             let groups = crate::session::group_by_project(&sessions);
             let group_sizes: Vec<usize> = groups.iter().map(|g| g.sessions.len()).collect();
-            nav.update_layout(&group_sizes);
+            let layout = crate::ui::dashboard::flow_layout(&group_sizes, 80);
+            nav.update_layout_with_rows(&group_sizes, layout.row_groups);
         }
 
         let mode = if sessions.is_empty() {
@@ -175,14 +176,8 @@ impl App {
     fn refresh_nav_layout(&mut self) {
         let groups = crate::session::group_by_project(&self.sessions);
         let group_sizes: Vec<usize> = groups.iter().map(|g| g.sessions.len()).collect();
-        let max_creatures = group_sizes.iter().copied().max().unwrap_or(1);
-        // Use grid_layout to get the actual column count (same logic as dashboard render)
-        let (actual_cols, _) = crate::ui::dashboard::grid_layout(
-            groups.len(),
-            self.last_term_width,
-            max_creatures,
-        );
-        self.nav.update_layout_with_cols(&group_sizes, actual_cols);
+        let layout = crate::ui::dashboard::flow_layout(&group_sizes, self.last_term_width);
+        self.nav.update_layout_with_rows(&group_sizes, layout.row_groups);
     }
 
     fn spawn_session(&mut self, directory: String, rows: u16, cols: u16) -> Result<()> {
@@ -1088,7 +1083,6 @@ pub fn run(terminal: &mut DefaultTerminal) -> Result<()> {
 
     loop {
         app.render(terminal)?;
-        // Keep nav grid_cols in sync with rendered layout (depends on terminal width)
         app.refresh_nav_layout();
 
         let timeout = match app.mode {

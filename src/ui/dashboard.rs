@@ -74,9 +74,9 @@ impl<'a> Dashboard<'a> {
             return;
         }
 
-        let max_creatures = groups.iter().map(|g| g.sessions.len()).max().unwrap_or(1);
-        let (cols, _rows) = grid_layout(groups.len(), content_area.width, max_creatures);
-        if cols == 0 { return; }
+        let group_sizes: Vec<usize> = groups.iter().map(|g| g.sessions.len()).collect();
+        let layout = flow_layout(&group_sizes, content_area.width);
+        if layout.cards.is_empty() { return; }
 
         // Determine which group names need disambiguation (same basename, different path)
         let basenames: Vec<&str> = groups.iter().map(|g| {
@@ -92,10 +92,6 @@ impl<'a> Dashboard<'a> {
         // Creature render height in terminal rows = CREATURE_HEIGHT / 2 (half-block)
         let creature_render_h = CREATURE_HEIGHT.div_ceil(2);
 
-        // Card dimensions: each group gets its own card slot
-        let total_margin_x = (cols as u16) + 1;
-        let card_width = content_area.width.saturating_sub(total_margin_x) / cols as u16;
-
         // card inner height: padding(1) + health_bar(1) + creature(creature_render_h) + lvl_xp(1) + state(1) + padding(1)
         let card_inner_height = 1 + 1 + creature_render_h + 1 + 1 + 1;
         let card_height = card_inner_height + 2; // + border top/bottom
@@ -107,11 +103,11 @@ impl<'a> Dashboard<'a> {
         let mut flat_pos = 0usize;
 
         for (group_idx, group) in groups.iter().enumerate() {
-            let col = group_idx % cols;
-            let row = group_idx / cols;
+            let card_pos = &layout.cards[group_idx];
 
-            let card_x = content_area.x + 1 + col as u16 * (card_width + 1);
-            let card_y = content_area.y + 1 + row as u16 * row_stride;
+            let card_x = content_area.x + card_pos.x;
+            let card_y = content_area.y + 1 + card_pos.row as u16 * row_stride;
+            let card_width = card_pos.width;
 
             if card_y + card_height > content_area.y + content_area.height {
                 break;
@@ -336,27 +332,50 @@ impl<'a> Dashboard<'a> {
     }
 }
 
-/// Compute grid layout: (cols, rows) based on group count and available width.
-/// `max_creatures_per_group` is the largest number of sessions in any single group.
-pub fn grid_layout(count: usize, available_width: u16, max_creatures_per_group: usize) -> (usize, usize) {
-    // Minimum card width: enough to fit the widest group's creatures side by side
-    // Each creature needs CREATURE_WIDTH + 2 gap, plus card border(2) + padding(2)
-    let creatures_w = max_creatures_per_group.max(1) as u16 * (CREATURE_WIDTH + 2);
-    let min_card_width = (creatures_w + 4).max(28); // border(2) + padding(2), floor at 28
+pub struct CardLayout {
+    pub row: usize,
+    pub x: u16,
+    pub width: u16,
+}
 
-    // Max columns that fit: (width - 1 outer margin) / (card + 1 gap)
-    let max_cols = ((available_width.saturating_sub(1)) / (min_card_width + 1)).max(1) as usize;
+pub struct FlowLayout {
+    pub cards: Vec<CardLayout>,
+    pub row_groups: Vec<Vec<usize>>,
+}
 
-    let desired = match count {
-        0 => return (0, 0),
-        1 => 1,
-        2 | 3 => count,
-        4..=6 => 3,
-        _ => 3,
-    };
-    let cols = desired.min(max_cols);
-    let rows = count.div_ceil(cols);
-    (cols, rows)
+/// Compute natural card width for a group with `session_count` sessions.
+fn natural_card_width(session_count: usize) -> u16 {
+    let creatures_w = session_count.max(1) as u16 * (CREATURE_WIDTH + 2);
+    (creatures_w + 4).max(28) // border(2) + padding(2), floor at 28
+}
+
+/// Flow layout: each card gets its natural width, packed left-to-right with row wrapping.
+pub fn flow_layout(group_sizes: &[usize], available_width: u16) -> FlowLayout {
+    let mut cards = Vec::with_capacity(group_sizes.len());
+    let mut row_groups: Vec<Vec<usize>> = Vec::new();
+    let mut current_x: u16 = 1; // left margin
+    let mut current_row: usize = 0;
+
+    for (i, &size) in group_sizes.iter().enumerate() {
+        let card_w = natural_card_width(size);
+        let needed = card_w + 1; // card + right gap
+
+        if current_x > 1 && current_x + needed > available_width {
+            current_row += 1;
+            current_x = 1;
+        }
+
+        cards.push(CardLayout { row: current_row, x: current_x, width: card_w });
+
+        if current_row >= row_groups.len() {
+            row_groups.push(Vec::new());
+        }
+        row_groups[current_row].push(i);
+
+        current_x += card_w + 1;
+    }
+
+    FlowLayout { cards, row_groups }
 }
 
 fn fill_background(area: Rect, buf: &mut Buffer) {
