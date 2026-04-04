@@ -658,6 +658,21 @@ impl App {
                     self.mode = Mode::DirPicker;
                 }
             }
+            KeyCode::Char('r') => {
+                // Regenerate creature for selected session
+                if let Some(sess_idx) = sel {
+                    let seed = rand_seed();
+                    let enabled = crate::creature::skeleton::ENABLED_ARCHETYPES;
+                    let archetype_idx = enabled[seed as usize % enabled.len()];
+                    let template = archetype_name(archetype_idx).to_string();
+                    let skeleton = Skeleton::instantiate(archetype_idx, seed);
+                    let raster = rasterize_skeleton(&skeleton);
+                    self.sessions[sess_idx].creature_seed = seed;
+                    self.sessions[sess_idx].creature_template = template;
+                    self.locomotions[sess_idx] = LocomotionState::new(skeleton, self.sessions[sess_idx].state);
+                    self.sprites[sess_idx] = raster;
+                }
+            }
             KeyCode::Char('x') => {
                 // Close selected session
                 if let Some(sess_idx) = sel {
