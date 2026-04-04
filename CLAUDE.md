@@ -68,6 +68,12 @@ tests/
 | `uuid` | Session identifiers |
 | `chrono` | Timestamps for session pruning |
 
+## Environment Variables
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `SUMMONER_ALLOW_ALT_SCREEN` | unset | Set to `1` to stop stripping alternate-screen escape sequences (`\e[?1049h/l`, `\e[?47h/l`) from PTY output. By default Summoner strips these so that child programs (e.g. Claude Code) cannot bypass vt100's scrollback buffer. Only set this if the upstream program has fixed its scrollback handling. |
+
 ## Config Files (`~/.summoner/`)
 
 - `config.toml` — shell, animation speed, prune days

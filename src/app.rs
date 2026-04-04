@@ -58,6 +58,7 @@ struct App {
     last_statusline_check: Instant,
     selection: Option<Selection>,
     session_area: Rect,
+    strip_alt_screen: bool,
 }
 
 pub fn display_path(path: &str) -> String {
@@ -170,6 +171,8 @@ impl App {
             last_statusline_check: Instant::now(),
             selection: None,
             session_area: Rect::default(),
+            strip_alt_screen: std::env::var("SUMMONER_ALLOW_ALT_SCREEN")
+                .map_or(true, |v| v != "1"),
         })
     }
 
@@ -264,7 +267,13 @@ impl App {
             // Read output and feed to vt100 parser
             let chunks = pty.read_available();
             for chunk in &chunks {
-                self.vt_parsers[i].process(chunk);
+                if self.strip_alt_screen {
+                    let (rows, _) = self.vt_parsers[i].screen().size();
+                    let filtered = rewrite_for_scrollback(chunk, rows);
+                    self.vt_parsers[i].process(&filtered);
+                } else {
+                    self.vt_parsers[i].process(chunk);
+                }
             }
 
             // Update working directory from /proc/PID/cwd
@@ -1083,6 +1092,40 @@ fn f_key_bytes(n: u8, xterm_mod: u8, has_mod: bool) -> Vec<u8> {
         };
         csi_tilde(code, xterm_mod, has_mod)
     }
+}
+
+/// Rewrite escape sequences that would destroy scrollback in the vt100 parser.
+///
+/// 1. Strips alternate-screen enters/exits (ESC[?1049h/l, ESC[?47h/l) so all
+///    output stays on the primary grid where scrollback works.
+/// 2. Replaces ESC[2J (erase display) with ESC[{rows}S ESC[H (scroll up +
+///    cursor home). vt100's `erase_all` blanks the grid without pushing rows
+///    to scrollback; scroll-up preserves them.
+fn rewrite_for_scrollback(input: &[u8], rows: u16) -> Vec<u8> {
+    const STRIP: &[&[u8]] = &[
+        b"\x1b[?1049h", b"\x1b[?1049l",
+        b"\x1b[?47h", b"\x1b[?47l",
+    ];
+    let scroll_replacement = format!("\x1b[{}S\x1b[H", rows);
+    let scroll_bytes = scroll_replacement.as_bytes();
+    let mut out = Vec::with_capacity(input.len());
+    let mut i = 0;
+    while i < input.len() {
+        if input[i] == 0x1b {
+            if let Some(pat) = STRIP.iter().find(|p| input[i..].starts_with(p)) {
+                i += pat.len();
+                continue;
+            }
+            if input[i..].starts_with(b"\x1b[2J") {
+                out.extend_from_slice(scroll_bytes);
+                i += 4;
+                continue;
+            }
+        }
+        out.push(input[i]);
+        i += 1;
+    }
+    out
 }
 
 fn rand_seed() -> u64 {
