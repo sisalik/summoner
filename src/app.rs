@@ -6,7 +6,7 @@ use crossterm::event::{self, Event, KeyCode, KeyEvent, KeyModifiers, MouseButton
 use ratatui::layout::{Constraint, Layout, Rect};
 use ratatui::DefaultTerminal;
 
-use crate::claude::{find_claude_child, find_conversation_id};
+use crate::claude::{find_claude_child, find_conversation_id, is_claude_stopped};
 use crate::hooks;
 use crate::config::{AppConfig, RecentDirs, SessionStore, SessionEntry};
 use crate::creature::locomotion::LocomotionState;
@@ -297,6 +297,9 @@ impl App {
 
             if i < self.session_stats.len() {
                 self.session_stats[i].active_tool = hook_tool;
+                if hook_state.is_some() {
+                    self.session_stats[i].last_activity = Instant::now();
+                }
             }
 
             // Pick up conversation ID from hooks or fallback.
@@ -312,8 +315,18 @@ impl App {
                     }
             }
 
-            let new_state = if let Some(state) = hook_state {
-                state
+            let new_state = if shell_pid.is_some_and(|pid| is_claude_stopped(pid)) {
+                SessionState::Sleeping
+            } else if let Some(state) = hook_state {
+                // If hook says idle but no activity for 30min, show as sleeping
+                if state == SessionState::Idle
+                    && i < self.session_stats.len()
+                    && self.session_stats[i].last_activity.elapsed() >= Duration::from_secs(30 * 60)
+                {
+                    SessionState::Sleeping
+                } else {
+                    state
+                }
             } else {
                 // Fallback: check if claude process is running
                 let claude_running = shell_pid.and_then(find_claude_child).is_some();

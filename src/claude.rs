@@ -3,6 +3,27 @@ pub fn find_claude_child(shell_pid: u32) -> Option<u32> {
     find_descendant_by_name(shell_pid, "claude")
 }
 
+/// Check if a process (or any of its descendants named "claude") is stopped (Ctrl+Z).
+pub fn is_claude_stopped(shell_pid: u32) -> bool {
+    if let Some(claude_pid) = find_claude_child(shell_pid) {
+        return is_process_stopped(claude_pid);
+    }
+    false
+}
+
+fn is_process_stopped(pid: u32) -> bool {
+    let path = format!("/proc/{}/stat", pid);
+    if let Ok(stat) = std::fs::read_to_string(&path) {
+        // Format: pid (comm) state ... — state is the first char after the last ')'
+        if let Some(after_comm) = stat.rfind(')') {
+            let rest = &stat[after_comm + 1..];
+            let state = rest.trim_start().chars().next();
+            return state == Some('T');
+        }
+    }
+    false
+}
+
 fn find_descendant_by_name(pid: u32, name: &str) -> Option<u32> {
     let children = read_children(pid);
     for child in children {
