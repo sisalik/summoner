@@ -17,10 +17,12 @@ event=$(extract hook_event_name)
 sid=$(extract session_id)
 tool=$(extract tool_name)
 notif_type=$(extract notification_type)
+agent_id=$(extract agent_id)
 
 # For Notification events, pass notification_type as third field instead of tool
 extra="$tool"
 [ "$event" = "Notification" ] && extra="$notif_type"
+[ "$event" = "SubagentStart" ] || [ "$event" = "SubagentStop" ] && extra="$agent_id"
 
 # Hook process tree: shell → claude → bash → this script
 # Walk up to find the shell PID
@@ -46,7 +48,18 @@ shell_pid=$(find_shell_pid)
 
 dir="$HOME/.summoner/claude-states"
 mkdir -p "$dir" 2>/dev/null
-echo "$event $sid $extra" > "$dir/$shell_pid"
+
+# Track active subagents via marker files (don't touch main state file)
+if [ "$event" = "SubagentStart" ] && [ -n "$agent_id" ]; then
+    mkdir -p "$dir/$shell_pid.agents" 2>/dev/null
+    touch "$dir/$shell_pid.agents/$agent_id"
+elif [ "$event" = "SubagentStop" ] && [ -n "$agent_id" ]; then
+    rm -f "$dir/$shell_pid.agents/$agent_id"
+    rmdir "$dir/$shell_pid.agents" 2>/dev/null
+else
+    echo "$event $sid $extra" > "$dir/$shell_pid"
+    [ "$event" = "SessionEnd" ] && rm -rf "$dir/$shell_pid.agents"
+fi
 "#;
 
 const HOOK_COMMAND: &str = "bash ~/.summoner/hooks/claude-state.sh";
@@ -59,6 +72,8 @@ const HOOK_EVENTS: &[&str] = &[
     "SessionEnd",
     "PreToolUse",
     "PostToolUse",
+    "SubagentStart",
+    "SubagentStop",
 ];
 
 /// Install the hook script and configure ~/.claude/settings.json.
@@ -91,7 +106,12 @@ pub fn clear_all_state_files(summoner_dir: &Path) {
     let dir = summoner_dir.join("claude-states");
     if let Ok(entries) = fs::read_dir(&dir) {
         for entry in entries.flatten() {
-            let _ = fs::remove_file(entry.path());
+            let path = entry.path();
+            if path.is_dir() {
+                let _ = fs::remove_dir_all(&path);
+            } else {
+                let _ = fs::remove_file(&path);
+            }
         }
     }
 }
@@ -99,6 +119,8 @@ pub fn clear_all_state_files(summoner_dir: &Path) {
 /// Remove the state file for a specific shell PID.
 pub fn clear_state_file(summoner_dir: &Path, shell_pid: u32) {
     let _ = fs::remove_file(state_file_path(summoner_dir, shell_pid));
+    let agents_dir = summoner_dir.join("claude-states").join(format!("{}.agents", shell_pid));
+    let _ = fs::remove_dir_all(agents_dir);
 }
 
 fn install_hook_script(summoner_dir: &Path) -> std::io::Result<()> {
@@ -252,6 +274,12 @@ fn state_file_path(summoner_dir: &Path, shell_pid: u32) -> PathBuf {
     summoner_dir.join("claude-states").join(shell_pid.to_string())
 }
 
+/// Count active subagents for a shell PID by counting marker files.
+fn active_subagent_count(summoner_dir: &Path, shell_pid: u32) -> usize {
+    let agents_dir = summoner_dir.join("claude-states").join(format!("{}.agents", shell_pid));
+    fs::read_dir(agents_dir).map(|entries| entries.count()).unwrap_or(0)
+}
+
 /// Read hook state and session ID in a single file read.
 /// Returns (state, session_id, active_tool) where state is None if no hook data or Claude exited.
 pub fn read_hook_state(summoner_dir: &Path, shell_pid: u32) -> (Option<SessionState>, Option<String>, Option<String>) {
@@ -268,15 +296,22 @@ pub fn read_hook_state(summoner_dir: &Path, shell_pid: u32) -> (Option<SessionSt
     let session_id = parts.next().map(|s| s.to_string());
     let tool_name = parts.next().map(|s| s.to_string());
 
+    let has_active_subagents = active_subagent_count(summoner_dir, shell_pid) > 0;
+
     let state = match event {
         "UserPromptSubmit" => Some(SessionState::Working),
-        "Stop" | "SessionStart" => Some(SessionState::Idle),
-        // Notification: only permission_prompt means "waiting for user"
+        "Stop" | "SessionStart" => {
+            if has_active_subagents {
+                Some(SessionState::Working)
+            } else {
+                Some(SessionState::Idle)
+            }
+        }
         "Notification" => {
             if tool_name.as_deref() == Some("permission_prompt") {
                 Some(SessionState::Waiting)
             } else {
-                None // idle_prompt, auth_success, etc. — don't change state
+                None
             }
         }
         "PreToolUse" => Some(SessionState::Working),
