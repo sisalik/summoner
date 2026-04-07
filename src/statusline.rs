@@ -157,6 +157,7 @@ pub struct StatusLineData {
     pub five_hour_resets_at: Option<i64>,
     pub seven_day_pct: Option<u8>,
     pub seven_day_resets_at: Option<i64>,
+    pub modified_at: std::time::SystemTime,
 }
 
 impl StatusLineData {
@@ -198,6 +199,7 @@ impl StatusLineData {
             five_hour_resets_at,
             seven_day_pct,
             seven_day_resets_at,
+            modified_at: std::time::SystemTime::UNIX_EPOCH,
         })
     }
 
@@ -211,10 +213,13 @@ impl StatusLineData {
         for entry in entries.flatten() {
             let path = entry.path();
             if path.extension().and_then(|e| e.to_str()) == Some("json")
-                && let Ok(content) = fs::read_to_string(&path)
-                    && let Some(data) = Self::from_json(&content) {
-                        results.push(data);
-                    }
+                && let Ok(meta) = path.metadata()
+                    && let Ok(content) = fs::read_to_string(&path)
+                        && let Some(mut data) = Self::from_json(&content) {
+                            data.modified_at = meta.modified()
+                                .unwrap_or(std::time::SystemTime::UNIX_EPOCH);
+                            results.push(data);
+                        }
         }
         results
     }

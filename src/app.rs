@@ -929,8 +929,12 @@ impl App {
                 .collect();
 
             let sl_data = crate::statusline::StatusLineData::read_all(&self.config_dir);
+            // Use rate limits only from the most recently modified state file
+            // to avoid jumping between stale snapshots from different sessions
+            let newest = sl_data.iter()
+                .filter(|sl| active_session_ids.contains(&sl.session_id))
+                .max_by_key(|sl| sl.modified_at);
             for sl in &sl_data {
-                // Only use data from sessions we currently have active
                 if !active_session_ids.contains(&sl.session_id) {
                     continue;
                 }
@@ -946,6 +950,8 @@ impl App {
                             }
                     }
                 }
+            }
+            if let Some(sl) = newest {
                 if sl.five_hour_pct.is_some() {
                     self.global_stats.five_hour_pct = sl.five_hour_pct;
                     self.global_stats.five_hour_resets_at = sl.five_hour_resets_at;
