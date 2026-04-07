@@ -60,6 +60,7 @@ else
     echo "$event $sid $extra" > "$dir/$shell_pid"
     [ "$event" = "SessionEnd" ] && rm -rf "$dir/$shell_pid.agents"
 fi
+exit 0
 "#;
 
 const HOOK_COMMAND: &str = "bash ~/.summoner/hooks/claude-state.sh";
