@@ -28,10 +28,8 @@ impl<'a> Widget for StatusBar<'a> {
             }
         }
 
-        let mut x = area.x;
         let f12_hint = " F12 Dashboard ";
-        let max_tab_x = area.x + area.width - f12_hint.len() as u16 - 1;
-        let mut overflow_count = 0;
+        let tab_budget = (area.width as usize).saturating_sub(f12_hint.len() + 1);
 
         let groups = group_by_project(self.sessions);
         let mut session_order: Vec<usize> = Vec::new();
@@ -41,24 +39,19 @@ impl<'a> Widget for StatusBar<'a> {
             session_order.extend(&group.sessions);
         }
 
-        // Pre-compute: for each group, find the last session index in the group
-        // or the active session if one exists in the group
         let mut show_name_for: Vec<bool> = vec![false; session_order.len()];
         {
             let mut group_start = 0;
             for group in &groups {
                 let group_end = group_start + group.sessions.len();
-                // Find if any session in this group is active
                 let active_in_group = (group_start..group_end).any(|pos| {
                     session_order.get(pos).map_or(false, |&si| self.active_index == Some(si))
                 });
                 if group.sessions.len() <= 1 {
-                    // Single session — always show name
                     if group_start < show_name_for.len() {
                         show_name_for[group_start] = true;
                     }
                 } else if active_in_group {
-                    // Show name only for the active session
                     for pos in group_start..group_end {
                         if let Some(&si) = session_order.get(pos) {
                             if self.active_index == Some(si) {
@@ -67,7 +60,6 @@ impl<'a> Widget for StatusBar<'a> {
                         }
                     }
                 } else {
-                    // No active session in group — show name for last one
                     if group_end > 0 && group_end - 1 < show_name_for.len() {
                         show_name_for[group_end - 1] = true;
                     }
@@ -76,21 +68,56 @@ impl<'a> Widget for StatusBar<'a> {
             }
         }
 
-        for (pos, &sess_idx) in session_order.iter().enumerate() {
+        // Pre-compute tab widths (including group separator)
+        let tab_widths: Vec<usize> = session_order.iter().enumerate().map(|(pos, &sess_idx)| {
+            let session = &self.sessions[sess_idx];
+            let fkey = format!("F{}", pos + 1);
+            let icon = session.state.bar_icon();
+            let tab_w = if show_name_for.get(pos).copied().unwrap_or(true) {
+                format!(" {} {} {} ", fkey, icon, session.name).len()
+            } else {
+                format!(" {} {} ", fkey, icon).len()
+            };
+            let sep_w = if pos > 0 && group_boundaries.contains(&pos) { 1 } else { 0 };
+            sep_w + tab_w
+        }).collect();
+
+        let total: usize = tab_widths.iter().sum();
+        let active_pos = self.active_index
+            .and_then(|ai| session_order.iter().position(|&si| si == ai));
+
+        // Find the visible window [start..end) that includes the active tab
+        let (vis_start, vis_end) = if total <= tab_budget {
+            (0, session_order.len())
+        } else {
+            find_visible_window(&tab_widths, tab_budget, active_pos)
+        };
+
+        let hidden_before = vis_start;
+        let hidden_after = session_order.len() - vis_end;
+
+        // Render
+        let mut x = area.x;
+        let max_tab_x = area.x + tab_budget as u16;
+        let overflow_style = Style::default()
+            .fg(Color::Rgb(120, 120, 140))
+            .bg(Color::Rgb(30, 30, 40));
+
+        if hidden_before > 0 {
+            let text = format!(" +{}\u{2039} ", hidden_before);
+            x = write_str(buf, x, area.y, &text, overflow_style, max_tab_x);
+        }
+
+        for pos in vis_start..vis_end {
+            let sess_idx = session_order[pos];
             let session = &self.sessions[sess_idx];
 
-            // Add separator between groups
             if pos > 0 && group_boundaries.contains(&pos) {
-                let sep = "\u{2502}";
-                if x < max_tab_x {
+                if pos > vis_start || hidden_before == 0 {
                     let sep_style = Style::default()
                         .fg(Color::Rgb(60, 60, 80))
                         .bg(Color::Rgb(30, 30, 40));
-                    if let Some(cell) = buf.cell_mut(Position { x, y: area.y }) {
-                        cell.set_symbol(sep);
-                        cell.set_style(sep_style);
-                    }
-                    x += 1;
+                    x = write_str(buf, x, area.y, "\u{2502}", sep_style, max_tab_x);
                 }
             }
 
@@ -102,37 +129,14 @@ impl<'a> Widget for StatusBar<'a> {
                 format!(" {} {} ", fkey, icon)
             };
 
-            if x + tab_text.len() as u16 > max_tab_x {
-                overflow_count = session_order.len() - pos;
-                break;
-            }
-
             let is_active = self.active_index == Some(sess_idx);
             let style = tab_style(session.state, is_active);
-
-            for ch in tab_text.chars() {
-                if x >= area.x + area.width { break; }
-                if let Some(cell) = buf.cell_mut(Position { x, y: area.y }) {
-                    cell.set_symbol(&ch.to_string());
-                    cell.set_style(style);
-                }
-                x += 1;
-            }
+            x = write_str(buf, x, area.y, &tab_text, style, max_tab_x);
         }
 
-        if overflow_count > 0 {
-            let overflow_text = format!(" +{} more ", overflow_count);
-            let overflow_style = Style::default()
-                .fg(Color::Rgb(120, 120, 140))
-                .bg(Color::Rgb(30, 30, 40));
-            for ch in overflow_text.chars() {
-                if x >= max_tab_x { break; }
-                if let Some(cell) = buf.cell_mut(Position { x, y: area.y }) {
-                    cell.set_symbol(&ch.to_string());
-                    cell.set_style(overflow_style);
-                }
-                x += 1;
-            }
+        if hidden_after > 0 {
+            let text = format!(" \u{203A}+{} ", hidden_after);
+            write_str(buf, x, area.y, &text, overflow_style, max_tab_x);
         }
 
         let hint_x = area.x + area.width - f12_hint.len() as u16;
@@ -147,6 +151,65 @@ impl<'a> Widget for StatusBar<'a> {
             }
         }
     }
+}
+
+fn write_str(buf: &mut Buffer, mut x: u16, y: u16, text: &str, style: Style, max_x: u16) -> u16 {
+    for ch in text.chars() {
+        if x >= max_x { break; }
+        if let Some(cell) = buf.cell_mut(Position { x, y }) {
+            cell.set_symbol(&ch.to_string());
+            cell.set_style(style);
+        }
+        x += 1;
+    }
+    x
+}
+
+/// Find the visible window [start..end) that fits within `budget` and includes `active_pos`.
+fn find_visible_window(widths: &[usize], budget: usize, active_pos: Option<usize>) -> (usize, usize) {
+    let n = widths.len();
+    let active = active_pos.unwrap_or(0);
+
+    // Reserve space for overflow indicators
+    let left_indicator_max = format!(" +{}\u{2039} ", n).len();
+    let right_indicator_max = format!(" \u{203A}+{} ", n).len();
+
+    // Start by trying to include the active tab, expanding outward
+    // First, find how much space we need with both indicators reserved
+    let mut start = active;
+    let mut end = active + 1;
+    let mut used = widths[active];
+
+    // Expand right first, then left, always keeping indicators in budget
+    loop {
+        let left_cost = if start > 0 { left_indicator_max } else { 0 };
+        let right_cost = if end < n { right_indicator_max } else { 0 };
+        let available = budget.saturating_sub(left_cost + right_cost);
+        if used > available { break; }
+
+        let grew = {
+            let mut grew = false;
+            // Try expanding right
+            if end < n && used + widths[end] <= available {
+                used += widths[end];
+                end += 1;
+                grew = true;
+            }
+            // Try expanding left
+            let left_cost_new = if start > 1 { left_indicator_max } else { 0 };
+            let right_cost_new = if end < n { right_indicator_max } else { 0 };
+            let available_new = budget.saturating_sub(left_cost_new + right_cost_new);
+            if start > 0 && used + widths[start - 1] <= available_new {
+                start -= 1;
+                used += widths[start];
+                grew = true;
+            }
+            grew
+        };
+        if !grew { break; }
+    }
+
+    (start, end)
 }
 
 fn tab_style(state: SessionState, active: bool) -> Style {
