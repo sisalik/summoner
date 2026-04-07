@@ -49,6 +49,12 @@ impl DashboardNav {
         self.selected
     }
 
+    pub fn set_selected(&mut self, pos: usize) {
+        if self.total > 0 {
+            self.selected = pos.min(self.total - 1);
+        }
+    }
+
     /// Convert flat position to actual session index using the given order mapping.
     pub fn selected_session(&self, session_order: &[usize]) -> Option<usize> {
         session_order.get(self.selected).copied()

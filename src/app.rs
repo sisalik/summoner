@@ -12,7 +12,7 @@ use crate::config::{AppConfig, RecentDirs, SessionStore, SessionEntry};
 use crate::creature::locomotion::LocomotionState;
 use crate::creature::outline::{rasterize_skeleton, RasterResult};
 use crate::creature::skeleton::{Skeleton, archetype_index, archetype_name};
-use crate::session::{Session, SessionState, SessionStats, GlobalStats, session_order};
+use crate::session::{Session, SessionState, SessionStats, GlobalStats, group_by_project, session_order};
 use crate::git::GitDiffCache;
 use crate::terminal::PtySession;
 use crate::ui::dashboard::Dashboard;
@@ -59,6 +59,7 @@ struct App {
     selection: Option<Selection>,
     session_area: Rect,
     strip_alt_screen: bool,
+    reordering: bool,
 }
 
 pub fn display_path(path: &str) -> String {
@@ -173,6 +174,7 @@ impl App {
             session_area: Rect::default(),
             strip_alt_screen: std::env::var("SUMMONER_ALLOW_ALT_SCREEN")
                 .map_or(true, |v| v != "1"),
+            reordering: false,
         })
     }
 
@@ -181,6 +183,109 @@ impl App {
         let group_sizes: Vec<usize> = groups.iter().map(|g| g.sessions.len()).collect();
         let layout = crate::ui::dashboard::flow_layout(&group_sizes, self.last_term_width);
         self.nav.update_layout_with_rows(&group_sizes, layout.row_groups);
+    }
+
+    fn swap_sessions(&mut self, a: usize, b: usize) {
+        self.sessions.swap(a, b);
+        self.pty_sessions.swap(a, b);
+        self.vt_parsers.swap(a, b);
+        self.locomotions.swap(a, b);
+        self.sprites.swap(a, b);
+        self.session_stats.swap(a, b);
+        self.remap_indices(a, b);
+        self.refresh_nav_layout();
+    }
+
+    /// Reorder all parallel arrays according to `new_order[new_pos] = old_index`.
+    fn apply_order(&mut self, new_order: &[usize]) {
+        let n = new_order.len();
+        let mut sessions: Vec<Option<Session>> = self.sessions.drain(..).map(Some).collect();
+        let mut ptys: Vec<Option<Option<PtySession>>> = self.pty_sessions.drain(..).map(Some).collect();
+        let mut parsers: Vec<Option<vt100::Parser>> = self.vt_parsers.drain(..).map(Some).collect();
+        let mut locos: Vec<Option<LocomotionState>> = self.locomotions.drain(..).map(Some).collect();
+        let mut rasters: Vec<Option<RasterResult>> = self.sprites.drain(..).map(Some).collect();
+        let mut stats: Vec<Option<SessionStats>> = self.session_stats.drain(..).map(Some).collect();
+        for &old_idx in new_order {
+            self.sessions.push(sessions[old_idx].take().unwrap());
+            self.pty_sessions.push(ptys[old_idx].take().unwrap());
+            self.vt_parsers.push(parsers[old_idx].take().unwrap());
+            self.locomotions.push(locos[old_idx].take().unwrap());
+            self.sprites.push(rasters[old_idx].take().unwrap());
+            self.session_stats.push(stats[old_idx].take().unwrap());
+        }
+        let mut old_to_new = vec![0usize; n];
+        for (new_pos, &old_idx) in new_order.iter().enumerate() {
+            old_to_new[old_idx] = new_pos;
+        }
+        if let Mode::Session(ref mut idx) = self.mode {
+            if *idx < n { *idx = old_to_new[*idx]; }
+        }
+        if let Some(ref mut idx) = self.last_session {
+            if *idx < n { *idx = old_to_new[*idx]; }
+        }
+        self.refresh_nav_layout();
+    }
+
+    fn remap_indices(&mut self, a: usize, b: usize) {
+        if let Mode::Session(ref mut idx) = self.mode {
+            if *idx == a { *idx = b; }
+            else if *idx == b { *idx = a; }
+        }
+        if let Some(ref mut idx) = self.last_session {
+            if *idx == a { *idx = b; }
+            else if *idx == b { *idx = a; }
+        }
+    }
+
+    /// Move a session within its group or swap entire groups at boundaries.
+    fn reorder_move(&mut self, direction: i8) {
+        let order = session_order(&self.sessions);
+        let Some(sess_idx) = self.nav.selected_session(&order) else { return };
+        let groups = group_by_project(&self.sessions);
+        let Some((group_idx, local_pos)) = groups.iter().enumerate()
+            .find_map(|(gi, g)| {
+                g.sessions.iter().position(|&si| si == sess_idx)
+                    .map(|pos| (gi, pos))
+            }) else { return };
+        let group = &groups[group_idx];
+        let new_vec_idx = if direction < 0 {
+            if local_pos > 0 {
+                let other = group.sessions[local_pos - 1];
+                self.swap_sessions(sess_idx, other);
+                other
+            } else if group_idx > 0 {
+                self.swap_groups(&groups, group_idx, group_idx - 1, sess_idx)
+            } else {
+                return;
+            }
+        } else {
+            if local_pos + 1 < group.sessions.len() {
+                let other = group.sessions[local_pos + 1];
+                self.swap_sessions(sess_idx, other);
+                other
+            } else if group_idx + 1 < groups.len() {
+                self.swap_groups(&groups, group_idx, group_idx + 1, sess_idx)
+            } else {
+                return;
+            }
+        };
+        let new_order = session_order(&self.sessions);
+        if let Some(new_pos) = new_order.iter().position(|&i| i == new_vec_idx) {
+            self.nav.set_selected(new_pos);
+        }
+    }
+
+    /// Swap two adjacent groups and return the new Vec index of `tracked` session.
+    fn swap_groups(&mut self, groups: &[crate::session::ProjectGroup], a: usize, b: usize, tracked: usize) -> usize {
+        let mut group_indices: Vec<usize> = (0..groups.len()).collect();
+        group_indices.swap(a, b);
+        let mut new_order = Vec::new();
+        for &gi in &group_indices {
+            new_order.extend(&groups[gi].sessions);
+        }
+        let new_vec_idx = new_order.iter().position(|&old| old == tracked).unwrap();
+        self.apply_order(&new_order);
+        new_vec_idx
     }
 
     fn spawn_session(&mut self, directory: String, rows: u16, cols: u16) -> Result<()> {
@@ -426,6 +531,7 @@ impl App {
                         &self.sprites,
                         &self.nav,
                         &mut self.git_cache,
+                        self.reordering,
                     );
                     dashboard.render(main_area, frame.buffer_mut());
 
@@ -566,6 +672,7 @@ impl App {
                     // Go back to last session if one exists (active or disconnected)
                     if let Some(idx) = self.last_session
                         && idx < self.sessions.len() {
+                            self.reordering = false;
                             self.mode = Mode::Session(idx);
                             return Ok(false);
                         }
@@ -585,9 +692,8 @@ impl App {
                 let pos = (n - 1) as usize;
                 let order = session_order(&self.sessions);
                 if let Some(&sess_idx) = order.get(pos) {
-                    // Resize PTY to match terminal
+                    self.reordering = false;
                     if let Some(Some(pty)) = self.pty_sessions.get(sess_idx) {
-                        // Status bar takes 1 row
                         let pty_rows = rows.saturating_sub(1);
                         let _ = pty.resize(pty_rows, cols);
                     }
@@ -681,6 +787,11 @@ impl App {
                 }
             }
             KeyCode::Char('r') => {
+                if sel.is_some() {
+                    self.reordering = !self.reordering;
+                }
+            }
+            KeyCode::Char('R') => {
                 // Regenerate creature for selected session
                 if let Some(sess_idx) = sel {
                     let seed = rand_seed();
@@ -708,10 +819,19 @@ impl App {
                     self.confirm_selection = false; // Default to No (safer)
                 }
             }
+            KeyCode::Left if self.reordering => {
+                self.reorder_move(-1);
+            }
+            KeyCode::Right if self.reordering => {
+                self.reorder_move(1);
+            }
             KeyCode::Left => self.nav.move_left(),
             KeyCode::Right => self.nav.move_right(),
             KeyCode::Up => self.nav.move_up(),
             KeyCode::Down => self.nav.move_down(),
+            KeyCode::Enter | KeyCode::Esc if self.reordering => {
+                self.reordering = false;
+            }
             KeyCode::Enter => {
                 if let Some(sess_idx) = sel {
                     if self.pty_sessions[sess_idx].is_none() {

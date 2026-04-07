@@ -22,6 +22,7 @@ pub struct Dashboard<'a> {
     rasters: &'a [RasterResult],
     nav: &'a DashboardNav,
     git_cache: &'a mut GitDiffCache,
+    reordering: bool,
 }
 
 impl<'a> Dashboard<'a> {
@@ -32,8 +33,9 @@ impl<'a> Dashboard<'a> {
         rasters: &'a [RasterResult],
         nav: &'a DashboardNav,
         git_cache: &'a mut GitDiffCache,
+        reordering: bool,
     ) -> Self {
-        Self { sessions, session_stats, global_stats, rasters, nav, git_cache }
+        Self { sessions, session_stats, global_stats, rasters, nav, git_cache, reordering }
     }
 
     pub fn render(&mut self, area: Rect, buf: &mut Buffer) {
@@ -47,7 +49,11 @@ impl<'a> Dashboard<'a> {
 
         // Hint row at bottom
         let hint_y = area.y + area.height.saturating_sub(1);
-        let hint_text = " \u{2190}\u{2192}\u{2191}\u{2193} navigate \u{2502} Enter open \u{2502} n session / N dir \u{2502} r reroll \u{2502} x close / X dir \u{2502} Ctrl+Q quit ";
+        let hint_text = if self.reordering {
+            " \u{2190}\u{2192} move \u{2502} Enter/Esc done \u{2502} r cancel "
+        } else {
+            " \u{2190}\u{2192}\u{2191}\u{2193} navigate \u{2502} Enter open \u{2502} n session / N dir \u{2502} r reorder / R reroll \u{2502} x close / X dir \u{2502} Ctrl+Q quit "
+        };
         let hint_style = Style::default()
             .fg(Color::Rgb(120, 120, 140))
             .bg(Color::Rgb(20, 20, 30));
@@ -322,7 +328,12 @@ impl<'a> Dashboard<'a> {
                             width: box_w,
                             height: box_h,
                         };
-                        draw_selection_box(box_area, buf, Color::Rgb(150, 150, 255));
+                        let box_color = if self.reordering {
+                            Color::Rgb(255, 180, 50)
+                        } else {
+                            Color::Rgb(150, 150, 255)
+                        };
+                        draw_selection_box(box_area, buf, box_color);
                     }
                 }
 
