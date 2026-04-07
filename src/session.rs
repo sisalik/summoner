@@ -123,6 +123,7 @@ pub struct SessionStats {
     pub jsonl_offset: u64,
     pub jsonl_path: Option<std::path::PathBuf>,
     pub last_activity: std::time::Instant,
+    pub prev_hook_state: Option<SessionState>,
 }
 
 impl Default for SessionStats {
@@ -141,6 +142,7 @@ impl SessionStats {
             jsonl_offset: 0,
             jsonl_path: None,
             last_activity: std::time::Instant::now(),
+            prev_hook_state: None,
         }
     }
 }

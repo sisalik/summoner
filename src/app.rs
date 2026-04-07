@@ -402,9 +402,10 @@ impl App {
 
             if i < self.session_stats.len() {
                 self.session_stats[i].active_tool = hook_tool;
-                if hook_state.is_some() {
+                if hook_state.is_some() && hook_state != self.session_stats[i].prev_hook_state {
                     self.session_stats[i].last_activity = Instant::now();
                 }
+                self.session_stats[i].prev_hook_state = hook_state;
             }
 
             // Pick up conversation ID from hooks or fallback.
