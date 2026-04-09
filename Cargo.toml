@@ -23,6 +23,7 @@ uuid = { version = "1", features = ["v4", "serde"] }
 vt100 = "0.16"
 chrono = { version = "0.4", features = ["serde"] }
 dirs = "6"
+unicode-width = "0.2"
 png = { version = "0.17", optional = true }
 
 [dev-dependencies]

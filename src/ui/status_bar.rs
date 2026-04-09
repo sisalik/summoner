@@ -2,6 +2,7 @@ use ratatui::buffer::Buffer;
 use ratatui::layout::{Position, Rect};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::widgets::Widget;
+use unicode_width::UnicodeWidthStr;
 
 use crate::session::{group_by_project, Session, SessionState};
 
@@ -28,8 +29,9 @@ impl<'a> Widget for StatusBar<'a> {
             }
         }
 
-        let f12_hint = " F12 \u{2317} ";
-        let tab_budget = (area.width as usize).saturating_sub(f12_hint.len() + 1);
+        let f12_hint = "\u{2317} F12";
+        let f12_hint_width = f12_hint.width();
+        let tab_budget = (area.width as usize).saturating_sub(f12_hint_width + 1);
 
         let groups = group_by_project(self.sessions);
         let mut session_order: Vec<usize> = Vec::new();
@@ -74,9 +76,9 @@ impl<'a> Widget for StatusBar<'a> {
             let fkey = format!("F{}", pos + 1);
             let icon = session.state.bar_icon();
             let tab_w = if show_name_for.get(pos).copied().unwrap_or(true) {
-                format!(" {} {} {} ", fkey, icon, session.name).len()
+                format!(" {} {} {} ", fkey, icon, session.name).width()
             } else {
-                format!(" {} {} ", fkey, icon).len()
+                format!(" {} {} ", fkey, icon).width()
             };
             let sep_w = if pos > 0 && group_boundaries.contains(&pos) { 1 } else { 0 };
             sep_w + tab_w
@@ -139,28 +141,23 @@ impl<'a> Widget for StatusBar<'a> {
             write_str(buf, x, area.y, &text, overflow_style, max_tab_x);
         }
 
-        let hint_x = area.x + area.width - f12_hint.len() as u16;
+        let hint_x = area.x + area.width - f12_hint_width as u16;
         let hint_style = Style::default()
             .fg(Color::Rgb(150, 150, 170))
             .bg(Color::Rgb(30, 30, 40));
-        for (i, ch) in f12_hint.chars().enumerate() {
-            let pos = Position { x: hint_x + i as u16, y: area.y };
-            if let Some(cell) = buf.cell_mut(pos) {
-                cell.set_symbol(&ch.to_string());
-                cell.set_style(hint_style);
-            }
-        }
+        write_str(buf, hint_x, area.y, f12_hint, hint_style, area.x + area.width);
     }
 }
 
 fn write_str(buf: &mut Buffer, mut x: u16, y: u16, text: &str, style: Style, max_x: u16) -> u16 {
     for ch in text.chars() {
         if x >= max_x { break; }
+        let cw = unicode_width::UnicodeWidthChar::width(ch).unwrap_or(1);
         if let Some(cell) = buf.cell_mut(Position { x, y }) {
             cell.set_symbol(&ch.to_string());
             cell.set_style(style);
         }
-        x += 1;
+        x += cw as u16;
     }
     x
 }
@@ -170,33 +167,37 @@ fn write_str(buf: &mut Buffer, mut x: u16, y: u16, text: &str, style: Style, max
 fn find_visible_window(widths: &[usize], budget: usize, active_pos: Option<usize>) -> (usize, usize) {
     let n = widths.len();
     let active = active_pos.unwrap_or(0);
-    let left_indicator_max = format!(" +{}\u{2039} ", n).len();
-    let right_indicator_max = format!(" \u{203A}+{} ", n).len();
+    let left_indicator_max = format!(" +{}\u{2039} ", n).width();
+    let right_indicator_max = format!(" \u{203A}+{} ", n).width();
 
-    // For a given start, find the furthest end that fits within budget
-    let max_end_from = |start: usize| -> usize {
+    // Check whether tabs [start..=active] fit within the budget
+    let active_fits = |start: usize| -> bool {
         let left_cost = if start > 0 { left_indicator_max } else { 0 };
-        let mut used = 0;
-        let mut end = start;
-        while end < n {
-            let right_cost = if end + 1 < n { right_indicator_max } else { 0 };
-            let available = budget.saturating_sub(left_cost + right_cost);
-            if used + widths[end] > available { break; }
-            used += widths[end];
-            end += 1;
-        }
-        end
+        let right_cost = if active + 1 < n { right_indicator_max } else { 0 };
+        let available = budget.saturating_sub(left_cost + right_cost);
+        let used: usize = widths[start..=active].iter().sum();
+        used <= available
     };
 
-    // Start from the left; advance start only until the active tab is visible
+    // Find the smallest start where the active tab fits
     let mut start = 0;
-    loop {
-        let end = max_end_from(start);
-        if end > active || start >= n {
-            return (start, end);
-        }
+    while start <= active && !active_fits(start) {
         start += 1;
     }
+
+    // Now greedily expand end past active to fill remaining space
+    let left_cost = if start > 0 { left_indicator_max } else { 0 };
+    let mut used: usize = widths[start..=active].iter().sum();
+    let mut end = active + 1;
+    while end < n {
+        let right_cost = if end + 1 < n { right_indicator_max } else { 0 };
+        let available = budget.saturating_sub(left_cost + right_cost);
+        if used + widths[end] > available { break; }
+        used += widths[end];
+        end += 1;
+    }
+
+    (start, end)
 }
 
 fn tab_style(state: SessionState, active: bool) -> Style {
