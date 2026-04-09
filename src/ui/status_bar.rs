@@ -28,7 +28,7 @@ impl<'a> Widget for StatusBar<'a> {
             }
         }
 
-        let f12_hint = " F12 Dashboard ";
+        let f12_hint = " F12 \u{2317} ";
         let tab_budget = (area.width as usize).saturating_sub(f12_hint.len() + 1);
 
         let groups = group_by_project(self.sessions);
@@ -166,50 +166,37 @@ fn write_str(buf: &mut Buffer, mut x: u16, y: u16, text: &str, style: Style, max
 }
 
 /// Find the visible window [start..end) that fits within `budget` and includes `active_pos`.
+/// Keeps the window scrolled as far left as possible while the active tab remains visible.
 fn find_visible_window(widths: &[usize], budget: usize, active_pos: Option<usize>) -> (usize, usize) {
     let n = widths.len();
     let active = active_pos.unwrap_or(0);
-
-    // Reserve space for overflow indicators
     let left_indicator_max = format!(" +{}\u{2039} ", n).len();
     let right_indicator_max = format!(" \u{203A}+{} ", n).len();
 
-    // Start by trying to include the active tab, expanding outward
-    // First, find how much space we need with both indicators reserved
-    let mut start = active;
-    let mut end = active + 1;
-    let mut used = widths[active];
-
-    // Expand right first, then left, always keeping indicators in budget
-    loop {
+    // For a given start, find the furthest end that fits within budget
+    let max_end_from = |start: usize| -> usize {
         let left_cost = if start > 0 { left_indicator_max } else { 0 };
-        let right_cost = if end < n { right_indicator_max } else { 0 };
-        let available = budget.saturating_sub(left_cost + right_cost);
-        if used > available { break; }
+        let mut used = 0;
+        let mut end = start;
+        while end < n {
+            let right_cost = if end + 1 < n { right_indicator_max } else { 0 };
+            let available = budget.saturating_sub(left_cost + right_cost);
+            if used + widths[end] > available { break; }
+            used += widths[end];
+            end += 1;
+        }
+        end
+    };
 
-        let grew = {
-            let mut grew = false;
-            // Try expanding right
-            if end < n && used + widths[end] <= available {
-                used += widths[end];
-                end += 1;
-                grew = true;
-            }
-            // Try expanding left
-            let left_cost_new = if start > 1 { left_indicator_max } else { 0 };
-            let right_cost_new = if end < n { right_indicator_max } else { 0 };
-            let available_new = budget.saturating_sub(left_cost_new + right_cost_new);
-            if start > 0 && used + widths[start - 1] <= available_new {
-                start -= 1;
-                used += widths[start];
-                grew = true;
-            }
-            grew
-        };
-        if !grew { break; }
+    // Start from the left; advance start only until the active tab is visible
+    let mut start = 0;
+    loop {
+        let end = max_end_from(start);
+        if end > active || start >= n {
+            return (start, end);
+        }
+        start += 1;
     }
-
-    (start, end)
 }
 
 fn tab_style(state: SessionState, active: bool) -> Style {
