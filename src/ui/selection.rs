@@ -96,6 +96,55 @@ pub fn extract_text(
     text
 }
 
+/// Select the word under (abs_row, col) by scanning for word boundaries.
+/// A "word" is a contiguous run of non-whitespace, non-ASCII-punctuation characters.
+pub fn select_word(screen: &mut vt100::Screen, abs_row: isize, col: u16) -> Selection {
+    let (rows, cols) = screen.size();
+    let original_sb = screen.scrollback();
+
+    let needed_sb = if abs_row < 0 { (-abs_row) as usize } else { 0 };
+    screen.set_scrollback(needed_sb);
+    let vrow = (abs_row + needed_sb as isize) as u16;
+
+    if vrow >= rows {
+        screen.set_scrollback(original_sb);
+        return Selection { anchor: (abs_row, col), moving: (abs_row, col), dragged: true };
+    }
+
+    let line: Vec<char> = (0..cols).map(|c| {
+        let cell = screen.cell(vrow, c);
+        cell.map_or(' ', |c| c.contents().chars().next().unwrap_or(' '))
+    }).collect();
+    screen.set_scrollback(original_sb);
+
+    let col_idx = (col as usize).min(line.len().saturating_sub(1));
+    let is_word_char = |ch: char| !ch.is_ascii_whitespace() && !ch.is_ascii_punctuation();
+
+    if !is_word_char(line[col_idx]) {
+        return Selection { anchor: (abs_row, col), moving: (abs_row, col), dragged: true };
+    }
+
+    let mut start = col_idx;
+    while start > 0 && is_word_char(line[start - 1]) {
+        start -= 1;
+    }
+    let mut end = col_idx;
+    while end + 1 < line.len() && is_word_char(line[end + 1]) {
+        end += 1;
+    }
+
+    Selection { anchor: (abs_row, start as u16), moving: (abs_row, end as u16), dragged: true }
+}
+
+/// Select the entire line at abs_row.
+pub fn select_line(abs_row: isize, cols: u16) -> Selection {
+    Selection {
+        anchor: (abs_row, 0),
+        moving: (abs_row, cols.saturating_sub(1)),
+        dragged: true,
+    }
+}
+
 /// Copy text to the system clipboard via the OSC 52 escape sequence.
 pub fn copy_to_clipboard(text: &str) {
     use base64::Engine;

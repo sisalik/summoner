@@ -15,7 +15,8 @@ use crate::creature::skeleton::{Skeleton, archetype_index, archetype_name};
 use crate::session::{Session, SessionState, SessionStats, GlobalStats, group_by_project, session_order};
 use crate::git::GitDiffCache;
 use crate::terminal::PtySession;
-use crate::ui::dashboard::Dashboard;
+use crate::ui::dashboard::{Dashboard, session_at_position};
+use crate::ui::status_bar::{tab_at_x, tab_visible_range, TabHit};
 use crate::ui::dashboard_nav::DashboardNav;
 use crate::ui::dir_picker::{DirPicker, DirPickerAction};
 use crate::ui::selection::{self, Selection};
@@ -58,8 +59,12 @@ struct App {
     last_statusline_check: Instant,
     selection: Option<Selection>,
     session_area: Rect,
+    dashboard_area: Rect,
+    status_bar_area: Rect,
     strip_alt_screen: bool,
     reordering: bool,
+    last_click: Option<(Instant, u16, u16)>,
+    click_count: u8,
 }
 
 pub fn display_path(path: &str) -> String {
@@ -172,9 +177,13 @@ impl App {
             last_statusline_check: Instant::now(),
             selection: None,
             session_area: Rect::default(),
+            dashboard_area: Rect::default(),
+            status_bar_area: Rect::default(),
             strip_alt_screen: std::env::var("SUMMONER_ALLOW_ALT_SCREEN")
                 .map_or(true, |v| v != "1"),
             reordering: false,
+            last_click: None,
+            click_count: 0,
         })
     }
 
@@ -516,6 +525,7 @@ impl App {
 
             let main_area = layout[0];
             let status_area = layout[1];
+            self.status_bar_area = status_area;
 
             // Clear selection when not in session mode
             if !matches!(self.mode, Mode::Session(_)) {
@@ -525,6 +535,7 @@ impl App {
             // Render main content
             match self.mode {
                 Mode::Dashboard | Mode::DirPicker => {
+                    self.dashboard_area = main_area;
                     let mut dashboard = Dashboard::new(
                         &self.sessions,
                         &self.session_stats,
@@ -1326,7 +1337,116 @@ pub fn run(terminal: &mut DefaultTerminal) -> Result<()> {
                     }
                 }
                 Event::Mouse(mouse) => {
-                    if let Mode::Session(idx) = app.mode {
+                    // Status bar clicks — all modes
+                    if mouse.row == app.status_bar_area.y
+                        && matches!(mouse.kind, MouseEventKind::Down(MouseButton::Left))
+                    {
+                        let size = terminal.size()?;
+                        let active = match app.mode { Mode::Session(i) => Some(i), _ => None };
+                        match tab_at_x(&app.sessions, active, app.status_bar_area, mouse.column) {
+                            Some(TabHit::Tab(pos)) => {
+                                let order = session_order(&app.sessions);
+                                if let Some(&sess_idx) = order.get(pos) {
+                                    app.reordering = false;
+                                    if let Some(Some(pty)) = app.pty_sessions.get(sess_idx) {
+                                        let pty_rows = size.height.saturating_sub(1);
+                                        let _ = pty.resize(pty_rows, size.width);
+                                    }
+                                    app.last_session = Some(sess_idx);
+                                    app.mode = Mode::Session(sess_idx);
+                                }
+                            }
+                            Some(TabHit::ScrollLeft) => {
+                                let order = session_order(&app.sessions);
+                                let (vis_start, _) = tab_visible_range(
+                                    &app.sessions, active, app.status_bar_area,
+                                );
+                                if vis_start > 0 {
+                                    let pos = vis_start - 1;
+                                    if let Some(&sess_idx) = order.get(pos) {
+                                        app.reordering = false;
+                                        if let Some(Some(pty)) = app.pty_sessions.get(sess_idx) {
+                                            let pty_rows = size.height.saturating_sub(1);
+                                            let _ = pty.resize(pty_rows, size.width);
+                                        }
+                                        app.last_session = Some(sess_idx);
+                                        app.mode = Mode::Session(sess_idx);
+                                    }
+                                }
+                            }
+                            Some(TabHit::ScrollRight) => {
+                                let order = session_order(&app.sessions);
+                                let (_, vis_end) = tab_visible_range(
+                                    &app.sessions, active, app.status_bar_area,
+                                );
+                                if let Some(&sess_idx) = order.get(vis_end) {
+                                    app.reordering = false;
+                                    if let Some(Some(pty)) = app.pty_sessions.get(sess_idx) {
+                                        let pty_rows = size.height.saturating_sub(1);
+                                        let _ = pty.resize(pty_rows, size.width);
+                                    }
+                                    app.last_session = Some(sess_idx);
+                                    app.mode = Mode::Session(sess_idx);
+                                }
+                            }
+                            Some(TabHit::Dashboard) => {
+                                if let Mode::Session(idx) = app.mode {
+                                    app.last_session = Some(idx);
+                                }
+                                app.mode = Mode::Dashboard;
+                            }
+                            None => {}
+                        }
+                    }
+                    // Dashboard clicks
+                    else if matches!(app.mode, Mode::Dashboard) {
+                        match mouse.kind {
+                            MouseEventKind::Down(MouseButton::Left) => {
+                                let groups = group_by_project(&app.sessions);
+                                let group_sizes: Vec<usize> = groups.iter().map(|g| g.sessions.len()).collect();
+                                let content_area = Rect {
+                                    x: app.dashboard_area.x,
+                                    y: app.dashboard_area.y + 1,
+                                    width: app.dashboard_area.width,
+                                    height: app.dashboard_area.height.saturating_sub(2),
+                                };
+                                if let Some(pos) = session_at_position(
+                                    &group_sizes, content_area, mouse.row, mouse.column,
+                                ) {
+                                    // Detect double-click
+                                    let now = Instant::now();
+                                    let is_multi = app.last_click.as_ref().is_some_and(|&(t, r, c)| {
+                                        now.duration_since(t) < Duration::from_millis(500)
+                                            && r == mouse.row && c == mouse.column
+                                    });
+                                    if is_multi && app.click_count == 1 {
+                                        // Double-click — enter session
+                                        app.click_count = 2;
+                                        let order = session_order(&app.sessions);
+                                        if let Some(&sess_idx) = order.get(pos) {
+                                            let size = terminal.size()?;
+                                            if let Some(Some(pty)) = app.pty_sessions.get(sess_idx) {
+                                                let pty_rows = size.height.saturating_sub(1);
+                                                let _ = pty.resize(pty_rows, size.width);
+                                            }
+                                            app.last_session = Some(sess_idx);
+                                            app.mode = Mode::Session(sess_idx);
+                                        }
+                                    } else {
+                                        app.click_count = 1;
+                                        app.nav.set_selected(pos);
+                                    }
+                                    app.last_click = Some((now, mouse.row, mouse.column));
+                                } else {
+                                    app.click_count = 0;
+                                    app.last_click = None;
+                                }
+                            }
+                            _ => {}
+                        }
+                    }
+                    // Session view mouse handling
+                    else if let Mode::Session(idx) = app.mode {
                         if idx < app.vt_parsers.len() {
                             let area = app.session_area;
                             let screen = app.vt_parsers[idx].screen();
@@ -1356,7 +1476,28 @@ pub fn run(terminal: &mut DefaultTerminal) -> Result<()> {
                                             area.y, area.x, area.height, area.width,
                                             scrollback,
                                         );
-                                        app.selection = Some(Selection::new(abs_row, col));
+                                        // Detect multi-click
+                                        let now = Instant::now();
+                                        let is_multi = app.last_click.as_ref().is_some_and(|&(t, r, c)| {
+                                            now.duration_since(t) < Duration::from_millis(500)
+                                                && r == mouse.row && c == mouse.column
+                                        });
+                                        if is_multi && app.click_count == 1 {
+                                            // Double-click — select word
+                                            app.click_count = 2;
+                                            app.selection = Some(selection::select_word(
+                                                app.vt_parsers[idx].screen_mut(), abs_row, col,
+                                            ));
+                                        } else if is_multi && app.click_count == 2 {
+                                            // Triple-click — select line
+                                            app.click_count = 3;
+                                            let (_, cols) = app.vt_parsers[idx].screen().size();
+                                            app.selection = Some(selection::select_line(abs_row, cols));
+                                        } else {
+                                            app.click_count = 1;
+                                            app.selection = Some(Selection::new(abs_row, col));
+                                        }
+                                        app.last_click = Some((now, mouse.row, mouse.column));
                                     }
                                 }
                                 MouseEventKind::Drag(MouseButton::Left) => {

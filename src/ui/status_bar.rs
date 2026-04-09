@@ -149,6 +149,216 @@ impl<'a> Widget for StatusBar<'a> {
     }
 }
 
+/// Result of a status bar hit-test.
+pub enum TabHit {
+    /// Clicked on a visible tab (flat session position).
+    Tab(usize),
+    /// Clicked the left overflow indicator — scroll to show earlier tabs.
+    ScrollLeft,
+    /// Clicked the right overflow indicator — scroll to show later tabs.
+    ScrollRight,
+    /// Clicked the F12/dashboard indicator.
+    Dashboard,
+}
+
+/// Hit-test: given a click x-coordinate on the status bar, return what was clicked.
+pub fn tab_at_x(
+    sessions: &[Session],
+    active_index: Option<usize>,
+    area: Rect,
+    click_x: u16,
+) -> Option<TabHit> {
+    if area.height == 0 || sessions.is_empty() { return None; }
+
+    let f12_hint = "\u{2317} F12";
+    let f12_hint_width = f12_hint.width();
+    let tab_budget = (area.width as usize).saturating_sub(f12_hint_width + 1);
+
+    let groups = group_by_project(sessions);
+    let mut session_order: Vec<usize> = Vec::new();
+    let mut group_boundaries: Vec<usize> = Vec::new();
+    for group in &groups {
+        group_boundaries.push(session_order.len());
+        session_order.extend(&group.sessions);
+    }
+
+    let mut show_name_for: Vec<bool> = vec![false; session_order.len()];
+    {
+        let mut group_start = 0;
+        for group in &groups {
+            let group_end = group_start + group.sessions.len();
+            let active_in_group = (group_start..group_end).any(|pos| {
+                session_order.get(pos).map_or(false, |&si| active_index == Some(si))
+            });
+            if group.sessions.len() <= 1 {
+                if group_start < show_name_for.len() {
+                    show_name_for[group_start] = true;
+                }
+            } else if active_in_group {
+                for pos in group_start..group_end {
+                    if let Some(&si) = session_order.get(pos) {
+                        if active_index == Some(si) {
+                            show_name_for[pos] = true;
+                        }
+                    }
+                }
+            } else if group_end > 0 && group_end - 1 < show_name_for.len() {
+                show_name_for[group_end - 1] = true;
+            }
+            group_start = group_end;
+        }
+    }
+
+    let tab_widths: Vec<usize> = session_order.iter().enumerate().map(|(pos, &sess_idx)| {
+        let session = &sessions[sess_idx];
+        let fkey = format!("F{}", pos + 1);
+        let icon = session.state.bar_icon();
+        let tab_w = if show_name_for.get(pos).copied().unwrap_or(true) {
+            format!(" {} {} {} ", fkey, icon, session.name).width()
+        } else {
+            format!(" {} {} ", fkey, icon).width()
+        };
+        let sep_w = if pos > 0 && group_boundaries.contains(&pos) { 1 } else { 0 };
+        sep_w + tab_w
+    }).collect();
+
+    let total: usize = tab_widths.iter().sum();
+    let active_pos = active_index
+        .and_then(|ai| session_order.iter().position(|&si| si == ai));
+
+    let (vis_start, vis_end) = if total <= tab_budget {
+        (0, session_order.len())
+    } else {
+        find_visible_window(&tab_widths, tab_budget, active_pos)
+    };
+
+    let hidden_before = vis_start;
+    let hidden_after = session_order.len() - vis_end;
+
+    let mut x = area.x;
+    let max_tab_x = area.x + tab_budget as u16;
+
+    if hidden_before > 0 {
+        let text = format!(" +{}\u{2039} ", hidden_before);
+        let indicator_end = x + text.width() as u16;
+        if click_x >= x && click_x < indicator_end {
+            return Some(TabHit::ScrollLeft);
+        }
+        x = indicator_end;
+    }
+
+    for pos in vis_start..vis_end {
+        let sess_idx = session_order[pos];
+        let session = &sessions[sess_idx];
+
+        let mut tab_start = x;
+        if pos > 0 && group_boundaries.contains(&pos) {
+            if pos > vis_start || hidden_before == 0 {
+                tab_start += 1; // separator
+            }
+        }
+
+        let fkey = format!("F{}", pos + 1);
+        let icon = session.state.bar_icon();
+        let tab_text = if show_name_for.get(pos).copied().unwrap_or(true) {
+            format!(" {} {} {} ", fkey, icon, session.name)
+        } else {
+            format!(" {} {} ", fkey, icon)
+        };
+        let tab_w = tab_text.width() as u16;
+        let tab_end = (tab_start + tab_w).min(max_tab_x);
+
+        if click_x >= tab_start && click_x < tab_end {
+            return Some(TabHit::Tab(pos));
+        }
+
+        x = tab_start + tab_w;
+    }
+
+    if hidden_after > 0 && click_x >= x && click_x < max_tab_x {
+        return Some(TabHit::ScrollRight);
+    }
+
+    // F12 dashboard hint at the right edge
+    let hint_x = area.x + area.width - f12_hint_width as u16;
+    if click_x >= hint_x && click_x < area.x + area.width {
+        return Some(TabHit::Dashboard);
+    }
+
+    None
+}
+
+/// Returns the visible window (start, end) of tab positions for the current state.
+pub fn tab_visible_range(
+    sessions: &[Session],
+    active_index: Option<usize>,
+    area: Rect,
+) -> (usize, usize) {
+    if area.height == 0 || sessions.is_empty() { return (0, 0); }
+
+    let f12_hint = "\u{2317} F12";
+    let f12_hint_width = f12_hint.width();
+    let tab_budget = (area.width as usize).saturating_sub(f12_hint_width + 1);
+
+    let groups = group_by_project(sessions);
+    let mut session_order: Vec<usize> = Vec::new();
+    let mut group_boundaries: Vec<usize> = Vec::new();
+    for group in &groups {
+        group_boundaries.push(session_order.len());
+        session_order.extend(&group.sessions);
+    }
+
+    let mut show_name_for: Vec<bool> = vec![false; session_order.len()];
+    {
+        let mut group_start = 0;
+        for group in &groups {
+            let group_end = group_start + group.sessions.len();
+            let active_in_group = (group_start..group_end).any(|pos| {
+                session_order.get(pos).map_or(false, |&si| active_index == Some(si))
+            });
+            if group.sessions.len() <= 1 {
+                if group_start < show_name_for.len() {
+                    show_name_for[group_start] = true;
+                }
+            } else if active_in_group {
+                for pos in group_start..group_end {
+                    if let Some(&si) = session_order.get(pos) {
+                        if active_index == Some(si) {
+                            show_name_for[pos] = true;
+                        }
+                    }
+                }
+            } else if group_end > 0 && group_end - 1 < show_name_for.len() {
+                show_name_for[group_end - 1] = true;
+            }
+            group_start = group_end;
+        }
+    }
+
+    let tab_widths: Vec<usize> = session_order.iter().enumerate().map(|(pos, &sess_idx)| {
+        let session = &sessions[sess_idx];
+        let fkey = format!("F{}", pos + 1);
+        let icon = session.state.bar_icon();
+        let tab_w = if show_name_for.get(pos).copied().unwrap_or(true) {
+            format!(" {} {} {} ", fkey, icon, session.name).width()
+        } else {
+            format!(" {} {} ", fkey, icon).width()
+        };
+        let sep_w = if pos > 0 && group_boundaries.contains(&pos) { 1 } else { 0 };
+        sep_w + tab_w
+    }).collect();
+
+    let total: usize = tab_widths.iter().sum();
+    let active_pos = active_index
+        .and_then(|ai| session_order.iter().position(|&si| si == ai));
+
+    if total <= tab_budget {
+        (0, session_order.len())
+    } else {
+        find_visible_window(&tab_widths, tab_budget, active_pos)
+    }
+}
+
 fn write_str(buf: &mut Buffer, mut x: u16, y: u16, text: &str, style: Style, max_x: u16) -> u16 {
     for ch in text.chars() {
         if x >= max_x { break; }

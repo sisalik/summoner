@@ -389,6 +389,50 @@ pub fn flow_layout(group_sizes: &[usize], available_width: u16) -> FlowLayout {
     FlowLayout { cards, row_groups }
 }
 
+/// Hit-test: given a mouse position, return the flat session index clicked (if any).
+pub fn session_at_position(
+    group_sizes: &[usize],
+    content_area: Rect,
+    mouse_row: u16,
+    mouse_col: u16,
+) -> Option<usize> {
+    if group_sizes.is_empty() { return None; }
+
+    let layout = flow_layout(group_sizes, content_area.width);
+    let creature_render_h = CREATURE_HEIGHT.div_ceil(2);
+    let card_inner_height = 1 + 1 + creature_render_h + 1 + 1 + 1;
+    let card_height = card_inner_height + 2;
+    let row_stride = card_height + 1;
+
+    let mut flat_pos = 0usize;
+    for (group_idx, &size) in group_sizes.iter().enumerate() {
+        let card_pos = &layout.cards[group_idx];
+        let card_x = content_area.x + card_pos.x;
+        let card_y = content_area.y + 1 + card_pos.row as u16 * row_stride;
+        let card_width = card_pos.width;
+
+        if mouse_row < card_y || mouse_row >= card_y + card_height
+            || mouse_col < card_x || mouse_col >= card_x + card_width
+        {
+            flat_pos += size;
+            continue;
+        }
+
+        // Inside this card — determine which creature column
+        let inner_x = card_x + 2; // border(1) + padding(1)
+        let creature_spacing = CREATURE_WIDTH + 2;
+        for local_idx in 0..size {
+            let cx = inner_x + local_idx as u16 * creature_spacing;
+            if mouse_col >= cx && mouse_col < cx + CREATURE_WIDTH {
+                return Some(flat_pos + local_idx);
+            }
+        }
+        // Clicked inside card but not on a creature column — select nearest
+        return Some(flat_pos);
+    }
+    None
+}
+
 fn fill_background(area: Rect, buf: &mut Buffer) {
     let bg = Style::default().bg(Color::Rgb(20, 20, 30));
     for y in area.y..area.y + area.height {
