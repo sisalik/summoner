@@ -50,7 +50,7 @@ impl<'a> Dashboard<'a> {
         // Hint row at bottom
         let hint_y = area.y + area.height.saturating_sub(1);
         let hint_text = if self.reordering {
-            " \u{2190}\u{2192} move \u{2502} Enter/Esc done \u{2502} r cancel "
+            " \u{2190}\u{2192}\u{2191}\u{2193} move \u{2502} Enter/Esc done \u{2502} r cancel "
         } else {
             " \u{2190}\u{2192}\u{2191}\u{2193} navigate \u{2502} Enter open \u{2502} n session / N dir \u{2502} r reorder / R reroll \u{2502} x close / X dir \u{2502} Ctrl+Q quit "
         };

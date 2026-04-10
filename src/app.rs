@@ -284,7 +284,39 @@ impl App {
         }
     }
 
-    /// Swap two adjacent groups and return the new Vec index of `tracked` session.
+    /// Swap the selected session's entire group with the group on the adjacent visual row.
+    fn reorder_move_vertical(&mut self, direction: i8) {
+        let order = session_order(&self.sessions);
+        let Some(sess_idx) = self.nav.selected_session(&order) else { return };
+        let groups = group_by_project(&self.sessions);
+        let Some(group_idx) = groups.iter().position(|g| g.sessions.contains(&sess_idx)) else { return };
+
+        let target_group_idx = {
+            let row_groups = self.nav.row_groups();
+            let Some(row) = row_groups.iter().position(|r| r.contains(&group_idx)) else { return };
+            let col = row_groups[row].iter().position(|&g| g == group_idx).unwrap_or(0);
+            let target_row = if direction < 0 {
+                if row == 0 { return; }
+                row - 1
+            } else {
+                if row + 1 >= row_groups.len() { return; }
+                row + 1
+            };
+            let tr = &row_groups[target_row];
+            if tr.is_empty() { return; }
+            tr[col.min(tr.len() - 1)]
+        };
+
+        if target_group_idx == group_idx { return; }
+
+        let new_vec_idx = self.swap_groups(&groups, group_idx, target_group_idx, sess_idx);
+        let new_order = session_order(&self.sessions);
+        if let Some(new_pos) = new_order.iter().position(|&i| i == new_vec_idx) {
+            self.nav.set_selected(new_pos);
+        }
+    }
+
+    /// Swap two groups and return the new Vec index of `tracked` session.
     fn swap_groups(&mut self, groups: &[crate::session::ProjectGroup], a: usize, b: usize, tracked: usize) -> usize {
         let mut group_indices: Vec<usize> = (0..groups.len()).collect();
         group_indices.swap(a, b);
@@ -836,6 +868,12 @@ impl App {
             }
             KeyCode::Right if self.reordering => {
                 self.reorder_move(1);
+            }
+            KeyCode::Up if self.reordering => {
+                self.reorder_move_vertical(-1);
+            }
+            KeyCode::Down if self.reordering => {
+                self.reorder_move_vertical(1);
             }
             KeyCode::Left => self.nav.move_left(),
             KeyCode::Right => self.nav.move_right(),
