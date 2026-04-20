@@ -185,6 +185,131 @@ pub fn render_sprite_shaded(
     }
 }
 
+fn within_clip(pos: Position, clip: Rect) -> bool {
+    pos.x >= clip.x
+        && pos.x < clip.x.saturating_add(clip.width)
+        && pos.y >= clip.y
+        && pos.y < clip.y.saturating_add(clip.height)
+}
+
+pub fn render_sprite_to_buffer_clipped(
+    sprite: &Sprite,
+    palette: &Palette,
+    area: Rect,
+    clip: Rect,
+    buf: &mut Buffer,
+) {
+    let rows = sprite.height.div_ceil(2);
+
+    for row in 0..rows.min(area.height as usize) {
+        for col in 0..sprite.width.min(area.width as usize) {
+            let upper_y = row * 2;
+            let lower_y = row * 2 + 1;
+
+            let upper = sprite.get(col, upper_y);
+            let lower = if lower_y < sprite.height {
+                sprite.get(col, lower_y)
+            } else {
+                CellKind::Empty
+            };
+
+            let pos = Position {
+                x: area.x + col as u16,
+                y: area.y + row as u16,
+            };
+            if !within_clip(pos, clip) { continue; }
+
+            if let Some(cell) = buf.cell_mut(pos) {
+                match (upper, lower) {
+                    (CellKind::Empty, CellKind::Empty) => {}
+                    (CellKind::Empty, lower_kind) => {
+                        cell.set_symbol(LOWER_HALF);
+                        cell.set_style(Style::default().fg(kind_color(&lower_kind, palette)));
+                    }
+                    (upper_kind, CellKind::Empty) => {
+                        cell.set_symbol(UPPER_HALF);
+                        cell.set_style(Style::default().fg(kind_color(&upper_kind, palette)));
+                    }
+                    (upper_kind, lower_kind) => {
+                        let fg_color = kind_color(&lower_kind, palette);
+                        let bg_color = kind_color(&upper_kind, palette);
+                        if fg_color == bg_color {
+                            cell.set_symbol(FULL_BLOCK);
+                            cell.set_style(Style::default().fg(fg_color));
+                        } else {
+                            cell.set_symbol(LOWER_HALF);
+                            cell.set_style(Style::default().fg(fg_color).bg(bg_color));
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+pub fn render_sprite_shaded_clipped(
+    sprite: &Sprite,
+    capsule_ids: &[u8],
+    palette: &Palette,
+    area: Rect,
+    clip: Rect,
+    buf: &mut Buffer,
+) {
+    let rows = sprite.height.div_ceil(2);
+
+    for row in 0..rows.min(area.height as usize) {
+        for col in 0..sprite.width.min(area.width as usize) {
+            let upper_y = row * 2;
+            let lower_y = row * 2 + 1;
+
+            let upper = sprite.get(col, upper_y);
+            let lower = if lower_y < sprite.height {
+                sprite.get(col, lower_y)
+            } else {
+                CellKind::Empty
+            };
+
+            let upper_id = capsule_ids.get(upper_y * sprite.width + col).copied().unwrap_or(0);
+            let lower_id = if lower_y < sprite.height {
+                capsule_ids.get(lower_y * sprite.width + col).copied().unwrap_or(0)
+            } else {
+                0
+            };
+
+            let pos = Position {
+                x: area.x + col as u16,
+                y: area.y + row as u16,
+            };
+            if !within_clip(pos, clip) { continue; }
+
+            if let Some(cell) = buf.cell_mut(pos) {
+                match (upper, lower) {
+                    (CellKind::Empty, CellKind::Empty) => {}
+                    (CellKind::Empty, lower_kind) => {
+                        cell.set_symbol(LOWER_HALF);
+                        cell.set_style(Style::default().fg(shaded_kind_color(&lower_kind, lower_id, palette)));
+                    }
+                    (upper_kind, CellKind::Empty) => {
+                        cell.set_symbol(UPPER_HALF);
+                        cell.set_style(Style::default().fg(shaded_kind_color(&upper_kind, upper_id, palette)));
+                    }
+                    (upper_kind, lower_kind) => {
+                        let fg_color = shaded_kind_color(&lower_kind, lower_id, palette);
+                        let bg_color = shaded_kind_color(&upper_kind, upper_id, palette);
+                        if fg_color == bg_color {
+                            cell.set_symbol(FULL_BLOCK);
+                            cell.set_style(Style::default().fg(fg_color));
+                        } else {
+                            cell.set_symbol(LOWER_HALF);
+                            cell.set_style(Style::default().fg(fg_color).bg(bg_color));
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
 pub fn sprite_cell_size(sprite: &Sprite) -> (u16, u16) {
     (sprite.width as u16, sprite.height.div_ceil(2) as u16)
 }

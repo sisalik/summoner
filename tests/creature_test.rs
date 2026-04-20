@@ -356,3 +356,38 @@ fn locomotion_produces_changing_sprites_over_time() {
     let r2 = rasterize_skeleton(loco.skeleton());
     assert_ne!(r1.sprite.cells, r2.sprite.cells, "Working animation should change sprite over time");
 }
+
+#[test]
+fn render_sprite_to_buffer_clipped_respects_clip_rect() {
+    use ratatui::buffer::Buffer;
+    use ratatui::layout::{Position, Rect};
+    use summoner::creature::generate::{CellKind, Sprite};
+    use summoner::creature::render::{render_sprite_to_buffer_clipped, state_palette};
+    use summoner::session::SessionState;
+
+    // 4x4 sprite of solid body (all same color)
+    let sprite = Sprite {
+        width: 4,
+        height: 4,
+        cells: vec![CellKind::Body; 16],
+    };
+    let palette = state_palette(SessionState::Working);
+
+    // Buffer 8x4; draw sprite at y=-2 (so top half clipped) with clip y>=0
+    let area = Rect::new(0, 0, 8, 4);
+    let mut buf = Buffer::empty(area);
+
+    // Render at area starting above the buffer top.
+    let draw_area = Rect { x: 0, y: 0, width: 4, height: 2 };
+    let clip = Rect { x: 0, y: 1, width: 8, height: 3 };
+    render_sprite_to_buffer_clipped(&sprite, &palette, draw_area, clip, &mut buf);
+
+    // Row 0 must be empty (outside clip.y)
+    for x in 0..4 {
+        assert_eq!(buf[Position { x, y: 0 }].symbol(), " ",
+                   "row 0 (outside clip) must not be written");
+    }
+    // Row 1 must have sprite content (inside clip)
+    let any_nonblank = (0..4).any(|x| buf[Position { x, y: 1 }].symbol() != " ");
+    assert!(any_nonblank, "row 1 (inside clip) must have sprite content");
+}
