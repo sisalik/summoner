@@ -6,7 +6,9 @@ use ratatui::style::{Color, Style};
 use ratatui::widgets::Widget;
 
 use crate::creature::outline::RasterResult;
-use crate::creature::render::{render_sprite_shaded, render_sprite_to_buffer, state_palette, terminal_icon_sprite};
+use crate::creature::render::{
+    render_sprite_shaded_clipped, render_sprite_to_buffer_clipped, state_palette, terminal_icon_sprite,
+};
 use crate::session::{group_by_project, Session, SessionState, SessionStats, GlobalStats};
 use crate::git::GitDiffCache;
 use crate::stats;
@@ -15,9 +17,28 @@ use crate::ui::dashboard_nav::DashboardNav;
 const CREATURE_WIDTH: u16 = 18;
 const CREATURE_HEIGHT: u16 = 24;
 
+pub fn card_metrics() -> (u16, u16) {
+    let creature_render_h = CREATURE_HEIGHT.div_ceil(2);
+    let card_inner_height = 1 + 1 + creature_render_h + 1 + 1 + 1;
+    let card_height = card_inner_height + 2;
+    let row_stride = card_height + 1;
+    (card_height, row_stride)
+}
+
+fn rect_intersect(a: Rect, b: Rect) -> Rect {
+    let x1 = a.x.max(b.x);
+    let y1 = a.y.max(b.y);
+    let x2 = (a.x + a.width).min(b.x + b.width);
+    let y2 = (a.y + a.height).min(b.y + b.height);
+    if x2 <= x1 || y2 <= y1 {
+        Rect { x: x1, y: y1, width: 0, height: 0 }
+    } else {
+        Rect { x: x1, y: y1, width: x2 - x1, height: y2 - y1 }
+    }
+}
+
 /// Copy cells from `src` into `dst` for the overlap between `src_area` and `dst_clip`.
 /// Cells in `src` are positioned at `src_area.x + col, src_area.y + row`.
-#[allow(dead_code)] // used in Task 6 peek-render path
 fn blit_clipped(src: &Buffer, src_area: Rect, dst: &mut Buffer, dst_clip: Rect) {
     let x_start = src_area.x.max(dst_clip.x);
     let y_start = src_area.y.max(dst_clip.y);
@@ -42,7 +63,7 @@ pub struct Dashboard<'a> {
     session_stats: &'a [SessionStats],
     global_stats: &'a GlobalStats,
     rasters: &'a [RasterResult],
-    nav: &'a DashboardNav,
+    nav: &'a mut DashboardNav,
     git_cache: &'a mut GitDiffCache,
     reordering: bool,
 }
@@ -53,7 +74,7 @@ impl<'a> Dashboard<'a> {
         session_stats: &'a [SessionStats],
         global_stats: &'a GlobalStats,
         rasters: &'a [RasterResult],
-        nav: &'a DashboardNav,
+        nav: &'a mut DashboardNav,
         git_cache: &'a mut GitDiffCache,
         reordering: bool,
     ) -> Self {
@@ -89,7 +110,6 @@ impl<'a> Dashboard<'a> {
             height: area.height.saturating_sub(2),
         };
 
-        // Group sessions by project
         let groups = group_by_project(self.sessions);
 
         if groups.is_empty() {
@@ -106,7 +126,6 @@ impl<'a> Dashboard<'a> {
         let layout = flow_layout(&group_sizes, content_area.width);
         if layout.cards.is_empty() { return; }
 
-        // Determine which group names need disambiguation (same basename, different path)
         let basenames: Vec<&str> = groups.iter().map(|g| {
             std::path::Path::new(&g.directory)
                 .file_name()
@@ -117,249 +136,333 @@ impl<'a> Dashboard<'a> {
             basenames.iter().enumerate().any(|(j, other)| i != j && name == other)
         }).collect();
 
-        // Creature render height in terminal rows = CREATURE_HEIGHT / 2 (half-block)
+        let (card_height, row_stride) = card_metrics();
         let creature_render_h = CREATURE_HEIGHT.div_ceil(2);
 
-        // card inner height: padding(1) + health_bar(1) + creature(creature_render_h) + lvl_xp(1) + state(1) + padding(1)
-        let card_inner_height = 1 + 1 + creature_render_h + 1 + 1 + 1;
-        let card_height = card_inner_height + 2; // + border top/bottom
-        let row_stride = card_height + 1;
+        let total_rows = layout.row_groups.len();
+        let sc = scroll_layout(content_area.height, row_stride, total_rows, self.nav.scroll_row());
 
-        let selected = self.nav.selected();
+        self.nav.set_visible_full_rows(sc.full_rows);
+        self.nav.ensure_selection_visible();
+        let scroll_row = self.nav.scroll_row();
 
-        // Build flat position mapping: position 0, 1, 2... across all groups
-        let mut flat_pos = 0usize;
+        if sc.full_rows == 0 {
+            self.render_flat_rows(
+                &groups, &group_sizes, &layout, &basenames, &needs_full_path,
+                content_area, card_height, row_stride, creature_render_h,
+                buf, 0, usize::MAX,
+            );
+            return;
+        }
 
-        for (group_idx, group) in groups.iter().enumerate() {
-            let card_pos = &layout.cards[group_idx];
+        let scratch_y = content_area.y.saturating_sub(row_stride);
+        let scratch_height = content_area.height + 2 * row_stride;
+        let scratch_area = Rect {
+            x: content_area.x,
+            y: scratch_y,
+            width: content_area.width,
+            height: scratch_height,
+        };
+        let mut scratch = Buffer::empty(scratch_area);
+        fill_background(scratch_area, &mut scratch);
 
-            let card_x = content_area.x + card_pos.x;
-            let card_y = content_area.y + 1 + card_pos.row as u16 * row_stride;
-            let card_width = card_pos.width;
+        let full_band_y = content_area.y + sc.top_peek;
 
-            if card_y + card_height > content_area.y + content_area.height {
-                break;
-            }
+        let first_row = if sc.top_peek > 0 && scroll_row > 0 { scroll_row - 1 } else { scroll_row };
+        let last_row = {
+            let mut end = scroll_row + sc.full_rows;
+            if sc.bottom_peek > 0 && end < total_rows { end += 1; }
+            end
+        };
 
-            let card_area = Rect {
-                x: card_x,
-                y: card_y,
-                width: card_width,
-                height: card_height,
-            };
-
-            let border_color = Color::Rgb(60, 60, 80);
-
-            let display_name = if needs_full_path[group_idx] {
-                crate::app::display_path(&group.directory)
+        for row_idx in first_row..last_row.min(total_rows) {
+            let card_y = if row_idx < scroll_row {
+                full_band_y.saturating_sub(row_stride)
             } else {
-                basenames[group_idx].to_string()
+                full_band_y + (row_idx - scroll_row) as u16 * row_stride
             };
-            let title_style = Style::default().fg(Color::Rgb(140, 140, 160));
 
-            // Draw card border (no title — we'll draw it manually)
-            let block = ratatui::widgets::Block::default()
-                .borders(ratatui::widgets::Borders::ALL)
-                .border_style(Style::default().fg(border_color))
-                .padding(ratatui::widgets::Padding::uniform(1));
+            for &group_idx in &layout.row_groups[row_idx] {
+                let card_pos = &layout.cards[group_idx];
+                let card_x = content_area.x + card_pos.x;
+                let card_width = card_pos.width;
 
-            let inner = block.inner(card_area);
-            block.render(card_area, buf);
-
-            // Draw title with git diff stats
-            let (git_adds, git_dels) = self.git_cache.get(&group.directory);
-            let diff_str = crate::git::format_diff_compact(git_adds, git_dels);
-
-            let title_x = card_area.x + 2;
-            let title_y = card_area.y;
-            let name_text = format!(" {} ", display_name);
-            draw_text(title_x, title_y, &name_text, title_style, card_area, buf);
-
-            if !diff_str.is_empty() {
-                let diff_x = title_x + name_text.len() as u16;
-                // Color-code: green for +additions, red for -deletions
-                let mut x = diff_x;
-                let mut color = Color::Rgb(129, 199, 132); // start green
-                for ch in diff_str.chars() {
-                    if ch == '-' && x > diff_x {
-                        color = Color::Rgb(229, 115, 115); // switch to red
-                    }
-                    draw_text(x, title_y, &ch.to_string(), Style::default().fg(color), card_area, buf);
-                    x += 1;
-                }
-                draw_text(x, title_y, " ", Style::default().fg(border_color), card_area, buf);
-            }
-
-            // Render all creatures in this group side by side
-            for (local_idx, &sess_idx) in group.sessions.iter().enumerate() {
-                let session = &self.sessions[sess_idx];
-
-                let creature_spacing = CREATURE_WIDTH + 2;
-                let cx = inner.x + local_idx as u16 * creature_spacing;
-                let inner_right = inner.x + inner.width;
-                let cw = CREATURE_WIDTH.min(inner_right.saturating_sub(cx));
-
-                if cw == 0 || cx >= inner_right {
-                    flat_pos += 1;
-                    continue;
-                }
-
-                let creature_col = Rect {
-                    x: cx,
-                    y: card_area.y,
-                    width: cw,
-                    height: card_area.height,
+                let card_area = Rect {
+                    x: card_x,
+                    y: card_y,
+                    width: card_width,
+                    height: card_height,
                 };
 
-                let is_active_claude = session.state != SessionState::Disconnected
-                    && session.state != SessionState::ShellOnly
-                    && (session.claude_conversation_id.is_some()
-                        || session.state == SessionState::Working
-                        || session.state == SessionState::Waiting
-                        || session.state == SessionState::Idle);
+                let flat_pos_start: usize = group_sizes.iter().take(group_idx).sum();
 
-                // Layout from top of inner: health_bar(1), creature(creature_render_h), lvl_xp(1), state(1)
-                let health_y = inner.y;
-                let lvl_xp_y = inner.y + 1;
-                let creature_y = inner.y + 2;
-                let state_y = creature_y + creature_render_h;
+                self.render_card_into(
+                    group_idx,
+                    card_area,
+                    content_area,
+                    &groups,
+                    &basenames,
+                    &needs_full_path,
+                    flat_pos_start,
+                    self.nav.selected(),
+                    creature_render_h,
+                    &mut scratch,
+                );
+            }
+        }
 
-                // --- Health bar at top (only for active Claude sessions) ---
-                // Uses upper-half blocks ▀ for a thin bar
+        blit_clipped(&scratch, scratch_area, buf, content_area);
+    }
+}
+
+impl<'a> Dashboard<'a> {
+    #[allow(clippy::too_many_arguments)]
+    fn render_card_into(
+        &mut self,
+        group_idx: usize,
+        card_area: Rect,
+        clip: Rect,
+        groups: &[crate::session::ProjectGroup],
+        basenames: &[&str],
+        needs_full_path: &[bool],
+        flat_pos_start: usize,
+        selected: usize,
+        creature_render_h: u16,
+        buf: &mut Buffer,
+    ) {
+        let group = &groups[group_idx];
+        let border_color = Color::Rgb(60, 60, 80);
+
+        let display_name = if needs_full_path[group_idx] {
+            crate::app::display_path(&group.directory)
+        } else {
+            basenames[group_idx].to_string()
+        };
+        let title_style = Style::default().fg(Color::Rgb(140, 140, 160));
+
+        let block = ratatui::widgets::Block::default()
+            .borders(ratatui::widgets::Borders::ALL)
+            .border_style(Style::default().fg(border_color))
+            .padding(ratatui::widgets::Padding::uniform(1));
+        let inner = block.inner(card_area);
+        block.render(card_area, buf);
+
+        let (git_adds, git_dels) = self.git_cache.get(&group.directory);
+        let diff_str = crate::git::format_diff_compact(git_adds, git_dels);
+
+        let title_x = card_area.x + 2;
+        let title_y = card_area.y;
+        let name_text = format!(" {} ", display_name);
+        draw_text(title_x, title_y, &name_text, title_style, clip, buf);
+
+        if !diff_str.is_empty() {
+            let diff_x = title_x + name_text.len() as u16;
+            let mut x = diff_x;
+            let mut color = Color::Rgb(129, 199, 132);
+            for ch in diff_str.chars() {
+                if ch == '-' && x > diff_x {
+                    color = Color::Rgb(229, 115, 115);
+                }
+                draw_text(x, title_y, &ch.to_string(), Style::default().fg(color), clip, buf);
+                x += 1;
+            }
+            draw_text(x, title_y, " ", Style::default().fg(border_color), clip, buf);
+        }
+
+        for (local_idx, &sess_idx) in group.sessions.iter().enumerate() {
+            let session = &self.sessions[sess_idx];
+
+            let creature_spacing = CREATURE_WIDTH + 2;
+            let cx = inner.x + local_idx as u16 * creature_spacing;
+            let inner_right = inner.x + inner.width;
+            let cw = CREATURE_WIDTH.min(inner_right.saturating_sub(cx));
+
+            if cw == 0 || cx >= inner_right {
+                continue;
+            }
+
+            let creature_col = Rect {
+                x: cx,
+                y: card_area.y,
+                width: cw,
+                height: card_area.height,
+            };
+            let col_clip = rect_intersect(creature_col, clip);
+
+            let is_active_claude = session.state != SessionState::Disconnected
+                && session.state != SessionState::ShellOnly
+                && (session.claude_conversation_id.is_some()
+                    || session.state == SessionState::Working
+                    || session.state == SessionState::Waiting
+                    || session.state == SessionState::Idle);
+
+            let health_y = inner.y;
+            let lvl_xp_y = inner.y + 1;
+            let creature_y = inner.y + 2;
+            let state_y = creature_y + creature_render_h;
+
+            if is_active_claude {
+                let default_stats = SessionStats::new();
+                let stat = self.session_stats.get(sess_idx).unwrap_or(&default_stats);
+                let pct = stat.context_pct.unwrap_or(0);
+                let pct_str = if stat.context_pct.is_some() {
+                    format!(" {}%", pct)
+                } else {
+                    " ---%".to_string()
+                };
+                let bar_total = cw.saturating_sub(pct_str.len() as u16) as usize;
+                let damaged = (bar_total as u64 * pct as u64 / 100).min(bar_total as u64) as usize;
+                let healthy = bar_total.saturating_sub(damaged);
+
+                let healthy_str: String = "\u{2580}".repeat(healthy);
+                draw_text(cx, health_y, &healthy_str, Style::default().fg(Color::Rgb(129, 199, 132)), col_clip, buf);
+                let damaged_str: String = "\u{2580}".repeat(damaged);
+                draw_text(cx + healthy as u16, health_y, &damaged_str, Style::default().fg(Color::Rgb(229, 115, 115)), col_clip, buf);
+                let pct_color = if pct >= 90 { Color::Rgb(229, 115, 115) } else { Color::Rgb(136, 136, 136) };
+                draw_text(cx + bar_total as u16, health_y, &pct_str, Style::default().fg(pct_color), col_clip, buf);
+            }
+
+            let creature_area = Rect {
+                x: cx,
+                y: creature_y,
+                width: cw,
+                height: creature_render_h,
+            };
+
+            let is_claude_sprite = session.claude_conversation_id.is_some()
+                || session.state == SessionState::Working
+                || session.state == SessionState::Waiting
+                || session.state == SessionState::Idle;
+
+            if is_claude_sprite {
+                if let Some(raster) = self.rasters.get(sess_idx) {
+                    let palette = state_palette(session.state);
+                    render_sprite_shaded_clipped(&raster.sprite, &raster.capsule_ids, &palette, creature_area, clip, buf);
+                }
+            } else {
+                let icon = terminal_icon_sprite();
+                let palette = state_palette(session.state);
+                let (icon_w, icon_h) = crate::creature::render::sprite_cell_size(&icon);
+                let x_offset = creature_area.width.saturating_sub(icon_w) / 2;
+                let y_offset = creature_area.height.saturating_sub(icon_h) / 2;
+                let centered_area = Rect {
+                    x: creature_area.x + x_offset,
+                    y: creature_area.y + y_offset,
+                    width: icon_w.min(creature_area.width.saturating_sub(x_offset)),
+                    height: creature_area.height.saturating_sub(y_offset),
+                };
+                render_sprite_to_buffer_clipped(&icon, &palette, centered_area, clip, buf);
+            }
+
+            if is_active_claude && lvl_xp_y < card_area.y + card_area.height.saturating_sub(2) {
+                let default_stats = SessionStats::new();
+                let stat = self.session_stats.get(sess_idx).unwrap_or(&default_stats);
+                let level = stats::level_from_tokens(stat.total_tokens);
+                let xp = stats::format_xp(stat.total_tokens);
+                let lvl_color = match level {
+                    1 => Color::Rgb(140, 140, 160),
+                    2 => Color::Rgb(129, 199, 132),
+                    3 => Color::Rgb(100, 181, 246),
+                    4 => Color::Rgb(149, 117, 205),
+                    5 => Color::Rgb(255, 213, 79),
+                    6 => Color::Rgb(255, 152, 0),
+                    7 => Color::Rgb(244, 67, 54),
+                    8 => Color::Rgb(233, 30, 99),
+                    9 => Color::Rgb(0, 230, 230),
+                    _ => Color::Rgb(255, 255, 100),
+                };
+                let lvl_text = format!("Lv.{}", level);
+                draw_text(cx, lvl_xp_y, &lvl_text, Style::default().fg(lvl_color), col_clip, buf);
+
+                let xp_len = xp.chars().count() as u16;
+                let xp_x = cx + cw.saturating_sub(xp_len);
+                draw_text(xp_x, lvl_xp_y, &xp, Style::default().fg(Color::Rgb(255, 213, 79)), col_clip, buf);
+            }
+
+            if state_y < card_area.y + card_area.height.saturating_sub(1) {
                 if is_active_claude {
                     let default_stats = SessionStats::new();
                     let stat = self.session_stats.get(sess_idx).unwrap_or(&default_stats);
-                    let pct = stat.context_pct.unwrap_or(0);
-
-                    let pct_str = if stat.context_pct.is_some() {
-                        format!(" {}%", pct)
+                    let activity = if let Some(ref tool) = stat.active_tool {
+                        stats::tool_display(tool)
                     } else {
-                        " ---%".to_string()
+                        format!("{}  {}", session.state.icon(), session.state.label())
                     };
-                    let bar_total = cw.saturating_sub(pct_str.len() as u16) as usize;
-                    // "Damage" bar: green = remaining, red = used
-                    let damaged = (bar_total as u64 * pct as u64 / 100).min(bar_total as u64) as usize;
-                    let healthy = bar_total.saturating_sub(damaged);
-
-                    // Draw healthy portion (green, lower-half block ▄)
-                    let healthy_str: String = "\u{2580}".repeat(healthy);
-                    draw_text(cx, health_y, &healthy_str, Style::default().fg(Color::Rgb(129, 199, 132)), creature_col, buf);
-                    // Draw damaged portion (red)
-                    let damaged_str: String = "\u{2580}".repeat(damaged);
-                    draw_text(cx + healthy as u16, health_y, &damaged_str, Style::default().fg(Color::Rgb(229, 115, 115)), creature_col, buf);
-                    // Draw percentage
-                    let pct_color = if pct >= 90 { Color::Rgb(229, 115, 115) } else { Color::Rgb(136, 136, 136) };
-                    draw_text(cx + bar_total as u16, health_y, &pct_str, Style::default().fg(pct_color), creature_col, buf);
-                }
-
-                // --- Creature sprite ---
-                let creature_area = Rect {
-                    x: cx,
-                    y: creature_y,
-                    width: cw,
-                    height: creature_render_h,
-                };
-
-                let is_claude_sprite = session.claude_conversation_id.is_some()
-                    || session.state == SessionState::Working
-                    || session.state == SessionState::Waiting
-                    || session.state == SessionState::Idle;
-
-                if is_claude_sprite {
-                    if let Some(raster) = self.rasters.get(sess_idx) {
-                        let palette = state_palette(session.state);
-                        render_sprite_shaded(&raster.sprite, &raster.capsule_ids, &palette, creature_area, buf);
-                    }
+                    let state_style = Style::default().fg(session.state.color());
+                    draw_text(cx, state_y, &activity, state_style, col_clip, buf);
                 } else {
-                    let icon = terminal_icon_sprite();
-                    let palette = state_palette(session.state);
-                    let (icon_w, icon_h) = crate::creature::render::sprite_cell_size(&icon);
-                    let x_offset = creature_area.width.saturating_sub(icon_w) / 2;
-                    let y_offset = creature_area.height.saturating_sub(icon_h) / 2;
-                    let centered_area = Rect {
-                        x: creature_area.x + x_offset,
-                        y: creature_area.y + y_offset,
-                        width: icon_w.min(creature_area.width.saturating_sub(x_offset)),
-                        height: creature_area.height.saturating_sub(y_offset),
-                    };
-                    render_sprite_to_buffer(&icon, &palette, centered_area, buf);
+                    let label = format!("{}  {}", session.state.icon(), session.state.label());
+                    let label_style = Style::default().fg(session.state.color());
+                    draw_text(cx, state_y, &label, label_style, col_clip, buf);
                 }
+            }
 
-                // --- Lv/XP line (only for active Claude) ---
-                if is_active_claude && lvl_xp_y < card_area.y + card_area.height.saturating_sub(2) {
-                    let default_stats = SessionStats::new();
-                    let stat = self.session_stats.get(sess_idx).unwrap_or(&default_stats);
-                    let level = stats::level_from_tokens(stat.total_tokens);
-                    let xp = stats::format_xp(stat.total_tokens);
-
-                    // Color-code level
-                    let lvl_color = match level {
-                        1 => Color::Rgb(140, 140, 160),   // gray
-                        2 => Color::Rgb(129, 199, 132),   // green
-                        3 => Color::Rgb(100, 181, 246),   // blue
-                        4 => Color::Rgb(149, 117, 205),   // purple
-                        5 => Color::Rgb(255, 213, 79),    // gold
-                        6 => Color::Rgb(255, 152, 0),     // orange
-                        7 => Color::Rgb(244, 67, 54),     // red
-                        8 => Color::Rgb(233, 30, 99),     // pink
-                        9 => Color::Rgb(0, 230, 230),     // cyan
-                        _ => Color::Rgb(255, 255, 100),   // bright yellow (10+)
-                    };
-
-                    let lvl_text = format!("Lv.{}", level);
-                    draw_text(cx, lvl_xp_y, &lvl_text, Style::default().fg(lvl_color), creature_col, buf);
-
-                    // Right-align XP
-                    let xp_len = xp.chars().count() as u16;
-                    let xp_x = cx + cw.saturating_sub(xp_len);
-                    draw_text(xp_x, lvl_xp_y, &xp, Style::default().fg(Color::Rgb(255, 213, 79)), creature_col, buf);
-                }
-
-                // --- State line (always shown, bottom row) ---
-                if state_y < card_area.y + card_area.height.saturating_sub(1) {
-                    if is_active_claude {
-                        let default_stats = SessionStats::new();
-                        let stat = self.session_stats.get(sess_idx).unwrap_or(&default_stats);
-                        let activity = if let Some(ref tool) = stat.active_tool {
-                            stats::tool_display(tool)
-                        } else {
-                            format!("{}  {}", session.state.icon(), session.state.label())
-                        };
-                        let state_style = Style::default().fg(session.state.color());
-                        draw_text(cx, state_y, &activity, state_style, creature_col, buf);
+            let flat_pos = flat_pos_start + local_idx;
+            if flat_pos == selected {
+                let box_x = cx.saturating_sub(1).max(card_area.x + 1);
+                let box_y = health_y.saturating_sub(1).max(card_area.y + 1);
+                let box_right = (cx + cw + 1).min(card_area.x + card_area.width - 1);
+                let box_bottom = (state_y + 2).min(card_area.y + card_area.height - 1);
+                let box_w = box_right.saturating_sub(box_x);
+                let box_h = box_bottom.saturating_sub(box_y);
+                if box_w >= 3 && box_h >= 3 {
+                    let box_area = Rect { x: box_x, y: box_y, width: box_w, height: box_h };
+                    let box_color = if self.reordering {
+                        Color::Rgb(255, 180, 50)
                     } else {
-                        let label = format!("{}  {}", session.state.icon(), session.state.label());
-                        let label_style = Style::default().fg(session.state.color());
-                        draw_text(cx, state_y, &label, label_style, creature_col, buf);
-                    }
+                        Color::Rgb(150, 150, 255)
+                    };
+                    draw_selection_box(box_area, clip, buf, box_color);
                 }
+            }
+        }
+    }
 
-                // --- Selection box (starts above health bar row) ---
-                if flat_pos == selected {
-                    let box_x = cx.saturating_sub(1).max(card_area.x + 1);
-                    let box_y = health_y.saturating_sub(1).max(card_area.y + 1);
-                    let box_right = (cx + cw + 1).min(card_area.x + card_area.width - 1);
-                    let box_bottom = (state_y + 2).min(card_area.y + card_area.height - 1);
-                    let box_w = box_right.saturating_sub(box_x);
-                    let box_h = box_bottom.saturating_sub(box_y);
-
-                    if box_w >= 3 && box_h >= 3 {
-                        let box_area = Rect {
-                            x: box_x,
-                            y: box_y,
-                            width: box_w,
-                            height: box_h,
-                        };
-                        let box_color = if self.reordering {
-                            Color::Rgb(255, 180, 50)
-                        } else {
-                            Color::Rgb(150, 150, 255)
-                        };
-                        draw_selection_box(box_area, card_area, buf, box_color);
-                    }
-                }
-
-                flat_pos += 1;
+    #[allow(clippy::too_many_arguments)]
+    fn render_flat_rows(
+        &mut self,
+        groups: &[crate::session::ProjectGroup],
+        group_sizes: &[usize],
+        layout: &FlowLayout,
+        basenames: &[&str],
+        needs_full_path: &[bool],
+        content_area: Rect,
+        card_height: u16,
+        row_stride: u16,
+        creature_render_h: u16,
+        buf: &mut Buffer,
+        first_row: usize,
+        max_rows: usize,
+    ) {
+        let selected = self.nav.selected();
+        let end = (first_row + max_rows).min(layout.row_groups.len());
+        for row_idx in first_row..end {
+            let card_y = content_area.y + 1 + (row_idx - first_row) as u16 * row_stride;
+            if card_y + card_height > content_area.y + content_area.height {
+                break;
+            }
+            for &group_idx in &layout.row_groups[row_idx] {
+                let card_pos = &layout.cards[group_idx];
+                let card_x = content_area.x + card_pos.x;
+                let card_area = Rect {
+                    x: card_x,
+                    y: card_y,
+                    width: card_pos.width,
+                    height: card_height,
+                };
+                let flat_pos_start: usize = group_sizes.iter().take(group_idx).sum();
+                self.render_card_into(
+                    group_idx,
+                    card_area,
+                    content_area,
+                    groups,
+                    basenames,
+                    needs_full_path,
+                    flat_pos_start,
+                    selected,
+                    creature_render_h,
+                    buf,
+                );
             }
         }
     }

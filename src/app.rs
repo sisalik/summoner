@@ -573,7 +573,7 @@ impl App {
                         &self.session_stats,
                         &self.global_stats,
                         &self.sprites,
-                        &self.nav,
+                        &mut self.nav,
                         &mut self.git_cache,
                         self.reordering,
                     );
