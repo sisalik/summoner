@@ -281,6 +281,7 @@ impl App {
         let new_order = session_order(&self.sessions);
         if let Some(new_pos) = new_order.iter().position(|&i| i == new_vec_idx) {
             self.nav.set_selected(new_pos);
+            self.nav.ensure_selection_visible();
         }
     }
 
@@ -313,6 +314,7 @@ impl App {
         let new_order = session_order(&self.sessions);
         if let Some(new_pos) = new_order.iter().position(|&i| i == new_vec_idx) {
             self.nav.set_selected(new_pos);
+            self.nav.ensure_selection_visible();
         }
     }
 
@@ -1439,6 +1441,12 @@ pub fn run(terminal: &mut DefaultTerminal) -> Result<()> {
                     // Dashboard clicks
                     else if matches!(app.mode, Mode::Dashboard) {
                         match mouse.kind {
+                            MouseEventKind::ScrollUp => {
+                                app.nav.scroll_up();
+                            }
+                            MouseEventKind::ScrollDown => {
+                                app.nav.scroll_down();
+                            }
                             MouseEventKind::Down(MouseButton::Left) => {
                                 let groups = group_by_project(&app.sessions);
                                 let group_sizes: Vec<usize> = groups.iter().map(|g| g.sessions.len()).collect();
@@ -1480,6 +1488,7 @@ pub fn run(terminal: &mut DefaultTerminal) -> Result<()> {
                                     } else {
                                         app.click_count = 1;
                                         app.nav.set_selected(pos);
+                                        app.nav.ensure_selection_visible();
                                     }
                                     app.last_click = Some((now, mouse.row, mouse.column));
                                 } else {
