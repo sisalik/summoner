@@ -37,27 +37,6 @@ fn rect_intersect(a: Rect, b: Rect) -> Rect {
     }
 }
 
-/// Copy cells from `src` into `dst` for the overlap between `src_area` and `dst_clip`.
-/// Cells in `src` are positioned at `src_area.x + col, src_area.y + row`.
-fn blit_clipped(src: &Buffer, src_area: Rect, dst: &mut Buffer, dst_clip: Rect) {
-    let x_start = src_area.x.max(dst_clip.x);
-    let y_start = src_area.y.max(dst_clip.y);
-    let x_end = (src_area.x + src_area.width).min(dst_clip.x + dst_clip.width);
-    let y_end = (src_area.y + src_area.height).min(dst_clip.y + dst_clip.height);
-    if x_start >= x_end || y_start >= y_end { return; }
-
-    for y in y_start..y_end {
-        for x in x_start..x_end {
-            if let (Some(src_cell), Some(dst_cell)) = (
-                src.cell(Position { x, y }),
-                dst.cell_mut(Position { x, y }),
-            ) {
-                *dst_cell = src_cell.clone();
-            }
-        }
-    }
-}
-
 pub struct Dashboard<'a> {
     sessions: &'a [Session],
     session_stats: &'a [SessionStats],
@@ -155,18 +134,28 @@ impl<'a> Dashboard<'a> {
             return;
         }
 
-        let scratch_y = content_area.y.saturating_sub(row_stride);
+        // Virtual scratch origin: scratch y=`row_stride` maps to absolute y=content_area.y.
+        // Gives `row_stride` cells of margin above and below content_area so peek cards
+        // (which sit at absolute y that can be less than content_area.y) stay in non-negative
+        // scratch coordinates.
         let scratch_height = content_area.height + 2 * row_stride;
         let scratch_area = Rect {
             x: content_area.x,
-            y: scratch_y,
+            y: 0,
             width: content_area.width,
             height: scratch_height,
         };
         let mut scratch = Buffer::empty(scratch_area);
         fill_background(scratch_area, &mut scratch);
 
-        let full_band_y = content_area.y + sc.top_peek;
+        // scratch_y = abs_y - content_area.y + row_stride
+        let scratch_clip = Rect {
+            x: content_area.x,
+            y: row_stride,
+            width: content_area.width,
+            height: content_area.height,
+        };
+        let full_band_scratch_y = row_stride + sc.top_peek;
 
         let first_row = if sc.top_peek > 0 && scroll_row > 0 { scroll_row - 1 } else { scroll_row };
         let last_row = {
@@ -176,10 +165,10 @@ impl<'a> Dashboard<'a> {
         };
 
         for row_idx in first_row..last_row.min(total_rows) {
-            let card_y = if row_idx < scroll_row {
-                full_band_y.saturating_sub(row_stride)
+            let card_scratch_y = if row_idx < scroll_row {
+                full_band_scratch_y.saturating_sub(row_stride)
             } else {
-                full_band_y + (row_idx - scroll_row) as u16 * row_stride
+                full_band_scratch_y + (row_idx - scroll_row) as u16 * row_stride
             };
 
             for &group_idx in &layout.row_groups[row_idx] {
@@ -189,7 +178,7 @@ impl<'a> Dashboard<'a> {
 
                 let card_area = Rect {
                     x: card_x,
-                    y: card_y,
+                    y: card_scratch_y,
                     width: card_width,
                     height: card_height,
                 };
@@ -199,7 +188,7 @@ impl<'a> Dashboard<'a> {
                 self.render_card_into(
                     group_idx,
                     card_area,
-                    content_area,
+                    scratch_clip,
                     &groups,
                     &basenames,
                     &needs_full_path,
@@ -211,7 +200,16 @@ impl<'a> Dashboard<'a> {
             }
         }
 
-        blit_clipped(&scratch, scratch_area, buf, content_area);
+        // Copy scratch[row_stride..row_stride+content_area.height] rows to buf[content_area.y..].
+        for row in 0..content_area.height {
+            for col in 0..content_area.width {
+                let src = Position { x: content_area.x + col, y: row_stride + row };
+                let dst = Position { x: content_area.x + col, y: content_area.y + row };
+                if let (Some(src_cell), Some(dst_cell)) = (scratch.cell(src), buf.cell_mut(dst)) {
+                    *dst_cell = src_cell.clone();
+                }
+            }
+        }
     }
 }
 
@@ -581,27 +579,30 @@ pub fn session_at_position(
     let total_rows = layout.row_groups.len();
     let sc = scroll_layout(content_area.height, row_stride, total_rows, scroll_row);
     let full_band_y = content_area.y + sc.top_peek;
+    let content_end = content_area.y + content_area.height;
 
-    // Determine which layout row the mouse is inside (if any).
-    let candidate_rows: Vec<(usize, u16)> = {
+    // (row_idx, visible_y_start, visible_y_end) — half-open intervals in absolute buf coords.
+    let candidate_rows: Vec<(usize, u16, u16)> = {
         let mut v = Vec::new();
         if sc.top_peek > 0 && scroll_row > 0 {
-            v.push((scroll_row - 1, full_band_y.saturating_sub(row_stride)));
+            v.push((scroll_row - 1, content_area.y, full_band_y));
         }
         for r in 0..sc.full_rows {
             let idx = scroll_row + r;
             if idx >= total_rows { break; }
-            v.push((idx, full_band_y + r as u16 * row_stride));
+            let card_y = full_band_y + r as u16 * row_stride;
+            v.push((idx, card_y, (card_y + card_height).min(content_end)));
         }
         if sc.bottom_peek > 0 && scroll_row + sc.full_rows < total_rows {
             let idx = scroll_row + sc.full_rows;
-            v.push((idx, full_band_y + sc.full_rows as u16 * row_stride));
+            let card_y = full_band_y + sc.full_rows as u16 * row_stride;
+            v.push((idx, card_y, content_end));
         }
         v
     };
 
-    for (row_idx, card_y) in candidate_rows {
-        if mouse_row < card_y || mouse_row >= card_y + card_height { continue; }
+    for (row_idx, y_start, y_end) in candidate_rows {
+        if mouse_row < y_start || mouse_row >= y_end { continue; }
         for &group_idx in &layout.row_groups[row_idx] {
             let card_pos = &layout.cards[group_idx];
             let card_x = content_area.x + card_pos.x;
