@@ -15,6 +15,28 @@ use crate::ui::dashboard_nav::DashboardNav;
 const CREATURE_WIDTH: u16 = 18;
 const CREATURE_HEIGHT: u16 = 24;
 
+/// Copy cells from `src` into `dst` for the overlap between `src_area` and `dst_clip`.
+/// Cells in `src` are positioned at `src_area.x + col, src_area.y + row`.
+#[allow(dead_code)] // used in Task 6 peek-render path
+fn blit_clipped(src: &Buffer, src_area: Rect, dst: &mut Buffer, dst_clip: Rect) {
+    let x_start = src_area.x.max(dst_clip.x);
+    let y_start = src_area.y.max(dst_clip.y);
+    let x_end = (src_area.x + src_area.width).min(dst_clip.x + dst_clip.width);
+    let y_end = (src_area.y + src_area.height).min(dst_clip.y + dst_clip.height);
+    if x_start >= x_end || y_start >= y_end { return; }
+
+    for y in y_start..y_end {
+        for x in x_start..x_end {
+            if let (Some(src_cell), Some(dst_cell)) = (
+                src.cell(Position { x, y }),
+                dst.cell_mut(Position { x, y }),
+            ) {
+                *dst_cell = src_cell.clone();
+            }
+        }
+    }
+}
+
 pub struct Dashboard<'a> {
     sessions: &'a [Session],
     session_stats: &'a [SessionStats],
