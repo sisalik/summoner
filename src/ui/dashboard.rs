@@ -569,42 +569,57 @@ pub fn flow_layout(group_sizes: &[usize], available_width: u16) -> FlowLayout {
 pub fn session_at_position(
     group_sizes: &[usize],
     content_area: Rect,
+    scroll_row: usize,
+    card_height: u16,
+    row_stride: u16,
     mouse_row: u16,
     mouse_col: u16,
 ) -> Option<usize> {
     if group_sizes.is_empty() { return None; }
 
     let layout = flow_layout(group_sizes, content_area.width);
-    let creature_render_h = CREATURE_HEIGHT.div_ceil(2);
-    let card_inner_height = 1 + 1 + creature_render_h + 1 + 1 + 1;
-    let card_height = card_inner_height + 2;
-    let row_stride = card_height + 1;
+    let total_rows = layout.row_groups.len();
+    let sc = scroll_layout(content_area.height, row_stride, total_rows, scroll_row);
+    let full_band_y = content_area.y + sc.top_peek;
 
-    let mut flat_pos = 0usize;
-    for (group_idx, &size) in group_sizes.iter().enumerate() {
-        let card_pos = &layout.cards[group_idx];
-        let card_x = content_area.x + card_pos.x;
-        let card_y = content_area.y + 1 + card_pos.row as u16 * row_stride;
-        let card_width = card_pos.width;
-
-        if mouse_row < card_y || mouse_row >= card_y + card_height
-            || mouse_col < card_x || mouse_col >= card_x + card_width
-        {
-            flat_pos += size;
-            continue;
+    // Determine which layout row the mouse is inside (if any).
+    let candidate_rows: Vec<(usize, u16)> = {
+        let mut v = Vec::new();
+        if sc.top_peek > 0 && scroll_row > 0 {
+            v.push((scroll_row - 1, full_band_y.saturating_sub(row_stride)));
         }
+        for r in 0..sc.full_rows {
+            let idx = scroll_row + r;
+            if idx >= total_rows { break; }
+            v.push((idx, full_band_y + r as u16 * row_stride));
+        }
+        if sc.bottom_peek > 0 && scroll_row + sc.full_rows < total_rows {
+            let idx = scroll_row + sc.full_rows;
+            v.push((idx, full_band_y + sc.full_rows as u16 * row_stride));
+        }
+        v
+    };
 
-        // Inside this card — determine which creature column
-        let inner_x = card_x + 2; // border(1) + padding(1)
-        let creature_spacing = CREATURE_WIDTH + 2;
-        for local_idx in 0..size {
-            let cx = inner_x + local_idx as u16 * creature_spacing;
-            if mouse_col >= cx && mouse_col < cx + CREATURE_WIDTH {
-                return Some(flat_pos + local_idx);
+    for (row_idx, card_y) in candidate_rows {
+        if mouse_row < card_y || mouse_row >= card_y + card_height { continue; }
+        for &group_idx in &layout.row_groups[row_idx] {
+            let card_pos = &layout.cards[group_idx];
+            let card_x = content_area.x + card_pos.x;
+            let card_width = card_pos.width;
+            if mouse_col < card_x || mouse_col >= card_x + card_width { continue; }
+
+            let inner_x = card_x + 2;
+            let creature_spacing = CREATURE_WIDTH + 2;
+            let flat_pos_start: usize = group_sizes.iter().take(group_idx).sum();
+            let size = group_sizes[group_idx];
+            for local_idx in 0..size {
+                let cx = inner_x + local_idx as u16 * creature_spacing;
+                if mouse_col >= cx && mouse_col < cx + CREATURE_WIDTH {
+                    return Some(flat_pos_start + local_idx);
+                }
             }
+            return Some(flat_pos_start);
         }
-        // Clicked inside card but not on a creature column — select nearest
-        return Some(flat_pos);
     }
     None
 }

@@ -15,7 +15,7 @@ use crate::creature::skeleton::{Skeleton, archetype_index, archetype_name};
 use crate::session::{Session, SessionState, SessionStats, GlobalStats, group_by_project, session_order};
 use crate::git::GitDiffCache;
 use crate::terminal::PtySession;
-use crate::ui::dashboard::{Dashboard, session_at_position};
+use crate::ui::dashboard::{card_metrics, Dashboard, session_at_position};
 use crate::ui::status_bar::{tab_at_x, tab_visible_range, TabHit};
 use crate::ui::dashboard_nav::DashboardNav;
 use crate::ui::dir_picker::{DirPicker, DirPickerAction};
@@ -1448,8 +1448,15 @@ pub fn run(terminal: &mut DefaultTerminal) -> Result<()> {
                                     width: app.dashboard_area.width,
                                     height: app.dashboard_area.height.saturating_sub(2),
                                 };
+                                let (card_height, row_stride) = card_metrics();
                                 if let Some(pos) = session_at_position(
-                                    &group_sizes, content_area, mouse.row, mouse.column,
+                                    &group_sizes,
+                                    content_area,
+                                    app.nav.scroll_row(),
+                                    card_height,
+                                    row_stride,
+                                    mouse.row,
+                                    mouse.column,
                                 ) {
                                     // Detect double-click
                                     let now = Instant::now();
