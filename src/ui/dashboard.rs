@@ -333,7 +333,7 @@ impl<'a> Dashboard<'a> {
                         } else {
                             Color::Rgb(150, 150, 255)
                         };
-                        draw_selection_box(box_area, buf, box_color);
+                        draw_selection_box(box_area, card_area, buf, box_color);
                     }
                 }
 
@@ -496,10 +496,12 @@ fn fill_background(area: Rect, buf: &mut Buffer) {
     }
 }
 
-fn draw_text(x: u16, y: u16, text: &str, style: Style, area: Rect, buf: &mut Buffer) {
+fn draw_text(x: u16, y: u16, text: &str, style: Style, clip: Rect, buf: &mut Buffer) {
+    if y < clip.y || y >= clip.y.saturating_add(clip.height) { return; }
     for (i, ch) in text.chars().enumerate() {
         let px = x + i as u16;
-        if px >= area.x + area.width { break; }
+        if px < clip.x { continue; }
+        if px >= clip.x.saturating_add(clip.width) { break; }
         if let Some(cell) = buf.cell_mut(Position { x: px, y }) {
             cell.set_symbol(&ch.to_string());
             cell.set_style(style);
@@ -508,53 +510,39 @@ fn draw_text(x: u16, y: u16, text: &str, style: Style, area: Rect, buf: &mut Buf
 }
 
 /// Draw a box around an area using box-drawing characters
-fn draw_selection_box(area: Rect, buf: &mut Buffer, color: Color) {
+fn draw_selection_box(area: Rect, clip: Rect, buf: &mut Buffer, color: Color) {
     let style = Style::default().fg(color);
     let x1 = area.x;
     let y1 = area.y;
     let x2 = area.x + area.width.saturating_sub(1);
     let y2 = area.y + area.height.saturating_sub(1);
 
-    // Corners
-    if let Some(cell) = buf.cell_mut(Position { x: x1, y: y1 }) {
-        cell.set_symbol("\u{250c}"); // ┌
-        cell.set_style(style);
-    }
-    if let Some(cell) = buf.cell_mut(Position { x: x2, y: y1 }) {
-        cell.set_symbol("\u{2510}"); // ┐
-        cell.set_style(style);
-    }
-    if let Some(cell) = buf.cell_mut(Position { x: x1, y: y2 }) {
-        cell.set_symbol("\u{2514}"); // └
-        cell.set_style(style);
-    }
-    if let Some(cell) = buf.cell_mut(Position { x: x2, y: y2 }) {
-        cell.set_symbol("\u{2518}"); // ┘
-        cell.set_style(style);
-    }
+    let in_clip = |p: Position| {
+        p.x >= clip.x
+            && p.x < clip.x.saturating_add(clip.width)
+            && p.y >= clip.y
+            && p.y < clip.y.saturating_add(clip.height)
+    };
+    let set = |buf: &mut Buffer, p: Position, sym: &str| {
+        if !in_clip(p) { return; }
+        if let Some(cell) = buf.cell_mut(p) {
+            cell.set_symbol(sym);
+            cell.set_style(style);
+        }
+    };
 
-    // Top and bottom edges
+    set(buf, Position { x: x1, y: y1 }, "\u{250c}");
+    set(buf, Position { x: x2, y: y1 }, "\u{2510}");
+    set(buf, Position { x: x1, y: y2 }, "\u{2514}");
+    set(buf, Position { x: x2, y: y2 }, "\u{2518}");
+
     for x in (x1 + 1)..x2 {
-        if let Some(cell) = buf.cell_mut(Position { x, y: y1 }) {
-            cell.set_symbol("\u{2500}"); // ─
-            cell.set_style(style);
-        }
-        if let Some(cell) = buf.cell_mut(Position { x, y: y2 }) {
-            cell.set_symbol("\u{2500}"); // ─
-            cell.set_style(style);
-        }
+        set(buf, Position { x, y: y1 }, "\u{2500}");
+        set(buf, Position { x, y: y2 }, "\u{2500}");
     }
-
-    // Left and right edges
     for y in (y1 + 1)..y2 {
-        if let Some(cell) = buf.cell_mut(Position { x: x1, y }) {
-            cell.set_symbol("\u{2502}"); // │
-            cell.set_style(style);
-        }
-        if let Some(cell) = buf.cell_mut(Position { x: x2, y }) {
-            cell.set_symbol("\u{2502}"); // │
-            cell.set_style(style);
-        }
+        set(buf, Position { x: x1, y }, "\u{2502}");
+        set(buf, Position { x: x2, y }, "\u{2502}");
     }
 }
 
