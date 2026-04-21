@@ -46,9 +46,14 @@ pub struct DirPicker {
 
 impl DirPicker {
     pub fn new(recent_dirs: Vec<String>, initial_query: Option<String>) -> Self {
+        // Seed the input with a trailing '/' so the user can immediately type a
+        // subdir name instead of having to add the separator manually.
+        let query = initial_query
+            .map(|q| if q.ends_with('/') { q } else { format!("{}/", q) })
+            .unwrap_or_default();
         let mut picker = Self {
             recent_dirs: recent_dirs.clone(),
-            query: initial_query.unwrap_or_default(),
+            query,
             filtered: Vec::new(),
             selected: 0,
             matcher: Matcher::new(Config::DEFAULT.match_paths()),
