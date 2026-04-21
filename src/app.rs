@@ -15,7 +15,7 @@ use crate::creature::skeleton::{Skeleton, archetype_index, archetype_name};
 use crate::session::{Session, SessionState, SessionStats, GlobalStats, group_by_project, session_order};
 use crate::git::GitDiffCache;
 use crate::terminal::PtySession;
-use crate::ui::dashboard::{card_metrics, Dashboard, session_at_position};
+use crate::ui::dashboard::{card_metrics, layout_width, Dashboard, session_at_position};
 use crate::ui::status_bar::{tab_at_x, tab_visible_range, TabHit};
 use crate::ui::dashboard_nav::DashboardNav;
 use crate::ui::dir_picker::{DirPicker, DirPickerAction};
@@ -131,7 +131,7 @@ impl App {
         {
             let groups = crate::session::group_by_project(&sessions);
             let group_sizes: Vec<usize> = groups.iter().map(|g| g.sessions.len()).collect();
-            let layout = crate::ui::dashboard::flow_layout(&group_sizes, 80);
+            let layout = crate::ui::dashboard::flow_layout(&group_sizes, layout_width(80));
             nav.update_layout_with_rows(&group_sizes, layout.row_groups);
         }
 
@@ -190,7 +190,7 @@ impl App {
     fn refresh_nav_layout(&mut self) {
         let groups = crate::session::group_by_project(&self.sessions);
         let group_sizes: Vec<usize> = groups.iter().map(|g| g.sessions.len()).collect();
-        let layout = crate::ui::dashboard::flow_layout(&group_sizes, self.last_term_width);
+        let layout = crate::ui::dashboard::flow_layout(&group_sizes, layout_width(self.last_term_width));
         self.nav.update_layout_with_rows(&group_sizes, layout.row_groups);
     }
 

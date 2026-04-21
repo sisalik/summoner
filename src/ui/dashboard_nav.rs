@@ -84,11 +84,19 @@ impl DashboardNav {
         self.visible_full_rows
     }
 
+    /// Update cached visible row count. If the value actually changed (e.g. resize),
+    /// pull the viewport to keep the selection in view. Same-value calls do NOT
+    /// override user-driven scroll — otherwise mouse wheel events flicker back to
+    /// the selection on every frame.
     pub fn set_visible_full_rows(&mut self, n: usize) {
+        let changed = self.visible_full_rows != n;
         self.visible_full_rows = n;
         let max = self.max_scroll_row();
         if self.scroll_row > max {
             self.scroll_row = max;
+        }
+        if changed {
+            self.ensure_selection_visible();
         }
     }
 

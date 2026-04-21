@@ -16,6 +16,12 @@ use crate::ui::dashboard_nav::DashboardNav;
 
 const CREATURE_WIDTH: u16 = 18;
 const CREATURE_HEIGHT: u16 = 24;
+const SCROLLBAR_WIDTH: u16 = 1;
+
+/// Width available to card flow after reserving the scrollbar column.
+pub fn layout_width(content_width: u16) -> u16 {
+    content_width.saturating_sub(SCROLLBAR_WIDTH)
+}
 
 pub fn card_metrics() -> (u16, u16) {
     let creature_render_h = CREATURE_HEIGHT.div_ceil(2);
@@ -81,12 +87,20 @@ impl<'a> Dashboard<'a> {
             .bg(Color::Rgb(20, 20, 30));
         draw_text(area.x, hint_y, hint_text, hint_style, area, buf);
 
-        // Content area (between top usage bar and bottom hints)
+        // Content area (between top usage bar and bottom hints). Cards flow in
+        // `flow_area` (one column narrower) so the last column is reserved for the
+        // scrollbar track.
         let content_area = Rect {
             x: area.x,
             y: area.y + 1,
             width: area.width,
             height: area.height.saturating_sub(2),
+        };
+        let flow_area = Rect {
+            x: content_area.x,
+            y: content_area.y,
+            width: layout_width(content_area.width),
+            height: content_area.height,
         };
 
         let groups = group_by_project(self.sessions);
@@ -102,7 +116,7 @@ impl<'a> Dashboard<'a> {
         }
 
         let group_sizes: Vec<usize> = groups.iter().map(|g| g.sessions.len()).collect();
-        let layout = flow_layout(&group_sizes, content_area.width);
+        let layout = flow_layout(&group_sizes, flow_area.width);
         if layout.cards.is_empty() { return; }
 
         let basenames: Vec<&str> = groups.iter().map(|g| {
@@ -122,7 +136,6 @@ impl<'a> Dashboard<'a> {
         let sc = scroll_layout(content_area.height, row_stride, total_rows, self.nav.scroll_row());
 
         self.nav.set_visible_full_rows(sc.full_rows);
-        self.nav.ensure_selection_visible();
         let scroll_row = self.nav.scroll_row();
 
         if sc.full_rows == 0 {
@@ -131,6 +144,7 @@ impl<'a> Dashboard<'a> {
                 content_area, card_height, row_stride, creature_render_h,
                 buf, 0, usize::MAX,
             );
+            draw_scrollbar(content_area, total_rows, sc.full_rows, scroll_row, buf);
             return;
         }
 
@@ -210,6 +224,8 @@ impl<'a> Dashboard<'a> {
                 }
             }
         }
+
+        draw_scrollbar(content_area, total_rows, sc.full_rows, scroll_row, buf);
     }
 }
 
@@ -575,7 +591,7 @@ pub fn session_at_position(
 ) -> Option<usize> {
     if group_sizes.is_empty() { return None; }
 
-    let layout = flow_layout(group_sizes, content_area.width);
+    let layout = flow_layout(group_sizes, layout_width(content_area.width));
     let total_rows = layout.row_groups.len();
     let sc = scroll_layout(content_area.height, row_stride, total_rows, scroll_row);
     let full_band_y = content_area.y + sc.top_peek;
@@ -623,6 +639,48 @@ pub fn session_at_position(
         }
     }
     None
+}
+
+/// Draw a 1-column scrollbar on the right edge of `area`. No-op if the content
+/// fits entirely (`total_rows <= visible_rows`) or the track has zero height.
+fn draw_scrollbar(
+    area: Rect,
+    total_rows: usize,
+    visible_rows: usize,
+    scroll_row: usize,
+    buf: &mut Buffer,
+) {
+    if area.height == 0 || area.width == 0 { return; }
+    if visible_rows == 0 || total_rows <= visible_rows { return; }
+
+    let track_x = area.x + area.width - 1;
+    let track_h = area.height;
+    let bg = Color::Rgb(20, 20, 30);
+    let track_style = Style::default().fg(Color::Rgb(35, 35, 48)).bg(bg);
+    let thumb_style = Style::default().fg(Color::Rgb(70, 70, 90)).bg(bg);
+
+    for y in area.y..area.y + track_h {
+        if let Some(cell) = buf.cell_mut(Position { x: track_x, y }) {
+            cell.set_symbol("\u{2502}");
+            cell.set_style(track_style);
+        }
+    }
+
+    let track_h_usize = track_h as usize;
+    let thumb_h = ((track_h_usize * visible_rows) / total_rows).max(1).min(track_h_usize) as u16;
+    let max_scroll = total_rows - visible_rows;
+    let thumb_off = if max_scroll == 0 {
+        0u16
+    } else {
+        (((track_h_usize - thumb_h as usize) * scroll_row) / max_scroll) as u16
+    };
+
+    for y in (area.y + thumb_off)..(area.y + thumb_off + thumb_h) {
+        if let Some(cell) = buf.cell_mut(Position { x: track_x, y }) {
+            cell.set_symbol("\u{2588}");
+            cell.set_style(thumb_style);
+        }
+    }
 }
 
 fn fill_background(area: Rect, buf: &mut Buffer) {
