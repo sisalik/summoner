@@ -343,6 +343,57 @@ impl<'a> Dashboard<'a> {
     }
 }
 
+/// Computed peek/full-row layout for one frame.
+#[derive(Debug, Clone, Copy)]
+pub struct ScrollLayout {
+    pub full_rows: usize,
+    pub top_peek: u16,
+    pub bottom_peek: u16,
+}
+
+/// Compute peek budget split for the current viewport state.
+///
+/// `content_height` = available vertical cells (rows); `row_stride` = card_height + 1;
+/// `total_rows` = number of flow-layout rows; `scroll_row` = topmost full-band row.
+pub fn scroll_layout(
+    content_height: u16,
+    row_stride: u16,
+    total_rows: usize,
+    scroll_row: usize,
+) -> ScrollLayout {
+    if row_stride == 0 || content_height == 0 {
+        return ScrollLayout { full_rows: 0, top_peek: 0, bottom_peek: 0 };
+    }
+    let natural_full_rows = (content_height / row_stride) as usize;
+    if natural_full_rows == 0 {
+        return ScrollLayout { full_rows: 0, top_peek: 0, bottom_peek: 0 };
+    }
+    let leftover = content_height % row_stride;
+
+    let (full_rows, peek_budget): (usize, u16) = if total_rows <= natural_full_rows {
+        (natural_full_rows, 0)
+    } else if leftover >= 2 {
+        (natural_full_rows, leftover)
+    } else if natural_full_rows >= 2 {
+        (natural_full_rows - 1, leftover + row_stride)
+    } else {
+        (natural_full_rows, leftover)
+    };
+
+    let has_above = scroll_row > 0;
+    let has_below = scroll_row + full_rows < total_rows;
+    let top_peek = if has_above && has_below {
+        peek_budget / 2
+    } else if has_above {
+        peek_budget
+    } else {
+        0
+    };
+    let bottom_peek = if has_below { peek_budget - top_peek } else { 0 };
+
+    ScrollLayout { full_rows, top_peek, bottom_peek }
+}
+
 pub struct CardLayout {
     pub row: usize,
     pub x: u16,
@@ -613,5 +664,64 @@ fn format_reset_countdown(resets_at: Option<i64>) -> String {
         format!("resets {}h {}m", hours, minutes)
     } else {
         format!("resets {}m", minutes)
+    }
+}
+
+#[cfg(test)]
+mod peek_tests {
+    use super::*;
+
+    #[test]
+    fn no_overflow_no_peek() {
+        // H=34, row_stride=17 -> natural=2, total_rows=2 -> no peek
+        let s = scroll_layout(34, 17, 2, 0);
+        assert_eq!(s.full_rows, 2);
+        assert_eq!(s.top_peek, 0);
+        assert_eq!(s.bottom_peek, 0);
+    }
+
+    #[test]
+    fn awkward_leftover_becomes_peek() {
+        // H=40, stride=17 -> natural=2, leftover=6. 4 rows total, at top: below hidden.
+        let s = scroll_layout(40, 17, 4, 0);
+        assert_eq!(s.full_rows, 2);
+        assert_eq!(s.top_peek, 0);
+        assert_eq!(s.bottom_peek, 6);
+    }
+
+    #[test]
+    fn awkward_leftover_splits_when_both_sides_hidden() {
+        // Same as above, scrolled to middle -> both sides hidden
+        let s = scroll_layout(40, 17, 4, 1);
+        assert_eq!(s.full_rows, 2);
+        assert_eq!(s.top_peek, 3);
+        assert_eq!(s.bottom_peek, 3);
+    }
+
+    #[test]
+    fn clean_multiple_sacrifices_row() {
+        // H=34, stride=17, leftover=0, overflow -> sacrifice 1 row, peek_budget=17.
+        let s = scroll_layout(34, 17, 4, 0);
+        assert_eq!(s.full_rows, 1);
+        assert_eq!(s.top_peek, 0);
+        assert_eq!(s.bottom_peek, 17);
+    }
+
+    #[test]
+    fn one_row_fits_no_sacrifice() {
+        // H=17, stride=17, leftover=0, natural=1, overflow (total=3): can't sacrifice.
+        let s = scroll_layout(17, 17, 3, 0);
+        assert_eq!(s.full_rows, 1);
+        assert_eq!(s.top_peek, 0);
+        assert_eq!(s.bottom_peek, 0);
+    }
+
+    #[test]
+    fn zero_rows_fallback() {
+        // Too short for a full row
+        let s = scroll_layout(5, 17, 3, 0);
+        assert_eq!(s.full_rows, 0);
+        assert_eq!(s.top_peek, 0);
+        assert_eq!(s.bottom_peek, 0);
     }
 }
