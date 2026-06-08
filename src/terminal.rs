@@ -28,6 +28,13 @@ impl PtySession {
         let mut cmd = CommandBuilder::new(shell);
         cmd.cwd(cwd);
 
+        // Keep Claude Code's conversation in the terminal's native scrollback
+        // instead of the alternate-screen fullscreen renderer (default since
+        // v2.1.89), which Summoner strips and so cannot render correctly.
+        if std::env::var("SUMMONER_ALLOW_ALT_SCREEN").as_deref() != Ok("1") {
+            cmd.env("CLAUDE_CODE_DISABLE_ALTERNATE_SCREEN", "1");
+        }
+
         let child = pair.slave.spawn_command(cmd)?;
         let pid = child.process_id();
 

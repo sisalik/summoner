@@ -72,7 +72,7 @@ tests/
 
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `SUMMONER_ALLOW_ALT_SCREEN` | unset | Set to `1` to stop stripping alternate-screen escape sequences (`\e[?1049h/l`, `\e[?47h/l`) from PTY output. By default Summoner strips these so that child programs (e.g. Claude Code) cannot bypass vt100's scrollback buffer. Only set this if the upstream program has fixed its scrollback handling. |
+| `SUMMONER_ALLOW_ALT_SCREEN` | unset | Set to `1` to stop stripping alternate-screen escape sequences (`\e[?1049h/l`, `\e[?47h/l`) from PTY output, and to stop forcing `CLAUDE_CODE_DISABLE_ALTERNATE_SCREEN=1` on spawned sessions. By default Summoner both strips these sequences and exports `CLAUDE_CODE_DISABLE_ALTERNATE_SCREEN=1` so Claude Code (which renders fullscreen via the alternate screen since v2.1.89) keeps its conversation in vt100's native scrollback. Note: agent-view re-attached background sessions force fullscreen regardless and cannot be kept in scrollback. Only set this if the upstream program has fixed its scrollback handling. |
 
 ## Config Files (`~/.summoner/`)
 
