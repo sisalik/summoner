@@ -22,7 +22,8 @@ struct GaitStyle {
     limp: f32,      // 0 = even gait; >0 = left leg drags (lower lift, shorter step)
     wobble: f32,    // cycle-rate irregularity amplitude
     knee_bend: f32, // permanent knee flex: near-straight strider -> soft-kneed skulk
-    carry: f32,     // hands carried high (bent elbows) vs dangling straight
+    elbow_give: f32, // how much the elbow bends on the forward arm swing
+    flail: f32,     // 0 = composed; >0 = loose, overswinging windmill arms
 }
 
 impl GaitStyle {
@@ -54,7 +55,9 @@ impl GaitStyle {
             limp: if pick(0.0, 1.0) < 0.3 { pick(0.15, 0.4) } else { 0.0 },
             wobble: pick(0.0, 0.08),
             knee_bend: pick(0.1, 1.3),
-            carry: pick(0.0, 3.0),
+            elbow_give: pick(0.0, 3.0),
+            // ~20% of creatures flail their arms around while they work.
+            flail: if pick(0.0, 1.0) < 0.2 { pick(0.4, 1.0) } else { 0.0 },
         }
     }
 }
@@ -262,20 +265,25 @@ impl LocomotionState {
             limb.bend_dir = 1.0; // knees forward (facing +x)
         }
 
-        // Arms counter-swing the same-side leg; elbows bend backward.
-        let shoulder_y = self.rest_positions[2].y + body_drop;
+        // Arms: pendulums from the shoulder, counter-swinging the same-side
+        // leg. The hand traces an arc so the arm hangs near-straight through
+        // the swing (like the pendulum legs — constant elbow bend reads
+        // robotic); the elbow gives only as the arm comes forward. Flailers
+        // overswing with a loose second harmonic on top.
+        let shoulder = self.skeleton.points[2].pos;
+        let arm_len = self.skeleton.limbs[0].upper_len + self.skeleton.limbs[0].lower_len;
+        let theta_max = (g.arm_swing / arm_len) * (1.0 + 0.6 * g.flail);
         for arm_idx in 0..2 {
             // armL (0) is in phase with legR, i.e. opposite legL.
             let p = if arm_idx == 0 { (cyc + 0.5).fract() } else { cyc };
             let swing = (TAU * p).sin();
-            // carry raises the whole hand baseline (bent elbows, boxer-style);
-            // the forward swing lifts it further, scaled by swing amplitude.
-            let hand_drop =
-                self.rest_effectors[arm_idx].y - self.rest_positions[2].y - g.carry;
+            let theta = theta_max * swing + 0.35 * g.flail * (2.0 * TAU * p + 1.3).sin();
+            let give = (0.2 + 0.35 * g.elbow_give) * (1.0 + 2.0 * g.flail);
+            let hand_r = arm_len - 0.15 - give * swing.max(0.0);
             let limb = &mut self.skeleton.limbs[arm_idx];
             limb.end_effector = Vec2::new(
-                cx + g.arm_swing * swing,
-                shoulder_y + hand_drop - 0.25 * g.arm_swing * swing.max(0.0),
+                shoulder.x + hand_r * theta.sin(),
+                shoulder.y + hand_r * theta.cos(),
             );
             limb.bend_dir = -1.0;
         }
