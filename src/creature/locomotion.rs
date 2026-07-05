@@ -1,8 +1,59 @@
 use std::time::Duration;
 
 use crate::session::SessionState;
+use super::generate::Xorshift;
 use super::physics::{apply_constraints, verlet_integrate};
 use super::skeleton::{Skeleton, Vec2};
+
+/// Per-creature walk personality, derived deterministically from the skeleton
+/// so the same creature always moves the same way. Ranges are tuned so every
+/// combination still reads as a walk at 18x24.
+#[derive(Clone, Copy)]
+struct GaitStyle {
+    freq: f32,      // cycles per second
+    duty: f32,      // stance fraction of the cycle
+    stride_f: f32,  // stride as a fraction of total leg length
+    lift: f32,      // swing foot peak lift
+    bob: f32,       // pelvis bob amplitude
+    lean: f32,      // forward lean per px above the hips
+    arm_swing: f32, // hand x amplitude
+    head_lag: f32,  // head follow-through, cycle fraction
+    sway: f32,      // head micro-sway amplitude
+    limp: f32,      // 0 = even gait; >0 = left leg drags (lower lift, shorter step)
+    wobble: f32,    // cycle-rate irregularity amplitude
+}
+
+impl GaitStyle {
+    /// Sample a personality from the creature's own geometry: hash the rest
+    /// pose into a PRNG seed, then draw each parameter from its range.
+    fn from_skeleton(skeleton: &Skeleton) -> Self {
+        // FNV-1a over the rest pose bits — stable across runs for a given seed.
+        let mut h: u64 = 0xcbf2_9ce4_8422_2325;
+        for pt in &skeleton.points {
+            for v in [pt.pos.x, pt.pos.y, pt.width] {
+                h = (h ^ v.to_bits() as u64).wrapping_mul(0x0000_0100_0000_01b3);
+            }
+        }
+        let mut rng = Xorshift::new(h | 1); // xorshift dies on 0
+        let mut pick = |lo: f32, hi: f32| {
+            lo + (hi - lo) * ((rng.next_u64() % 1000) as f32 / 1000.0)
+        };
+        Self {
+            freq: pick(1.1, 1.7),
+            duty: pick(0.54, 0.66),
+            stride_f: pick(0.45, 0.62),
+            lift: pick(1.8, 3.2),
+            bob: pick(0.6, 1.4),
+            lean: pick(0.04, 0.20),
+            arm_swing: pick(1.6, 3.0),
+            head_lag: pick(0.05, 0.16),
+            sway: pick(0.2, 0.7),
+            // Most creatures walk evenly; ~30% get a hitch in their step.
+            limp: if pick(0.0, 1.0) < 0.3 { pick(0.15, 0.4) } else { 0.0 },
+            wobble: pick(0.0, 0.08),
+        }
+    }
+}
 
 pub struct LocomotionState {
     skeleton: Skeleton,
@@ -11,6 +62,7 @@ pub struct LocomotionState {
     rest_effectors: Vec<Vec2>,
     rest_bend_dirs: Vec<f32>,
     rest_limb_widths: Vec<(f32, f32)>,
+    gait: GaitStyle,
     state: SessionState,
     elapsed: f32,
     archetype: usize,
@@ -25,10 +77,11 @@ impl LocomotionState {
         let rest_bend_dirs: Vec<f32> = skeleton.limbs.iter().map(|l| l.bend_dir).collect();
         let rest_limb_widths: Vec<(f32, f32)> =
             skeleton.limbs.iter().map(|l| (l.upper_width, l.lower_width)).collect();
+        let gait = GaitStyle::from_skeleton(&skeleton);
         let archetype = detect_archetype(&skeleton);
         let mut ls = Self {
             skeleton, base_widths, rest_positions, rest_effectors,
-            rest_bend_dirs, rest_limb_widths,
+            rest_bend_dirs, rest_limb_widths, gait,
             state, elapsed: 0.0, archetype, settled: false,
         };
         if state == SessionState::Disconnected {
@@ -109,38 +162,35 @@ impl LocomotionState {
     /// stance foot stays planted instead of lagging behind its target.
     fn drive_working_bipedal(&mut self, _dt: f32) {
         use std::f32::consts::{PI, TAU};
-        const WALK_FREQ_HZ: f32 = 1.4; // brisk — this creature is busy
-        const DUTY: f32 = 0.6;         // stance fraction of the cycle
-        const LIFT: f32 = 2.5;         // swing foot peak lift
-        const BOB_AMP: f32 = 1.0;      // pelvis bob, 2x stride frequency
-        const CROUCH: f32 = 1.4;       // base knee bend so IK never over-reaches
-        const LEAN_PER_PX: f32 = 0.12; // forward lean per px above the hips
-        const HEAD_LAG: f32 = 0.1;     // head follow-through, cycle fraction
-        const ARM_SWING: f32 = 2.2;    // hand x amplitude
-        const SQUASH: f32 = 0.35;      // torso width modulation
+        const SQUASH: f32 = 0.35; // torso width modulation
 
         if self.skeleton.limbs.len() < 4 || self.skeleton.points.len() < 6 {
             return;
         }
 
+        let g = self.gait;
         let cx = self.rest_center_x();
         let gy = self.ground_y();
-        let cyc = (self.elapsed * WALK_FREQ_HZ).fract();
+        // Timing wobble: a bounded phase jitter on a slow, incommensurate
+        // period speeds strides up and down slightly, so no two are identical.
+        let jitter = g.wobble * (TAU * 0.31 * self.elapsed).sin();
+        let cyc = (self.elapsed * g.freq + jitter).rem_euclid(1.0);
         let hip_rest_y = self.rest_positions[3].y;
 
-        // Body height: always CROUCH below rest (keeps knees bent, IK in
-        // range), rising by up to BOB_AMP at the passing poses (cyc .25/.75).
-        let bob = BOB_AMP * 0.5 * (1.0 - (2.0 * TAU * cyc).cos());
-        let body_drop = CROUCH - bob;
+        // Body height: always crouched below rest (keeps knees bent, IK in
+        // range), rising by up to `bob` at the passing poses (cyc .25/.75).
+        let crouch = g.bob + 0.6;
+        let bob = g.bob * 0.5 * (1.0 - (2.0 * TAU * cyc).cos());
+        let body_drop = crouch - bob;
 
         // Spine re-pose to profile: forward lean (facing +x), ground-anchored bob.
         for i in 0..4 {
             let rest = self.rest_positions[i];
-            let lean = LEAN_PER_PX * (hip_rest_y - rest.y);
+            let lean = g.lean * (hip_rest_y - rest.y);
             let drop = if i == 0 {
                 // Head follow-through: its bob lags the pelvis slightly.
-                let cyc_h = (cyc - HEAD_LAG).rem_euclid(1.0);
-                CROUCH - BOB_AMP * 0.5 * (1.0 - (2.0 * TAU * cyc_h).cos())
+                let cyc_h = (cyc - g.head_lag).rem_euclid(1.0);
+                crouch - g.bob * 0.5 * (1.0 - (2.0 * TAU * cyc_h).cos())
             } else {
                 body_drop
             };
@@ -149,7 +199,7 @@ impl LocomotionState {
             pt.prev_pos = pt.pos;
         }
         // Micro-sway on the head keeps the silhouette alive.
-        self.skeleton.points[0].pos.x += (TAU * cyc).sin() * 0.4;
+        self.skeleton.points[0].pos.x += (TAU * cyc).sin() * g.sway;
         self.skeleton.points[0].prev_pos = self.skeleton.points[0].pos;
 
         // Hips nearly overlap in profile.
@@ -169,17 +219,20 @@ impl LocomotionState {
         self.skeleton.points[3].width = self.base_widths[3] * PROFILE_W + squash * 0.6;
 
         // Legs (limbs 2,3): stance foot planted, sliding back linearly
-        // (treadmill); swing foot arcs forward with a sine lift.
+        // (treadmill); swing foot arcs forward with a sine lift. A limp
+        // shortens and flattens the left leg's step.
         let leg_len = self.skeleton.limbs[2].upper_len + self.skeleton.limbs[2].lower_len;
-        let stride = 0.55 * leg_len; // scale stride to the creature's legs
         for leg_idx in 2..4 {
+            let hitch = if leg_idx == 2 { 1.0 - g.limp } else { 1.0 };
+            let stride = g.stride_f * leg_len * hitch;
+            let lift = g.lift * hitch;
             let p = if leg_idx == 2 { cyc } else { (cyc + 0.5).fract() };
-            let (x, y) = if p < DUTY {
-                let u = p / DUTY;
+            let (x, y) = if p < g.duty {
+                let u = p / g.duty;
                 (cx + stride / 2.0 - u * stride, gy)
             } else {
-                let v = (p - DUTY) / (1.0 - DUTY);
-                (cx - stride / 2.0 + v * stride, gy - LIFT * (PI * v).sin())
+                let v = (p - g.duty) / (1.0 - g.duty);
+                (cx - stride / 2.0 + v * stride, gy - lift * (PI * v).sin())
             };
             let limb = &mut self.skeleton.limbs[leg_idx];
             limb.end_effector = Vec2::new(x, y);
@@ -195,7 +248,7 @@ impl LocomotionState {
             let hand_drop = self.rest_effectors[arm_idx].y - self.rest_positions[2].y;
             let limb = &mut self.skeleton.limbs[arm_idx];
             limb.end_effector = Vec2::new(
-                cx + ARM_SWING * swing,
+                cx + g.arm_swing * swing,
                 // Hand rides the shoulder and rises a touch on the forward swing.
                 shoulder_y + hand_drop - 0.4 * swing.max(0.0),
             );

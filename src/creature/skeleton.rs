@@ -165,9 +165,9 @@ impl Skeleton {
 
     fn build_bipedal(rng: &mut Xorshift) -> Self {
         let cx = 9.0;
-        let head_neck = Self::vary(rng, 1.5, 0.4);    // shorter neck
-        let neck_upper = Self::vary(rng, 2.5, 0.8);   // shorter to shoulders
-        let upper_lower = Self::vary(rng, 4.5, 1.0);  // torso; hips land ~y10.5 leaving room for legs
+        let head_neck = Self::vary(rng, 1.2, 0.3);    // short neck
+        let neck_upper = Self::vary(rng, 1.6, 0.4);   // shoulders sit high, just under the head
+        let upper_lower = Self::vary(rng, 5.7, 1.0);  // torso; hips land ~y10.5 leaving room for legs
         let head_w = Self::vary(rng, 4.0, 1.6);
         let neck_w = Self::vary(rng, 2.5, 1.0);
         let upper_w = Self::vary(rng, 7.0, 2.0);      // wider shoulders
@@ -192,9 +192,10 @@ impl Skeleton {
             Constraint { a: 3, b: 4, rest_length: 2.0 },
             Constraint { a: 3, b: 5, rest_length: 2.0 },
         ];
-        // Legs roughly half of total height (human-ish); arms reach hip level.
-        let arm_upper = Self::vary(rng, 3.5, 0.6).max(2.5);
-        let arm_lower = Self::vary(rng, 3.0, 0.5).max(2.0);
+        // Legs roughly half of total height (human-ish); long arms hang from
+        // the high shoulders down to hip level for expressive swings.
+        let arm_upper = Self::vary(rng, 4.2, 0.6).max(3.2);
+        let arm_lower = Self::vary(rng, 3.8, 0.5).max(2.8);
         let leg_upper = Self::vary(rng, 5.5, 0.8).max(4.5);
         let leg_lower = Self::vary(rng, 5.0, 0.8).max(4.0);
         let arm_width_upper = Self::vary(rng, 1.2, 0.3).max(0.8);
