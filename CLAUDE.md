@@ -27,10 +27,14 @@ src/
   hooks.rs             # Claude Code hook installation (~/.claude/settings.json) and
                        #   state file reading (~/.summoner/claude-states/{pid})
   creature/
-    generate.rs        # Sprite generation: Xorshift PRNG, Bollinger mask, symmetry + edge detection
-    templates.rs       # 5 creature archetypes (bipedal, quadruped, blob, winged, serpentine)
-    animate.rs         # Animation state machine: locomotion/bounce/breathe/sleep per SessionState
-    render.rs          # Half-block Unicode rendering, state-based color palettes
+    generate.rs        # Xorshift PRNG, CellKind/Sprite buffers
+    skeleton.rs        # 5 archetypes (bipedal, quadruped, blob, winged, serpentine):
+                       #   chain points, distance constraints, two-bone-IK limbs
+    physics.rs         # Verlet integration, constraint solver, two-bone IK (bend_dir)
+    locomotion.rs      # Per-SessionState drivers; GaitStyle/IdleStyle personality
+                       #   sampled from a rest-pose hash — see docs/creature-animation.md
+    outline.rs         # Skeleton -> pixels: SDF capsule rasterization, edge detection
+    render.rs          # Half-block Unicode rendering, state palettes, capsule shading
   ui/
     dashboard.rs       # Project card grid with creatures, state labels, selection
     dashboard_nav.rs   # Grid navigation (arrow keys, group-aware movement)
@@ -55,6 +59,8 @@ tests/
 **Session persistence**: `SessionStore` (TOML) saves all sessions every 10s and on exit. Disconnected sessions restore by re-spawning PTY in same directory and optionally running `claude --resume <conversation_id>`.
 
 **Input routing**: Global keys (Ctrl+C/Q, F12 toggle, F1-F11 session switch) are handled first, then mode-specific handlers (dashboard nav, PTY forwarding via `key_to_bytes`, dir picker).
+
+**Creature animation**: Design principles, canvas constraints, and the dev/verification workflow (`--test-creatures`, `--render-creature`, both behind the `dev-creature` feature) are documented in [docs/creature-animation.md](docs/creature-animation.md). Read it before changing anything under `src/creature/`.
 
 ## Key Dependencies
 
