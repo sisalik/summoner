@@ -10,7 +10,7 @@ impl Xorshift {
         }
     }
 
-    pub fn next(&mut self) -> u64 {
+    pub fn next_u64(&mut self) -> u64 {
         self.state ^= self.state << 13;
         self.state ^= self.state >> 7;
         self.state ^= self.state << 17;
@@ -18,7 +18,7 @@ impl Xorshift {
     }
 
     pub fn chance(&mut self, probability: f64) -> bool {
-        (self.next() % 1000) < (probability * 1000.0) as u64
+        (self.next_u64() % 1000) < (probability * 1000.0) as u64
     }
 }
 

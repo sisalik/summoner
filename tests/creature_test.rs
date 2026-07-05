@@ -6,8 +6,8 @@ use summoner::creature::skeleton::{Skeleton, ARCHETYPE_COUNT, archetype_name, ar
 fn xorshift_is_deterministic() {
     let mut rng1 = Xorshift::new(42);
     let mut rng2 = Xorshift::new(42);
-    let vals1: Vec<u64> = (0..100).map(|_| rng1.next()).collect();
-    let vals2: Vec<u64> = (0..100).map(|_| rng2.next()).collect();
+    let vals1: Vec<u64> = (0..100).map(|_| rng1.next_u64()).collect();
+    let vals2: Vec<u64> = (0..100).map(|_| rng2.next_u64()).collect();
     assert_eq!(vals1, vals2);
 }
 
@@ -15,8 +15,8 @@ fn xorshift_is_deterministic() {
 fn xorshift_different_seeds_produce_different_output() {
     let mut rng1 = Xorshift::new(42);
     let mut rng2 = Xorshift::new(99);
-    let vals1: Vec<u64> = (0..10).map(|_| rng1.next()).collect();
-    let vals2: Vec<u64> = (0..10).map(|_| rng2.next()).collect();
+    let vals1: Vec<u64> = (0..10).map(|_| rng1.next_u64()).collect();
+    let vals2: Vec<u64> = (0..10).map(|_| rng2.next_u64()).collect();
     assert_ne!(vals1, vals2);
 }
 
@@ -237,8 +237,8 @@ fn rasterize_all_archetypes_produce_visible_sprites() {
 fn rasterized_sprite_has_borders_around_body() {
     let skel = Skeleton::instantiate(0, 42);
     let result = rasterize_skeleton(&skel);
-    let has_body = result.sprite.cells.iter().any(|c| *c == CellKind::Body);
-    let has_border = result.sprite.cells.iter().any(|c| *c == CellKind::Border);
+    let has_body = result.sprite.cells.contains(&CellKind::Body);
+    let has_border = result.sprite.cells.contains(&CellKind::Border);
     assert!(has_body, "Should have Body cells");
     assert!(has_border, "Should have Border cells");
 }

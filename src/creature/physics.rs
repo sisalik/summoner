@@ -48,6 +48,18 @@ pub fn apply_constraints(skeleton: &mut Skeleton, iterations: usize) {
 }
 
 pub fn solve_two_bone_ik(anchor: Vec2, target: Vec2, upper_len: f32, lower_len: f32) -> IkResult {
+    solve_two_bone_ik_dir(anchor, target, upper_len, lower_len, 1.0)
+}
+
+/// Two-bone IK with an explicit bend side. With y-down and the target below
+/// the anchor, `bend_dir = 1.0` puts the joint toward +x, `-1.0` toward -x.
+pub fn solve_two_bone_ik_dir(
+    anchor: Vec2,
+    target: Vec2,
+    upper_len: f32,
+    lower_len: f32,
+    bend_dir: f32,
+) -> IkResult {
     let to_target = target - anchor;
     let dist = to_target.length();
     let max_reach = upper_len + lower_len;
@@ -64,7 +76,7 @@ pub fn solve_two_bone_ik(anchor: Vec2, target: Vec2, upper_len: f32, lower_len: 
         / (2.0 * upper_len * dist);
     let angle = cos_angle.clamp(-1.0, 1.0).acos();
     let base_angle = to_target.y.atan2(to_target.x);
-    let mid_angle = base_angle - angle;
+    let mid_angle = base_angle - angle * bend_dir;
 
     let mid = Vec2::new(
         anchor.x + mid_angle.cos() * upper_len,
@@ -75,17 +87,4 @@ pub fn solve_two_bone_ik(anchor: Vec2, target: Vec2, upper_len: f32, lower_len: 
         mid + to_end * lower_len
     };
     IkResult { mid, end }
-}
-
-pub fn snap_to_grid(skeleton: &mut Skeleton, threshold: f32) {
-    for pt in &mut skeleton.points {
-        let snapped_x = pt.pos.x.round();
-        let snapped_y = pt.pos.y.round();
-        if (pt.pos.x - snapped_x).abs() > threshold {
-            pt.pos.x = snapped_x;
-        }
-        if (pt.pos.y - snapped_y).abs() > threshold {
-            pt.pos.y = snapped_y;
-        }
-    }
 }

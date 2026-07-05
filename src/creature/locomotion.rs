@@ -1,7 +1,7 @@
 use std::time::Duration;
 
 use crate::session::SessionState;
-use super::physics::{apply_constraints, snap_to_grid, verlet_integrate};
+use super::physics::{apply_constraints, verlet_integrate};
 use super::skeleton::{Skeleton, Vec2};
 
 pub struct LocomotionState {
@@ -9,6 +9,8 @@ pub struct LocomotionState {
     base_widths: Vec<f32>,
     rest_positions: Vec<Vec2>,
     rest_effectors: Vec<Vec2>,
+    rest_bend_dirs: Vec<f32>,
+    rest_limb_widths: Vec<(f32, f32)>,
     state: SessionState,
     elapsed: f32,
     archetype: usize,
@@ -20,9 +22,13 @@ impl LocomotionState {
         let base_widths: Vec<f32> = skeleton.points.iter().map(|p| p.width).collect();
         let rest_positions: Vec<Vec2> = skeleton.points.iter().map(|p| p.pos).collect();
         let rest_effectors: Vec<Vec2> = skeleton.limbs.iter().map(|l| l.end_effector).collect();
+        let rest_bend_dirs: Vec<f32> = skeleton.limbs.iter().map(|l| l.bend_dir).collect();
+        let rest_limb_widths: Vec<(f32, f32)> =
+            skeleton.limbs.iter().map(|l| (l.upper_width, l.lower_width)).collect();
         let archetype = detect_archetype(&skeleton);
         let mut ls = Self {
             skeleton, base_widths, rest_positions, rest_effectors,
+            rest_bend_dirs, rest_limb_widths,
             state, elapsed: 0.0, archetype, settled: false,
         };
         if state == SessionState::Disconnected {
@@ -47,6 +53,9 @@ impl LocomotionState {
         }
         for (i, limb) in self.skeleton.limbs.iter_mut().enumerate() {
             limb.end_effector = self.rest_effectors[i];
+            limb.bend_dir = self.rest_bend_dirs[i];
+            limb.upper_width = self.rest_limb_widths[i].0;
+            limb.lower_width = self.rest_limb_widths[i].1;
         }
         if state == SessionState::Disconnected {
             self.settle_disconnected();
@@ -93,48 +102,112 @@ impl LocomotionState {
         }
     }
 
+    /// Side-profile treadmill walk (Richard Williams contact/down/passing/up
+    /// poses, made continuous). Fully kinematic: unlike the other archetypes'
+    /// drivers this writes every point directly each tick (prev_pos = pos, no
+    /// verlet/constraints) so the pose is a pure function of `elapsed` and the
+    /// stance foot stays planted instead of lagging behind its target.
     fn drive_working_bipedal(&mut self, _dt: f32) {
-        // Cyclical walk: legs alternate in a continuous sine-driven gait
+        use std::f32::consts::{PI, TAU};
+        const WALK_FREQ_HZ: f32 = 1.4; // brisk — this creature is busy
+        const DUTY: f32 = 0.6;         // stance fraction of the cycle
+        const LIFT: f32 = 2.5;         // swing foot peak lift
+        const BOB_AMP: f32 = 1.0;      // pelvis bob, 2x stride frequency
+        const CROUCH: f32 = 1.4;       // base knee bend so IK never over-reaches
+        const LEAN_PER_PX: f32 = 0.12; // forward lean per px above the hips
+        const HEAD_LAG: f32 = 0.1;     // head follow-through, cycle fraction
+        const ARM_SWING: f32 = 2.2;    // hand x amplitude
+        const SQUASH: f32 = 0.35;      // torso width modulation
+
+        if self.skeleton.limbs.len() < 4 || self.skeleton.points.len() < 6 {
+            return;
+        }
+
         let cx = self.rest_center_x();
-        let walk_freq = 0.8; // cycles per second
-        let stride = 2.5;    // how far each foot moves
-        let phase = self.elapsed * walk_freq * std::f32::consts::TAU;
-
-        // Gentle head sway (small, follows walk rhythm)
-        let head_sway = phase.sin() * 0.6;
-        if let Some(head) = self.skeleton.points.first_mut() {
-            head.pos.x = cx + head_sway;
-        }
-
-        verlet_integrate(&mut self.skeleton, 0.85, Vec2::zero());
-        apply_constraints(&mut self.skeleton, 3);
-
-        // Continuous leg cycling — legs 2,3 (indices into limbs)
         let gy = self.ground_y();
-        if self.skeleton.limbs.len() >= 4 {
-            for leg_idx in 2..4 {
-                let leg_phase = phase + if leg_idx == 2 { 0.0 } else { std::f32::consts::PI };
-                let rest_x = self.rest_effectors[leg_idx].x;
-                let x_offset = leg_phase.sin() * stride;
-                self.skeleton.limbs[leg_idx].end_effector.x = rest_x + x_offset;
-                // Lift foot during forward swing (when sin > 0)
-                let lift = (leg_phase.sin().max(0.0)) * 2.0;
-                self.skeleton.limbs[leg_idx].end_effector.y = gy - lift;
-            }
+        let cyc = (self.elapsed * WALK_FREQ_HZ).fract();
+        let hip_rest_y = self.rest_positions[3].y;
+
+        // Body height: always CROUCH below rest (keeps knees bent, IK in
+        // range), rising by up to BOB_AMP at the passing poses (cyc .25/.75).
+        let bob = BOB_AMP * 0.5 * (1.0 - (2.0 * TAU * cyc).cos());
+        let body_drop = CROUCH - bob;
+
+        // Spine re-pose to profile: forward lean (facing +x), ground-anchored bob.
+        for i in 0..4 {
+            let rest = self.rest_positions[i];
+            let lean = LEAN_PER_PX * (hip_rest_y - rest.y);
+            let drop = if i == 0 {
+                // Head follow-through: its bob lags the pelvis slightly.
+                let cyc_h = (cyc - HEAD_LAG).rem_euclid(1.0);
+                CROUCH - BOB_AMP * 0.5 * (1.0 - (2.0 * TAU * cyc_h).cos())
+            } else {
+                body_drop
+            };
+            let pt = &mut self.skeleton.points[i];
+            pt.pos = Vec2::new(cx + lean, rest.y + drop);
+            pt.prev_pos = pt.pos;
+        }
+        // Micro-sway on the head keeps the silhouette alive.
+        self.skeleton.points[0].pos.x += (TAU * cyc).sin() * 0.4;
+        self.skeleton.points[0].prev_pos = self.skeleton.points[0].pos;
+
+        // Hips nearly overlap in profile.
+        for (i, dx) in [(4usize, -0.5f32), (5, 0.5)] {
+            let pt = &mut self.skeleton.points[i];
+            pt.pos = Vec2::new(cx + dx, self.rest_positions[i].y + body_drop);
+            pt.prev_pos = pt.pos;
         }
 
-        // Arm swing in opposition to legs
-        if self.skeleton.limbs.len() >= 4 {
-            for arm_idx in 0..2 {
-                let arm_phase = phase + if arm_idx == 0 { std::f32::consts::PI } else { 0.0 };
-                let rest = self.rest_effectors[arm_idx];
-                self.skeleton.limbs[arm_idx].end_effector.x = rest.x + arm_phase.sin() * 1.5;
-                self.skeleton.limbs[arm_idx].end_effector.y = rest.y;
-            }
+        // Profile is narrower than the front view — shrink the torso so limbs
+        // read against it — plus squash & stretch: widest at contact (body
+        // lowest), stretched at passing.
+        const PROFILE_W: f32 = 0.65;
+        let squash = SQUASH * (2.0 * TAU * cyc).cos();
+        self.skeleton.points[1].width = self.base_widths[1] * PROFILE_W;
+        self.skeleton.points[2].width = self.base_widths[2] * PROFILE_W + squash;
+        self.skeleton.points[3].width = self.base_widths[3] * PROFILE_W + squash * 0.6;
+
+        // Legs (limbs 2,3): stance foot planted, sliding back linearly
+        // (treadmill); swing foot arcs forward with a sine lift.
+        let leg_len = self.skeleton.limbs[2].upper_len + self.skeleton.limbs[2].lower_len;
+        let stride = 0.55 * leg_len; // scale stride to the creature's legs
+        for leg_idx in 2..4 {
+            let p = if leg_idx == 2 { cyc } else { (cyc + 0.5).fract() };
+            let (x, y) = if p < DUTY {
+                let u = p / DUTY;
+                (cx + stride / 2.0 - u * stride, gy)
+            } else {
+                let v = (p - DUTY) / (1.0 - DUTY);
+                (cx - stride / 2.0 + v * stride, gy - LIFT * (PI * v).sin())
+            };
+            let limb = &mut self.skeleton.limbs[leg_idx];
+            limb.end_effector = Vec2::new(x, y);
+            limb.bend_dir = 1.0; // knees forward (facing +x)
         }
 
-        self.restore_vertical_center();
-        snap_to_grid(&mut self.skeleton, 0.7);
+        // Arms counter-swing the same-side leg; elbows bend backward.
+        let shoulder_y = self.rest_positions[2].y + body_drop;
+        for arm_idx in 0..2 {
+            // armL (0) is in phase with legR, i.e. opposite legL.
+            let p = if arm_idx == 0 { (cyc + 0.5).fract() } else { cyc };
+            let swing = (TAU * p).sin();
+            let hand_drop = self.rest_effectors[arm_idx].y - self.rest_positions[2].y;
+            let limb = &mut self.skeleton.limbs[arm_idx];
+            limb.end_effector = Vec2::new(
+                cx + ARM_SWING * swing,
+                // Hand rides the shoulder and rises a touch on the forward swing.
+                shoulder_y + hand_drop - 0.4 * swing.max(0.0),
+            );
+            limb.bend_dir = -1.0;
+        }
+
+        // Far-side limbs (right: 1, 3) drawn slimmer for a depth read.
+        for li in [1usize, 3] {
+            self.skeleton.limbs[li].upper_width = self.rest_limb_widths[li].0 * 0.85;
+            self.skeleton.limbs[li].lower_width = self.rest_limb_widths[li].1 * 0.85;
+        }
+
         self.clamp_to_bounds();
     }
 
@@ -169,7 +242,6 @@ impl LocomotionState {
         }
 
         self.restore_vertical_center();
-        snap_to_grid(&mut self.skeleton, 0.7);
         self.clamp_to_bounds();
     }
 
@@ -196,7 +268,6 @@ impl LocomotionState {
         verlet_integrate(&mut self.skeleton, 0.85, Vec2::zero());
         apply_constraints(&mut self.skeleton, 3);
         self.restore_vertical_center();
-        snap_to_grid(&mut self.skeleton, 0.7);
         self.clamp_to_bounds();
     }
 
@@ -233,7 +304,6 @@ impl LocomotionState {
         }
 
         self.restore_vertical_center();
-        snap_to_grid(&mut self.skeleton, 0.7);
         self.clamp_to_bounds();
     }
 
@@ -254,7 +324,6 @@ impl LocomotionState {
         verlet_integrate(&mut self.skeleton, 0.85, Vec2::zero());
         apply_constraints(&mut self.skeleton, 3);
         self.restore_vertical_center();
-        snap_to_grid(&mut self.skeleton, 0.7);
         self.clamp_to_bounds();
     }
 
@@ -262,10 +331,62 @@ impl LocomotionState {
 
     fn drive_waiting(&mut self, _dt: f32) {
         match self.archetype {
+            0 => self.drive_waiting_bipedal(),
             2 => self.drive_waiting_blob(),
             4 => self.drive_waiting_serpentine(),
             _ => self.drive_waiting_default(),
         }
+    }
+
+    /// Expectant: bouncing on toes with arms half-raised, occasional hop.
+    /// Kinematic (see drive_working_bipedal).
+    fn drive_waiting_bipedal(&mut self) {
+        use std::f32::consts::TAU;
+        let t = self.elapsed;
+        let cx = self.rest_center_x();
+        let gy = self.ground_y();
+
+        if self.skeleton.limbs.len() < 4 || self.skeleton.points.len() < 6 {
+            return;
+        }
+
+        // Toe bounce: up-pause-up rhythm (half-rectified sine).
+        let bounce = (TAU * 1.2 * t).sin().max(0.0) * 1.2;
+        // Occasional full hop, gated by an incommensurate slow wave.
+        let hop_gate = (TAU * 0.17 * t).sin();
+        let hop = if hop_gate > 0.92 { 1.5 } else { 0.0 };
+        let rise = bounce + hop;
+
+        for i in 0..6 {
+            let rest = self.rest_positions[i];
+            let pt = &mut self.skeleton.points[i];
+            pt.pos = Vec2::new(rest.x, rest.y - rise);
+            pt.prev_pos = pt.pos;
+        }
+        // Head tilt: slow look-around on its own period.
+        self.skeleton.points[0].pos.x = cx + (TAU * 0.23 * t).sin();
+        self.skeleton.points[0].prev_pos = self.skeleton.points[0].pos;
+
+        // Anticipation squash at the bottom of each bounce.
+        let squash = (1.2 - bounce).max(0.0) * 0.2;
+        self.skeleton.points[2].width = self.base_widths[2] + squash;
+
+        // Feet stay on the ground line; on the hop the IK clamp carries them up.
+        for leg_idx in 2..4 {
+            let rest_x = self.rest_effectors[leg_idx].x;
+            self.skeleton.limbs[leg_idx].end_effector = Vec2::new(rest_x, gy - hop);
+        }
+
+        // Arms half-raised, small eager sway in time with the bounce.
+        let arm_sway = (TAU * 1.2 * t).sin() * 0.5;
+        for arm_idx in 0..2 {
+            let rest = self.rest_effectors[arm_idx];
+            let out = if arm_idx == 0 { -arm_sway } else { arm_sway };
+            self.skeleton.limbs[arm_idx].end_effector =
+                Vec2::new(rest.x + out, rest.y - 2.0 - rise);
+        }
+
+        self.clamp_to_bounds();
     }
 
     fn drive_waiting_default(&mut self) {
@@ -278,7 +399,6 @@ impl LocomotionState {
         verlet_integrate(&mut self.skeleton, 0.85, Vec2::zero());
         apply_constraints(&mut self.skeleton, 3);
         self.restore_vertical_center();
-        snap_to_grid(&mut self.skeleton, 0.7);
         self.clamp_to_bounds();
     }
 
@@ -298,7 +418,6 @@ impl LocomotionState {
         verlet_integrate(&mut self.skeleton, 0.85, Vec2::zero());
         apply_constraints(&mut self.skeleton, 3);
         self.restore_vertical_center();
-        snap_to_grid(&mut self.skeleton, 0.7);
         self.clamp_to_bounds();
     }
 
@@ -315,7 +434,6 @@ impl LocomotionState {
         verlet_integrate(&mut self.skeleton, 0.85, Vec2::zero());
         apply_constraints(&mut self.skeleton, 3);
         self.restore_vertical_center();
-        snap_to_grid(&mut self.skeleton, 0.7);
         self.clamp_to_bounds();
     }
 
@@ -323,9 +441,65 @@ impl LocomotionState {
 
     fn drive_idle(&mut self, _dt: f32) {
         match self.archetype {
+            0 => self.drive_idle_bipedal(),
             4 => self.drive_idle_serpentine(),
             _ => self.drive_idle_default(),
         }
+    }
+
+    /// Relaxed contrapposto: slow weight shift between legs, breathing, and an
+    /// occasional glance. Kinematic (see drive_working_bipedal).
+    fn drive_idle_bipedal(&mut self) {
+        use std::f32::consts::TAU;
+        let t = self.elapsed;
+        let cx = self.rest_center_x();
+
+        if self.skeleton.limbs.len() < 4 || self.skeleton.points.len() < 6 {
+            return;
+        }
+
+        // Slight slouch keeps the knees soft so the weight shift reads in the
+        // legs instead of the IK clamping straight.
+        const SLOUCH: f32 = 0.5;
+        // Weight shift: hips lead, shoulders follow at 60%, head counters.
+        let shift = 1.5 * (TAU * 0.08 * t).sin();
+        // Occasional glance: cubed sine dwells near zero, then darts.
+        let s = (TAU * 0.043 * t).sin();
+        let glance = 1.2 * s * s * s;
+
+        let offsets = [
+            -0.3 * shift + glance, // head (contrapposto counter + glance)
+            0.2 * shift,           // neck
+            0.6 * shift,           // upper_body
+            shift,                 // lower_body
+            shift,                 // hip_l
+            shift,                 // hip_r
+        ];
+        for (i, dx) in offsets.iter().enumerate() {
+            let rest = self.rest_positions[i];
+            let pt = &mut self.skeleton.points[i];
+            pt.pos = Vec2::new(rest.x + dx, rest.y + SLOUCH);
+            pt.prev_pos = pt.pos;
+        }
+        // Fix head x around center (rest.x == cx for spine, but be explicit).
+        self.skeleton.points[0].pos.x = cx + offsets[0];
+        self.skeleton.points[0].prev_pos = self.skeleton.points[0].pos;
+
+        // Breathing.
+        let breath = (TAU * 0.25 * t).sin();
+        self.skeleton.points[2].width = self.base_widths[2] + breath * 0.25;
+
+        // Feet planted at rest; arms hang, drifting with the shoulders.
+        for leg_idx in 2..4 {
+            self.skeleton.limbs[leg_idx].end_effector = self.rest_effectors[leg_idx];
+        }
+        for arm_idx in 0..2 {
+            let rest = self.rest_effectors[arm_idx];
+            self.skeleton.limbs[arm_idx].end_effector =
+                Vec2::new(rest.x + 0.6 * shift, rest.y + SLOUCH);
+        }
+
+        self.clamp_to_bounds();
     }
 
     fn drive_idle_default(&mut self) {
@@ -343,7 +517,6 @@ impl LocomotionState {
         verlet_integrate(&mut self.skeleton, 0.80, Vec2::zero());
         apply_constraints(&mut self.skeleton, 2);
         self.restore_vertical_center();
-        snap_to_grid(&mut self.skeleton, 0.7);
         self.clamp_to_bounds();
     }
 
@@ -362,7 +535,6 @@ impl LocomotionState {
         verlet_integrate(&mut self.skeleton, 0.80, Vec2::zero());
         apply_constraints(&mut self.skeleton, 2);
         self.restore_vertical_center();
-        snap_to_grid(&mut self.skeleton, 0.7);
         self.clamp_to_bounds();
     }
 
@@ -370,9 +542,60 @@ impl LocomotionState {
 
     fn drive_sleeping(&mut self, _dt: f32) {
         match self.archetype {
+            0 => self.drive_sleeping_bipedal(),
             4 => self.drive_sleeping_serpentine(),
             _ => self.drive_sleeping_default(),
         }
+    }
+
+    /// Slumped standing doze: eases into a droop, then breathes on two
+    /// incommensurate periods so the loop never reads as a loop.
+    /// Kinematic (see drive_working_bipedal).
+    fn drive_sleeping_bipedal(&mut self) {
+        use std::f32::consts::TAU;
+        let t = self.elapsed;
+
+        if self.skeleton.limbs.len() < 4 || self.skeleton.points.len() < 6 {
+            return;
+        }
+
+        // Smoothstep ease into the slump over the first 1.5s.
+        let k = {
+            let u = (t / 1.5).min(1.0);
+            u * u * (3.0 - 2.0 * u)
+        };
+        let sag = [2.5, 1.8, 1.0, 0.3, 0.3, 0.3]; // head droops most
+        let wobble = 0.3 * (TAU * 0.09 * t).sin();
+
+        for (i, s) in sag.iter().enumerate() {
+            let rest = self.rest_positions[i];
+            let pt = &mut self.skeleton.points[i];
+            pt.pos = Vec2::new(rest.x, rest.y + k * s + wobble * k);
+            pt.prev_pos = pt.pos;
+        }
+        // Head lolls to one side.
+        self.skeleton.points[0].pos.x -= 2.0 * k;
+        self.skeleton.points[0].prev_pos = self.skeleton.points[0].pos;
+
+        // Slow breathing.
+        let breath = (TAU * 0.12 * t).sin();
+        self.skeleton.points[2].width = self.base_widths[2] + breath * 0.15;
+
+        // Arms drop limp to the sides; feet stay planted.
+        let cx = self.rest_center_x();
+        for arm_idx in 0..2 {
+            let rest = self.rest_effectors[arm_idx];
+            let side_x = if arm_idx == 0 { cx - 3.0 } else { cx + 3.0 };
+            self.skeleton.limbs[arm_idx].end_effector = Vec2::new(
+                rest.x + (side_x - rest.x) * k,
+                rest.y + 1.5 * k,
+            );
+        }
+        for leg_idx in 2..4 {
+            self.skeleton.limbs[leg_idx].end_effector = self.rest_effectors[leg_idx];
+        }
+
+        self.clamp_to_bounds();
     }
 
     fn drive_sleeping_default(&mut self) {
@@ -384,7 +607,6 @@ impl LocomotionState {
         verlet_integrate(&mut self.skeleton, 0.75, Vec2::zero());
         apply_constraints(&mut self.skeleton, 2);
         self.restore_vertical_center();
-        snap_to_grid(&mut self.skeleton, 0.7);
         self.clamp_to_bounds();
     }
 
@@ -404,7 +626,6 @@ impl LocomotionState {
         verlet_integrate(&mut self.skeleton, 0.75, Vec2::zero());
         apply_constraints(&mut self.skeleton, 2);
         self.restore_vertical_center();
-        snap_to_grid(&mut self.skeleton, 0.7);
         self.clamp_to_bounds();
     }
 

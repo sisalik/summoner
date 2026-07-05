@@ -1,5 +1,5 @@
 use super::generate::{CellKind, Sprite};
-use super::physics::solve_two_bone_ik;
+use super::physics::solve_two_bone_ik_dir;
 use super::skeleton::{Skeleton, Vec2};
 
 const BASE_W: usize = 18;
@@ -121,11 +121,12 @@ fn collect_capsules(skeleton: &Skeleton, scale_f: f32) -> Vec<Capsule> {
     for (li, limb) in skeleton.limbs.iter().enumerate() {
         let anchor = skeleton.points[limb.anchor].pos * scale_f;
         let target = limb.end_effector * scale_f;
-        let ik = solve_two_bone_ik(
+        let ik = solve_two_bone_ik_dir(
             anchor,
             target,
             limb.upper_len * scale_f,
             limb.lower_len * scale_f,
+            limb.bend_dir,
         );
 
         let upper_r = limb.upper_width * scale_f / 2.0;
@@ -337,11 +338,12 @@ pub fn rasterize_skeleton_wireframe(skeleton: &Skeleton, scale: usize) -> Raster
     for (li, limb) in skeleton.limbs.iter().enumerate() {
         let anchor = skeleton.points[limb.anchor].pos * scale_f;
         let target = limb.end_effector * scale_f;
-        let ik = solve_two_bone_ik(
+        let ik = solve_two_bone_ik_dir(
             anchor,
             target,
             limb.upper_len * scale_f,
             limb.lower_len * scale_f,
+            limb.bend_dir,
         );
         let upper_id = 100 + li as u8 * 2;
         let lower_id = 100 + li as u8 * 2 + 1;
@@ -507,7 +509,7 @@ fn draw_line_tagged(
     let mut x = x0;
     let mut y = y0;
     loop {
-        set_cell_tagged(x, y, CellKind::Border, id, cells, comp, w, h);
+        set_cell_tagged(x, y, id, cells, comp, w, h);
         if x == x1 && y == y1 {
             break;
         }
@@ -538,16 +540,16 @@ fn draw_filled_circle_tagged(
     for dy in -r..=r {
         for dx in -r..=r {
             if dx * dx + dy * dy <= r * r {
-                set_cell_tagged(cx + dx, cy + dy, CellKind::Border, id, cells, comp, w, h);
+                set_cell_tagged(cx + dx, cy + dy, id, cells, comp, w, h);
             }
         }
     }
 }
 
+/// Stamp a border cell (all tagged drawing is border-only) with its capsule id.
 fn set_cell_tagged(
     x: i32,
     y: i32,
-    kind: CellKind,
     id: u8,
     cells: &mut [CellKind],
     comp: &mut [u8],
@@ -556,7 +558,7 @@ fn set_cell_tagged(
 ) {
     if x >= 0 && x < w as i32 && y >= 0 && y < h as i32 {
         let idx = y as usize * w + x as usize;
-        cells[idx] = kind;
+        cells[idx] = CellKind::Border;
         comp[idx] = id;
     }
 }
