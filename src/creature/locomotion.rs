@@ -21,6 +21,8 @@ struct GaitStyle {
     sway: f32,      // head micro-sway amplitude
     limp: f32,      // 0 = even gait; >0 = left leg drags (lower lift, shorter step)
     wobble: f32,    // cycle-rate irregularity amplitude
+    knee_bend: f32, // extra crouch: upright strider -> groucho skulk
+    carry: f32,     // hands carried high (bent elbows) vs dangling straight
 }
 
 impl GaitStyle {
@@ -39,18 +41,20 @@ impl GaitStyle {
             lo + (hi - lo) * ((rng.next_u64() % 1000) as f32 / 1000.0)
         };
         Self {
-            freq: pick(1.1, 1.7),
+            freq: pick(0.7, 2.3),
             duty: pick(0.54, 0.66),
-            stride_f: pick(0.45, 0.62),
+            stride_f: pick(0.32, 0.75),
             lift: pick(1.8, 3.2),
             bob: pick(0.6, 1.4),
             lean: pick(0.04, 0.20),
-            arm_swing: pick(1.6, 3.0),
+            arm_swing: pick(1.8, 4.4),
             head_lag: pick(0.05, 0.16),
             sway: pick(0.2, 0.7),
             // Most creatures walk evenly; ~30% get a hitch in their step.
             limp: if pick(0.0, 1.0) < 0.3 { pick(0.15, 0.4) } else { 0.0 },
             wobble: pick(0.0, 0.08),
+            knee_bend: pick(0.1, 1.3),
+            carry: pick(0.0, 3.0),
         }
     }
 }
@@ -179,7 +183,8 @@ impl LocomotionState {
 
         // Body height: always crouched below rest (keeps knees bent, IK in
         // range), rising by up to `bob` at the passing poses (cyc .25/.75).
-        let crouch = g.bob + 0.6;
+        // knee_bend deepens the crouch: upright strider vs groucho skulk.
+        let crouch = g.bob + 0.5 + g.knee_bend;
         let bob = g.bob * 0.5 * (1.0 - (2.0 * TAU * cyc).cos());
         let body_drop = crouch - bob;
 
@@ -245,12 +250,14 @@ impl LocomotionState {
             // armL (0) is in phase with legR, i.e. opposite legL.
             let p = if arm_idx == 0 { (cyc + 0.5).fract() } else { cyc };
             let swing = (TAU * p).sin();
-            let hand_drop = self.rest_effectors[arm_idx].y - self.rest_positions[2].y;
+            // carry raises the whole hand baseline (bent elbows, boxer-style);
+            // the forward swing lifts it further, scaled by swing amplitude.
+            let hand_drop =
+                self.rest_effectors[arm_idx].y - self.rest_positions[2].y - g.carry;
             let limb = &mut self.skeleton.limbs[arm_idx];
             limb.end_effector = Vec2::new(
                 cx + g.arm_swing * swing,
-                // Hand rides the shoulder and rises a touch on the forward swing.
-                shoulder_y + hand_drop - 0.4 * swing.max(0.0),
+                shoulder_y + hand_drop - 0.25 * g.arm_swing * swing.max(0.0),
             );
             limb.bend_dir = -1.0;
         }
