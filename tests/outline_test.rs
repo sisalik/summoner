@@ -17,8 +17,8 @@ fn sdf_rasterize_has_body_and_border() {
     for archetype in 0..ARCHETYPE_COUNT {
         let skel = Skeleton::instantiate(archetype, 42);
         let raster = rasterize_skeleton(&skel);
-        let has_body = raster.sprite.cells.iter().any(|c| *c == CellKind::Body);
-        let has_border = raster.sprite.cells.iter().any(|c| *c == CellKind::Border);
+        let has_body = raster.sprite.cells.contains(&CellKind::Body);
+        let has_border = raster.sprite.cells.contains(&CellKind::Border);
         assert!(has_body, "Archetype {} has no Body cells", archetype);
         assert!(has_border, "Archetype {} has no Border cells", archetype);
     }

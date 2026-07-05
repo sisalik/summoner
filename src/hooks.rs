@@ -204,7 +204,7 @@ fn configure_claude_settings() -> std::io::Result<()> {
 
     if changed {
         let content = serde_json::to_string_pretty(&settings)
-            .map_err(|e| std::io::Error::other(e))?;
+            .map_err(std::io::Error::other)?;
         fs::write(&settings_path, content)?;
     }
     Ok(())
@@ -222,7 +222,7 @@ fn unconfigure_claude_settings() -> std::io::Result<()> {
 
     let content = fs::read_to_string(&settings_path)?;
     let mut settings: serde_json::Value = serde_json::from_str(&content)
-        .map_err(|e| std::io::Error::other(e))?;
+        .map_err(std::io::Error::other)?;
 
     let mut changed = false;
 
@@ -265,7 +265,7 @@ fn unconfigure_claude_settings() -> std::io::Result<()> {
 
     if changed {
         let content = serde_json::to_string_pretty(&settings)
-            .map_err(|e| std::io::Error::other(e))?;
+            .map_err(std::io::Error::other)?;
         fs::write(&settings_path, content)?;
     }
     Ok(())

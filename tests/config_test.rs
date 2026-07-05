@@ -1,4 +1,4 @@
-use summoner::config::{AppConfig, GeneralConfig, NewSessionConfig, SessionEntry, SessionStore, RecentDirs};
+use summoner::config::{AppConfig, SessionEntry, SessionStore, RecentDirs};
 use chrono::Utc;
 use uuid::Uuid;
 use tempfile::TempDir;

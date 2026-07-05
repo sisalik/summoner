@@ -24,11 +24,10 @@ fn extract_passthrough_from_script(path: &Path) -> Option<String> {
     // Look for: printf '%s' "$input" | <command>
     for line in content.lines() {
         let trimmed = line.trim();
-        if let Some(rest) = trimmed.strip_prefix("printf '%s' \"$input\" | ") {
-            if !rest.is_empty() {
+        if let Some(rest) = trimmed.strip_prefix("printf '%s' \"$input\" | ")
+            && !rest.is_empty() {
                 return Some(rest.to_string());
             }
-        }
     }
     None
 }
@@ -94,7 +93,7 @@ fn install_wrapper_inner(summoner_dir: &Path) -> std::io::Result<()> {
     });
 
     let content = serde_json::to_string_pretty(&settings)
-        .map_err(|e| std::io::Error::other(e))?;
+        .map_err(std::io::Error::other)?;
     fs::write(&settings_path, content)?;
 
     Ok(())
@@ -121,7 +120,7 @@ fn uninstall_wrapper_inner() -> std::io::Result<()> {
 
     let content = fs::read_to_string(&settings_path)?;
     let mut settings: serde_json::Value = serde_json::from_str(&content)
-        .map_err(|e| std::io::Error::other(e))?;
+        .map_err(std::io::Error::other)?;
 
     // Only touch statusLine if it's currently ours
     let is_ours = settings.get("statusLine")
@@ -141,7 +140,7 @@ fn uninstall_wrapper_inner() -> std::io::Result<()> {
         }
 
         let content = serde_json::to_string_pretty(&settings)
-            .map_err(|e| std::io::Error::other(e))?;
+            .map_err(std::io::Error::other)?;
         fs::write(&settings_path, content)?;
     }
 

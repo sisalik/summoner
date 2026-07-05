@@ -40,8 +40,11 @@ fn status_bar_highlights_active_session() {
     let area = Rect::new(0, 0, 80, 1);
     let mut buf = Buffer::empty(area);
     bar.render(area, &mut buf);
-    // Verify renders without panic
-    assert!(true);
+    // The active session's tab shows its name; the styling itself is visual.
+    let text: String = (0..80)
+        .map(|x| buf[ratatui::layout::Position { x, y: 0 }].symbol().to_string())
+        .collect();
+    assert!(text.contains("active"), "Active session name should be visible");
 }
 
 #[test]

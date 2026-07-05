@@ -41,34 +41,7 @@ impl<'a> Widget for StatusBar<'a> {
             session_order.extend(&group.sessions);
         }
 
-        let mut show_name_for: Vec<bool> = vec![false; session_order.len()];
-        {
-            let mut group_start = 0;
-            for group in &groups {
-                let group_end = group_start + group.sessions.len();
-                let active_in_group = (group_start..group_end).any(|pos| {
-                    session_order.get(pos).map_or(false, |&si| self.active_index == Some(si))
-                });
-                if group.sessions.len() <= 1 {
-                    if group_start < show_name_for.len() {
-                        show_name_for[group_start] = true;
-                    }
-                } else if active_in_group {
-                    for pos in group_start..group_end {
-                        if let Some(&si) = session_order.get(pos) {
-                            if self.active_index == Some(si) {
-                                show_name_for[pos] = true;
-                            }
-                        }
-                    }
-                } else {
-                    if group_end > 0 && group_end - 1 < show_name_for.len() {
-                        show_name_for[group_end - 1] = true;
-                    }
-                }
-                group_start = group_end;
-            }
-        }
+        let show_name_for = mark_named_tabs(&groups, &session_order, self.active_index);
 
         // Pre-compute tab widths (including group separator)
         let tab_widths: Vec<usize> = session_order.iter().enumerate().map(|(pos, &sess_idx)| {
@@ -110,18 +83,16 @@ impl<'a> Widget for StatusBar<'a> {
             x = write_str(buf, x, area.y, &text, overflow_style, max_tab_x);
         }
 
-        for pos in vis_start..vis_end {
-            let sess_idx = session_order[pos];
+        for (pos, &sess_idx) in session_order.iter().enumerate().take(vis_end).skip(vis_start) {
             let session = &self.sessions[sess_idx];
 
-            if pos > 0 && group_boundaries.contains(&pos) {
-                if pos > vis_start || hidden_before == 0 {
+            if pos > 0 && group_boundaries.contains(&pos)
+                && (pos > vis_start || hidden_before == 0) {
                     let sep_style = Style::default()
                         .fg(Color::Rgb(60, 60, 80))
                         .bg(Color::Rgb(30, 30, 40));
                     x = write_str(buf, x, area.y, "\u{2502}", sep_style, max_tab_x);
                 }
-            }
 
             let fkey = format!("F{}", pos + 1);
             let icon = session.state.bar_icon();
@@ -182,32 +153,7 @@ pub fn tab_at_x(
         session_order.extend(&group.sessions);
     }
 
-    let mut show_name_for: Vec<bool> = vec![false; session_order.len()];
-    {
-        let mut group_start = 0;
-        for group in &groups {
-            let group_end = group_start + group.sessions.len();
-            let active_in_group = (group_start..group_end).any(|pos| {
-                session_order.get(pos).map_or(false, |&si| active_index == Some(si))
-            });
-            if group.sessions.len() <= 1 {
-                if group_start < show_name_for.len() {
-                    show_name_for[group_start] = true;
-                }
-            } else if active_in_group {
-                for pos in group_start..group_end {
-                    if let Some(&si) = session_order.get(pos) {
-                        if active_index == Some(si) {
-                            show_name_for[pos] = true;
-                        }
-                    }
-                }
-            } else if group_end > 0 && group_end - 1 < show_name_for.len() {
-                show_name_for[group_end - 1] = true;
-            }
-            group_start = group_end;
-        }
-    }
+    let show_name_for = mark_named_tabs(&groups, &session_order, active_index);
 
     let tab_widths: Vec<usize> = session_order.iter().enumerate().map(|(pos, &sess_idx)| {
         let session = &sessions[sess_idx];
@@ -247,16 +193,14 @@ pub fn tab_at_x(
         x = indicator_end;
     }
 
-    for pos in vis_start..vis_end {
-        let sess_idx = session_order[pos];
+    for (pos, &sess_idx) in session_order.iter().enumerate().take(vis_end).skip(vis_start) {
         let session = &sessions[sess_idx];
 
         let mut tab_start = x;
-        if pos > 0 && group_boundaries.contains(&pos) {
-            if pos > vis_start || hidden_before == 0 {
+        if pos > 0 && group_boundaries.contains(&pos)
+            && (pos > vis_start || hidden_before == 0) {
                 tab_start += 1; // separator
             }
-        }
 
         let fkey = format!("F{}", pos + 1);
         let icon = session.state.bar_icon();
@@ -308,32 +252,7 @@ pub fn tab_visible_range(
         session_order.extend(&group.sessions);
     }
 
-    let mut show_name_for: Vec<bool> = vec![false; session_order.len()];
-    {
-        let mut group_start = 0;
-        for group in &groups {
-            let group_end = group_start + group.sessions.len();
-            let active_in_group = (group_start..group_end).any(|pos| {
-                session_order.get(pos).map_or(false, |&si| active_index == Some(si))
-            });
-            if group.sessions.len() <= 1 {
-                if group_start < show_name_for.len() {
-                    show_name_for[group_start] = true;
-                }
-            } else if active_in_group {
-                for pos in group_start..group_end {
-                    if let Some(&si) = session_order.get(pos) {
-                        if active_index == Some(si) {
-                            show_name_for[pos] = true;
-                        }
-                    }
-                }
-            } else if group_end > 0 && group_end - 1 < show_name_for.len() {
-                show_name_for[group_end - 1] = true;
-            }
-            group_start = group_end;
-        }
-    }
+    let show_name_for = mark_named_tabs(&groups, &session_order, active_index);
 
     let tab_widths: Vec<usize> = session_order.iter().enumerate().map(|(pos, &sess_idx)| {
         let session = &sessions[sess_idx];
@@ -370,6 +289,38 @@ fn write_str(buf: &mut Buffer, mut x: u16, y: u16, text: &str, style: Style, max
         x += cw as u16;
     }
     x
+}
+
+/// Decide which tabs show their session name: singleton groups always show
+/// theirs; multi-session groups show only the active tab's, or the last
+/// tab's when the group has no active session.
+fn mark_named_tabs(
+    groups: &[crate::session::ProjectGroup],
+    session_order: &[usize],
+    active_index: Option<usize>,
+) -> Vec<bool> {
+    let mut show_name_for = vec![false; session_order.len()];
+    let mut group_start = 0;
+    for group in groups {
+        let group_end = (group_start + group.sessions.len()).min(session_order.len());
+        let group_slice = &session_order[group_start..group_end];
+        let active_in_group = group_slice.iter().any(|&si| active_index == Some(si));
+        if group.sessions.len() <= 1 {
+            if group_start < show_name_for.len() {
+                show_name_for[group_start] = true;
+            }
+        } else if active_in_group {
+            for (offset, &si) in group_slice.iter().enumerate() {
+                if active_index == Some(si) {
+                    show_name_for[group_start + offset] = true;
+                }
+            }
+        } else if group_end > 0 {
+            show_name_for[group_end - 1] = true;
+        }
+        group_start = group_end;
+    }
+    show_name_for
 }
 
 /// Find the visible window [start..end) that fits within `budget` and includes `active_pos`.

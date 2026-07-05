@@ -88,15 +88,14 @@ impl TestGrid {
     fn new(seed: u64) -> Self {
         let mut locomotions = Vec::new();
         for archetype in 0..ARCHETYPE_COUNT {
-            let mut row = Vec::new();
-            for state_idx in 0..STATE_COUNT {
-                if state_idx < ANIM_STATES.len() {
+            let mut row: Vec<Option<LocomotionState>> = ANIM_STATES
+                .iter()
+                .map(|&state| {
                     let skel = Skeleton::instantiate(archetype, seed);
-                    row.push(Some(LocomotionState::new(skel, ANIM_STATES[state_idx])));
-                } else {
-                    row.push(None); // Rest — static skeleton
-                }
-            }
+                    Some(LocomotionState::new(skel, state))
+                })
+                .collect();
+            row.resize_with(STATE_COUNT, || None); // Rest — static skeleton
             locomotions.push(row);
         }
         Self { seed, locomotions }
@@ -250,7 +249,7 @@ fn clear(area: Rect, buf: &mut ratatui::buffer::Buffer) {
 
 enum Mode {
     Grid(TestGrid),
-    Zoom(ZoomView),
+    Zoom(Box<ZoomView>),
 }
 
 pub fn run(terminal: &mut DefaultTerminal) -> Result<()> {
@@ -278,14 +277,14 @@ pub fn run(terminal: &mut DefaultTerminal) -> Result<()> {
             }
         })?;
 
-        if event::poll(Duration::from_millis(33))? {
-            if let Event::Key(key) = event::read()? {
+        if event::poll(Duration::from_millis(33))?
+            && let Event::Key(key) = event::read()? {
                 match &mut mode {
                     Mode::Grid(grid) => match key.code {
                         KeyCode::Char('q') | KeyCode::Esc => break,
                         KeyCode::Char('r') => grid.randomize(),
                         KeyCode::Enter | KeyCode::Char('z') | KeyCode::Char('Z') => {
-                            mode = Mode::Zoom(ZoomView::new(grid.seed, 0, 0));
+                            mode = Mode::Zoom(Box::new(ZoomView::new(grid.seed, 0, 0)));
                         }
                         _ => {}
                     },
@@ -327,7 +326,6 @@ pub fn run(terminal: &mut DefaultTerminal) -> Result<()> {
                     },
                 }
             }
-        }
     }
 
     Ok(())
@@ -362,6 +360,7 @@ fn render_grid(grid: &TestGrid, area: Rect, buf: &mut ratatui::buffer::Buffer) {
             draw_text(area.x, label_y, name, label_style, area, buf);
         }
 
+        #[allow(clippy::needless_range_loop)] // col drives both geometry and ANIM_STATES lookup
         for col in 0..STATE_COUNT {
             let cell_x = area.x + label_w + col as u16 * CELL_W;
             let cell_y = row_y;
@@ -412,7 +411,7 @@ fn render_zoom(zoom: &ZoomView, area: Rect, buf: &mut ratatui::buffer::Buffer) {
     };
 
     let rendered_w = raster.sprite.width as u16;
-    let rendered_h = ((raster.sprite.height + 1) / 2) as u16;
+    let rendered_h = raster.sprite.height.div_ceil(2) as u16;
     let offset_x = area.x + (area.width.saturating_sub(rendered_w)) / 2;
     let offset_y = area.y + 2 + (avail_h as u16).saturating_sub(rendered_h) / 2;
 
@@ -451,7 +450,7 @@ fn render_sprite_with_components(
     area: Rect,
     buf: &mut ratatui::buffer::Buffer,
 ) {
-    let rows = (sprite.height + 1) / 2;
+    let rows = sprite.height.div_ceil(2);
 
     for row in 0..rows.min(area.height as usize) {
         for col in 0..sprite.width.min(area.width as usize) {

@@ -226,12 +226,10 @@ impl App {
         for (new_pos, &old_idx) in new_order.iter().enumerate() {
             old_to_new[old_idx] = new_pos;
         }
-        if let Mode::Session(ref mut idx) = self.mode {
-            if *idx < n { *idx = old_to_new[*idx]; }
-        }
-        if let Some(ref mut idx) = self.last_session {
-            if *idx < n { *idx = old_to_new[*idx]; }
-        }
+        if let Mode::Session(ref mut idx) = self.mode
+            && *idx < n { *idx = old_to_new[*idx]; }
+        if let Some(ref mut idx) = self.last_session
+            && *idx < n { *idx = old_to_new[*idx]; }
         self.refresh_nav_layout();
     }
 
@@ -457,14 +455,13 @@ impl App {
                 if self.sessions[i].claude_conversation_id.as_deref() != Some(&sid) {
                     self.sessions[i].claude_conversation_id = Some(sid);
                 }
-            } else if self.sessions[i].claude_conversation_id.is_none() {
-                if let Some(pid) = shell_pid
+            } else if self.sessions[i].claude_conversation_id.is_none()
+                && let Some(pid) = shell_pid
                     && let Some(conv_id) = find_conversation_id(pid) {
                         self.sessions[i].claude_conversation_id = Some(conv_id);
                     }
-            }
 
-            let new_state = if shell_pid.is_some_and(|pid| is_claude_stopped(pid)) {
+            let new_state = if shell_pid.is_some_and(is_claude_stopped) {
                 SessionState::Sleeping
             } else if let Some(state) = hook_state {
                 // If hook says idle but no activity for 30min, show as sleeping
@@ -776,8 +773,8 @@ impl App {
                     && key.code == KeyCode::Char('c')
                     && self.selection.is_some()
                 {
-                    if let Some(ref sel) = self.selection {
-                        if !sel.is_empty() && idx < self.vt_parsers.len() {
+                    if let Some(ref sel) = self.selection
+                        && !sel.is_empty() && idx < self.vt_parsers.len() {
                             let text = selection::extract_text(
                                 self.vt_parsers[idx].screen_mut(),
                                 sel,
@@ -786,7 +783,6 @@ impl App {
                                 selection::copy_to_clipboard(&text);
                             }
                         }
-                    }
                     self.selection = None;
                     return Ok(false);
                 }
@@ -1364,8 +1360,8 @@ pub fn run(terminal: &mut DefaultTerminal) -> Result<()> {
                     }
                 }
                 Event::Paste(text) => {
-                    if let Mode::Session(idx) = app.mode {
-                        if let Some(ref pty) = app.pty_sessions[idx] {
+                    if let Mode::Session(idx) = app.mode
+                        && let Some(ref pty) = app.pty_sessions[idx] {
                             // Wrap in bracketed paste sequences so the child app
                             // (e.g. Claude Code) treats it as a single paste event
                             let mut buf = Vec::with_capacity(text.len() + 12);
@@ -1374,7 +1370,6 @@ pub fn run(terminal: &mut DefaultTerminal) -> Result<()> {
                             buf.extend_from_slice(b"\x1b[201~");
                             let _ = pty.write(&buf);
                         }
-                    }
                 }
                 Event::Mouse(mouse) => {
                     // Status bar clicks — all modes
@@ -1500,8 +1495,8 @@ pub fn run(terminal: &mut DefaultTerminal) -> Result<()> {
                         }
                     }
                     // Session view mouse handling
-                    else if let Mode::Session(idx) = app.mode {
-                        if idx < app.vt_parsers.len() {
+                    else if let Mode::Session(idx) = app.mode
+                        && idx < app.vt_parsers.len() {
                             let area = app.session_area;
                             let screen = app.vt_parsers[idx].screen();
                             let scrollback = screen.scrollback();
@@ -1583,7 +1578,6 @@ pub fn run(terminal: &mut DefaultTerminal) -> Result<()> {
                                 _ => {}
                             }
                         }
-                    }
                 }
                 _ => {}
             }
