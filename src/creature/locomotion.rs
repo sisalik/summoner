@@ -14,14 +14,14 @@ struct GaitStyle {
     duty: f32,      // stance fraction of the cycle
     stride_f: f32,  // stride as a fraction of total leg length
     lift: f32,      // swing foot peak lift
-    bob: f32,       // pelvis bob amplitude
+    bob: f32,       // exaggeration of the inverted-pendulum bob
     lean: f32,      // forward lean per px above the hips
     arm_swing: f32, // hand x amplitude
     head_lag: f32,  // head follow-through, cycle fraction
     sway: f32,      // head micro-sway amplitude
     limp: f32,      // 0 = even gait; >0 = left leg drags (lower lift, shorter step)
     wobble: f32,    // cycle-rate irregularity amplitude
-    knee_bend: f32, // extra crouch: upright strider -> groucho skulk
+    knee_bend: f32, // permanent knee flex: near-straight strider -> soft-kneed skulk
     carry: f32,     // hands carried high (bent elbows) vs dangling straight
 }
 
@@ -181,12 +181,33 @@ impl LocomotionState {
         let cyc = (self.elapsed * g.freq + jitter).rem_euclid(1.0);
         let hip_rest_y = self.rest_positions[3].y;
 
-        // Body height: always crouched below rest (keeps knees bent, IK in
-        // range), rising by up to `bob` at the passing poses (cyc .25/.75).
-        // knee_bend deepens the crouch: upright strider vs groucho skulk.
-        let crouch = g.bob + 0.5 + g.knee_bend;
-        let bob = g.bob * 0.5 * (1.0 - (2.0 * TAU * cyc).cos());
-        let body_drop = crouch - bob;
+        // Inverted-pendulum body height: the hips vault over the stance leg,
+        // so the knee straightens (up to a small personality flex) at the
+        // passing pose and only bends at contact and in swing — a constant
+        // crouch reads as a robot-dog skulk. During double support the higher
+        // of the two pendulums carries the body.
+        let leg_len = self.skeleton.limbs[2].upper_len + self.skeleton.limbs[2].lower_len;
+        let reach = gy - hip_rest_y; // rest hip-to-ground (legs straight)
+        let flex = 0.2 + 0.5 * g.knee_bend; // permanent slight knee flex
+        let l_eff = reach - flex;
+        // Foot x offset from the hips for a leg at phase p in its own cycle.
+        let stance_dx = |p: f32, stride: f32| -> f32 { stride / 2.0 - (p / g.duty) * stride };
+        // Drop below rest height as a function of cycle position (also used
+        // at a lagged position for the head's follow-through).
+        let body_drop_at = |c: f32| -> f32 {
+            let mut support = 0.0f32;
+            for (offset, hitch) in [(0.0, 1.0 - g.limp), (0.5, 1.0)] {
+                let p = (c + offset).rem_euclid(1.0);
+                if p < g.duty {
+                    let dx = stance_dx(p, g.stride_f * leg_len * hitch);
+                    support = support.max((l_eff * l_eff - dx * dx).max(0.0).sqrt());
+                }
+            }
+            // Exaggerate the (physically small) pendulum bob so it reads at
+            // 18x24; `bob` is the exaggeration personality.
+            flex + (l_eff - support) * (1.0 + g.bob)
+        };
+        let body_drop = body_drop_at(cyc);
 
         // Spine re-pose to profile: forward lean (facing +x), ground-anchored bob.
         for i in 0..4 {
@@ -194,8 +215,7 @@ impl LocomotionState {
             let lean = g.lean * (hip_rest_y - rest.y);
             let drop = if i == 0 {
                 // Head follow-through: its bob lags the pelvis slightly.
-                let cyc_h = (cyc - g.head_lag).rem_euclid(1.0);
-                crouch - g.bob * 0.5 * (1.0 - (2.0 * TAU * cyc_h).cos())
+                body_drop_at((cyc - g.head_lag).rem_euclid(1.0))
             } else {
                 body_drop
             };
@@ -226,15 +246,13 @@ impl LocomotionState {
         // Legs (limbs 2,3): stance foot planted, sliding back linearly
         // (treadmill); swing foot arcs forward with a sine lift. A limp
         // shortens and flattens the left leg's step.
-        let leg_len = self.skeleton.limbs[2].upper_len + self.skeleton.limbs[2].lower_len;
         for leg_idx in 2..4 {
             let hitch = if leg_idx == 2 { 1.0 - g.limp } else { 1.0 };
             let stride = g.stride_f * leg_len * hitch;
             let lift = g.lift * hitch;
             let p = if leg_idx == 2 { cyc } else { (cyc + 0.5).fract() };
             let (x, y) = if p < g.duty {
-                let u = p / g.duty;
-                (cx + stride / 2.0 - u * stride, gy)
+                (cx + stance_dx(p, stride), gy)
             } else {
                 let v = (p - g.duty) / (1.0 - g.duty);
                 (cx - stride / 2.0 + v * stride, gy - lift * (PI * v).sin())
