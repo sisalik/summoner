@@ -62,6 +62,71 @@ impl GaitStyle {
     }
 }
 
+/// Per-creature personality for the non-walking bipedal states, sampled the
+/// same way as GaitStyle but from an independently-mixed hash so the two vary
+/// independently.
+#[derive(Clone, Copy)]
+struct IdleStyle {
+    // Waiting: expectant bounce.
+    bounce_freq: f32, // bounces per second
+    bounce_amp: f32,  // toe-bounce height
+    hop_freq: f32,    // how often the full hop comes around
+    hop_amp: f32,     // hop height
+    arm_raise: f32,   // how high the arms are held (cheerer vs cool customer)
+    tilt: f32,        // head-tilt amplitude
+    // Idle: relaxed contrapposto.
+    shift_freq: f32,  // weight-shift period
+    shift_amp: f32,   // weight-shift distance
+    glance: f32,      // glance dart amplitude
+    breath_freq: f32,
+    breath_amp: f32,
+    slouch: f32,      // standing knee softness
+    tap: f32,         // 0 = still feet; >0 = occasional toe tap height
+    // Sleeping: slump.
+    slump: f32,             // slump depth multiplier
+    droop_dir: f32,         // which way the head lolls (+/-1)
+    sleep_breath_freq: f32,
+    twitch: f32,            // 0 = sound sleeper; >0 = occasional head twitch
+}
+
+impl IdleStyle {
+    fn from_skeleton(skeleton: &Skeleton) -> Self {
+        // Same FNV-1a as GaitStyle but with the bits flipped going in, so
+        // idle personality doesn't correlate with gait personality.
+        let mut h: u64 = 0xcbf2_9ce4_8422_2325;
+        for pt in &skeleton.points {
+            for v in [pt.pos.x, pt.pos.y, pt.width] {
+                h = (h ^ !(v.to_bits() as u64)).wrapping_mul(0x0000_0100_0000_01b3);
+            }
+        }
+        let mut rng = Xorshift::new(h | 1);
+        let mut pick = |lo: f32, hi: f32| {
+            lo + (hi - lo) * ((rng.next_u64() % 1000) as f32 / 1000.0)
+        };
+        Self {
+            bounce_freq: pick(0.8, 1.7),
+            bounce_amp: pick(0.7, 1.8),
+            hop_freq: pick(0.09, 0.23),
+            hop_amp: pick(1.0, 2.2),
+            arm_raise: pick(1.0, 3.2),
+            tilt: pick(0.5, 1.5),
+            shift_freq: pick(0.05, 0.12),
+            shift_amp: pick(1.0, 2.2),
+            glance: pick(0.8, 1.8),
+            breath_freq: pick(0.18, 0.33),
+            breath_amp: pick(0.15, 0.35),
+            slouch: pick(0.3, 0.9),
+            // ~40% of creatures tap a toe while they wait around.
+            tap: if pick(0.0, 1.0) < 0.4 { pick(0.6, 1.2) } else { 0.0 },
+            slump: pick(0.7, 1.3),
+            droop_dir: if pick(0.0, 1.0) < 0.5 { -1.0 } else { 1.0 },
+            sleep_breath_freq: pick(0.08, 0.16),
+            // ~25% twitch in their sleep.
+            twitch: if pick(0.0, 1.0) < 0.25 { pick(0.5, 1.0) } else { 0.0 },
+        }
+    }
+}
+
 pub struct LocomotionState {
     skeleton: Skeleton,
     base_widths: Vec<f32>,
@@ -70,6 +135,7 @@ pub struct LocomotionState {
     rest_bend_dirs: Vec<f32>,
     rest_limb_widths: Vec<(f32, f32)>,
     gait: GaitStyle,
+    idle: IdleStyle,
     state: SessionState,
     elapsed: f32,
     archetype: usize,
@@ -85,10 +151,11 @@ impl LocomotionState {
         let rest_limb_widths: Vec<(f32, f32)> =
             skeleton.limbs.iter().map(|l| (l.upper_width, l.lower_width)).collect();
         let gait = GaitStyle::from_skeleton(&skeleton);
+        let idle = IdleStyle::from_skeleton(&skeleton);
         let archetype = detect_archetype(&skeleton);
         let mut ls = Self {
             skeleton, base_widths, rest_positions, rest_effectors,
-            rest_bend_dirs, rest_limb_widths, gait,
+            rest_bend_dirs, rest_limb_widths, gait, idle,
             state, elapsed: 0.0, archetype, settled: false,
         };
         if state == SessionState::Disconnected {
@@ -425,9 +492,11 @@ impl LocomotionState {
     }
 
     /// Expectant: bouncing on toes with arms half-raised, occasional hop.
-    /// Kinematic (see drive_working_bipedal).
+    /// Kinematic (see drive_working_bipedal); amplitudes and rhythms come
+    /// from IdleStyle so each creature waits its own way.
     fn drive_waiting_bipedal(&mut self) {
         use std::f32::consts::TAU;
+        let s = self.idle;
         let t = self.elapsed;
         let cx = self.rest_center_x();
         let gy = self.ground_y();
@@ -436,40 +505,43 @@ impl LocomotionState {
             return;
         }
 
-        // Toe bounce: up-pause-up rhythm (half-rectified sine).
-        let bounce = (TAU * 1.2 * t).sin().max(0.0) * 1.2;
-        // Occasional full hop, gated by an incommensurate slow wave.
-        let hop_gate = (TAU * 0.17 * t).sin();
-        let hop = if hop_gate > 0.92 { 1.5 } else { 0.0 };
-        let rise = bounce + hop;
+        // Eager knee-dip bounce. The head already touches the canvas top at
+        // rest, so the body can't rise — it dips down and rebounds instead
+        // (knees flex via IK), which reads as bouncing on the spot.
+        let dip = (TAU * s.bounce_freq * t).sin().max(0.0) * s.bounce_amp;
+        // Occasional hop, gated by an incommensurate slow wave: a cartoon
+        // knee-tuck — the feet leave the ground, the body stays put.
+        let hop_gate = (TAU * s.hop_freq * t).sin();
+        let hop = if hop_gate > 0.92 { s.hop_amp } else { 0.0 };
 
         for i in 0..6 {
             let rest = self.rest_positions[i];
             let pt = &mut self.skeleton.points[i];
-            pt.pos = Vec2::new(rest.x, rest.y - rise);
+            pt.pos = Vec2::new(rest.x, rest.y + dip);
             pt.prev_pos = pt.pos;
         }
         // Head tilt: slow look-around on its own period.
-        self.skeleton.points[0].pos.x = cx + (TAU * 0.23 * t).sin();
+        self.skeleton.points[0].pos.x = cx + (TAU * 0.23 * t).sin() * s.tilt;
         self.skeleton.points[0].prev_pos = self.skeleton.points[0].pos;
 
-        // Anticipation squash at the bottom of each bounce.
-        let squash = (1.2 - bounce).max(0.0) * 0.2;
+        // Anticipation squash at the bottom of each dip.
+        let squash = dip * 0.25;
         self.skeleton.points[2].width = self.base_widths[2] + squash;
 
-        // Feet stay on the ground line; on the hop the IK clamp carries them up.
+        // Feet stay on the ground line except during the hop tuck.
         for leg_idx in 2..4 {
             let rest_x = self.rest_effectors[leg_idx].x;
             self.skeleton.limbs[leg_idx].end_effector = Vec2::new(rest_x, gy - hop);
         }
 
-        // Arms half-raised, small eager sway in time with the bounce.
-        let arm_sway = (TAU * 1.2 * t).sin() * 0.5;
+        // Arms held up, small eager sway in time with the bounce. High
+        // arm_raise reads as a cheerer, low as a cool customer.
+        let arm_sway = (TAU * s.bounce_freq * t).sin() * 0.5;
         for arm_idx in 0..2 {
             let rest = self.rest_effectors[arm_idx];
             let out = if arm_idx == 0 { -arm_sway } else { arm_sway };
             self.skeleton.limbs[arm_idx].end_effector =
-                Vec2::new(rest.x + out, rest.y - 2.0 - rise);
+                Vec2::new(rest.x + out, rest.y - s.arm_raise + dip);
         }
 
         self.clamp_to_bounds();
@@ -533,10 +605,12 @@ impl LocomotionState {
         }
     }
 
-    /// Relaxed contrapposto: slow weight shift between legs, breathing, and an
-    /// occasional glance. Kinematic (see drive_working_bipedal).
+    /// Relaxed contrapposto: slow weight shift between legs, breathing, an
+    /// occasional glance, and (for some creatures) an idle toe tap.
+    /// Kinematic (see drive_working_bipedal).
     fn drive_idle_bipedal(&mut self) {
         use std::f32::consts::TAU;
+        let s = self.idle;
         let t = self.elapsed;
         let cx = self.rest_center_x();
 
@@ -544,14 +618,14 @@ impl LocomotionState {
             return;
         }
 
-        // Slight slouch keeps the knees soft so the weight shift reads in the
-        // legs instead of the IK clamping straight.
-        const SLOUCH: f32 = 0.5;
+        // Slouch keeps the knees soft so the weight shift reads in the legs
+        // instead of the IK clamping straight.
+        let slouch = s.slouch;
         // Weight shift: hips lead, shoulders follow at 60%, head counters.
-        let shift = 1.5 * (TAU * 0.08 * t).sin();
+        let shift = s.shift_amp * (TAU * s.shift_freq * t).sin();
         // Occasional glance: cubed sine dwells near zero, then darts.
-        let s = (TAU * 0.043 * t).sin();
-        let glance = 1.2 * s * s * s;
+        let gl = (TAU * 0.043 * t).sin();
+        let glance = s.glance * gl * gl * gl;
 
         let offsets = [
             -0.3 * shift + glance, // head (contrapposto counter + glance)
@@ -564,7 +638,7 @@ impl LocomotionState {
         for (i, dx) in offsets.iter().enumerate() {
             let rest = self.rest_positions[i];
             let pt = &mut self.skeleton.points[i];
-            pt.pos = Vec2::new(rest.x + dx, rest.y + SLOUCH);
+            pt.pos = Vec2::new(rest.x + dx, rest.y + slouch);
             pt.prev_pos = pt.pos;
         }
         // Fix head x around center (rest.x == cx for spine, but be explicit).
@@ -572,17 +646,24 @@ impl LocomotionState {
         self.skeleton.points[0].prev_pos = self.skeleton.points[0].pos;
 
         // Breathing.
-        let breath = (TAU * 0.25 * t).sin();
-        self.skeleton.points[2].width = self.base_widths[2] + breath * 0.25;
+        let breath = (TAU * s.breath_freq * t).sin();
+        self.skeleton.points[2].width = self.base_widths[2] + breath * s.breath_amp;
 
-        // Feet planted at rest; arms hang, drifting with the shoulders.
+        // Feet planted at rest — except tappers, whose unweighted foot (the
+        // one the hips shifted away from) taps on its own beat.
+        let tap_gate = (TAU * 0.19 * t).sin();
         for leg_idx in 2..4 {
-            self.skeleton.limbs[leg_idx].end_effector = self.rest_effectors[leg_idx];
+            let mut foot = self.rest_effectors[leg_idx];
+            let unweighted = (leg_idx == 2) == (shift > 0.0);
+            if s.tap > 0.0 && unweighted && tap_gate > 0.55 {
+                foot.y -= s.tap * ((tap_gate - 0.55) / 0.45);
+            }
+            self.skeleton.limbs[leg_idx].end_effector = foot;
         }
         for arm_idx in 0..2 {
             let rest = self.rest_effectors[arm_idx];
             self.skeleton.limbs[arm_idx].end_effector =
-                Vec2::new(rest.x + 0.6 * shift, rest.y + SLOUCH);
+                Vec2::new(rest.x + 0.6 * shift, rest.y + slouch);
         }
 
         self.clamp_to_bounds();
@@ -635,10 +716,12 @@ impl LocomotionState {
     }
 
     /// Slumped standing doze: eases into a droop, then breathes on two
-    /// incommensurate periods so the loop never reads as a loop.
+    /// incommensurate periods so the loop never reads as a loop. Slump depth,
+    /// droop side, breath rate, and sleep twitches vary per creature.
     /// Kinematic (see drive_working_bipedal).
     fn drive_sleeping_bipedal(&mut self) {
         use std::f32::consts::TAU;
+        let s = self.idle;
         let t = self.elapsed;
 
         if self.skeleton.limbs.len() < 4 || self.skeleton.points.len() < 6 {
@@ -653,18 +736,25 @@ impl LocomotionState {
         let sag = [2.5, 1.8, 1.0, 0.3, 0.3, 0.3]; // head droops most
         let wobble = 0.3 * (TAU * 0.09 * t).sin();
 
-        for (i, s) in sag.iter().enumerate() {
+        for (i, sg) in sag.iter().enumerate() {
             let rest = self.rest_positions[i];
             let pt = &mut self.skeleton.points[i];
-            pt.pos = Vec2::new(rest.x, rest.y + k * s + wobble * k);
+            pt.pos = Vec2::new(rest.x, rest.y + k * sg * s.slump + wobble * k);
             pt.prev_pos = pt.pos;
         }
-        // Head lolls to one side.
-        self.skeleton.points[0].pos.x -= 2.0 * k;
+        // Head lolls to one side; twitchy sleepers jerk it briefly now and
+        // then before settling back.
+        let twitch_gate = (TAU * 0.07 * t + 2.1).sin();
+        let twitch = if s.twitch > 0.0 && twitch_gate > 0.96 {
+            s.twitch * ((twitch_gate - 0.96) / 0.04)
+        } else {
+            0.0
+        };
+        self.skeleton.points[0].pos.x += (-2.0 * k + twitch) * s.droop_dir;
         self.skeleton.points[0].prev_pos = self.skeleton.points[0].pos;
 
         // Slow breathing.
-        let breath = (TAU * 0.12 * t).sin();
+        let breath = (TAU * s.sleep_breath_freq * t).sin();
         self.skeleton.points[2].width = self.base_widths[2] + breath * 0.15;
 
         // Arms drop limp to the sides; feet stay planted.
@@ -674,7 +764,7 @@ impl LocomotionState {
             let side_x = if arm_idx == 0 { cx - 3.0 } else { cx + 3.0 };
             self.skeleton.limbs[arm_idx].end_effector = Vec2::new(
                 rest.x + (side_x - rest.x) * k,
-                rest.y + 1.5 * k,
+                rest.y + 1.5 * k * s.slump,
             );
         }
         for leg_idx in 2..4 {
