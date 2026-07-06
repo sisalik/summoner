@@ -1,24 +1,31 @@
 # Creature animation — design notes & learnings
 
-Hard-won knowledge from the bipedal animation overhaul (2026-07). Read this
-before touching `src/creature/locomotion.rs` or adding archetype drivers.
+Hard-won knowledge from the bipedal animation overhaul and the all-archetype
+rework (2026-07). Read this before touching `src/creature/locomotion/` or
+adding archetype drivers.
 
-## Kinematic vs verlet
+## Module layout
 
-Two driver styles coexist, split per archetype:
+`src/creature/locomotion/` is a directory module: `mod.rs` holds
+`LocomotionState`, the state dispatch, and shared helpers (`style_rng`,
+`pick`, `ease`, `lerp`, `put_point`); each archetype has its own file
+(`bipedal.rs`, `quadruped.rs`, `winged.rs`, `blob.rs`, `serpentine.rs`)
+containing its personality struct and its four state drivers as
+`impl LocomotionState` blocks.
 
-- **Bipedal drivers are fully kinematic**: every point's `pos` is written
-  directly each tick and `prev_pos = pos`. No `verlet_integrate`, no
-  `apply_constraints`, no `restore_vertical_center`. The pose is a pure
-  function of `elapsed`, which makes `--render-creature --phase` stills exact
-  and keeps planted feet rock-steady.
-- **Other archetypes keep verlet + constraints** (quadruped, blob, winged,
-  serpentine). Fine for wobbly bodies; wrong for gaits.
+## Kinematic only — verlet is for ragdolls
+
+**Every archetype driver is fully kinematic**: each point's `pos` is written
+directly each tick and `prev_pos = pos` (use `put_point`). No
+`verlet_integrate`, no `apply_constraints`, no vertical re-centering. The
+pose is a pure function of `elapsed`, which makes `--render-creature
+--phase` stills exact and keeps planted feet rock-steady. The only remaining
+verlet user is the Disconnected settle (a one-shot collapse).
 
 Lesson: verlet smoothing *fights* direct position writes — targets lag,
-feet slide, everything reads as a ragdoll. Pick one regime per driver.
-`restore_vertical_center` cancels mean-Y motion, so it silently deletes any
-intentional body bob; never combine it with a gait.
+feet slide, everything reads as a ragdoll. The old `restore_vertical_center`
+cancelled mean-Y motion, silently deleting any intentional body bob; it's
+gone — don't reintroduce it.
 
 ## Walking = inverted pendulum
 
@@ -44,6 +51,13 @@ Treadmill form (creature walks in place): stance foot slides back
 *linearly*, swing foot returns forward on a sine arc with lift. Reference
 poses: Richard Williams' contact / down / passing / up.
 
+The quadruped reuses this wholesale, but with **one pendulum per girdle**:
+front legs carry `front_body`, rear legs carry `rear_body`, so the spine
+rocks naturally as pairs land. Leg phase offsets pick the gait — 4-beat walk
+`[0, .5, .75, .25]`, trot `[0, .5, .5, 0]`, pace `[0, .5, 0, .5]` (comedy
+waddle) — and each girdle's pair stays 0.5 apart so it always has a stance
+leg.
+
 ## Arms: same principle
 
 Fixed hand baselines (e.g. "carry hands 2px above rest") permanently bend
@@ -52,7 +66,31 @@ traces an **arc from the shoulder** at radius ≈ arm length; the elbow gets
 `give` (radius pull-in) only on the forward swing. Arms counter-swing the
 same-side leg (armL in phase with legR).
 
-## Two-bone IK bend direction
+## Archetype pose tricks that worked
+
+- **Blob scaling is bottom-anchored**: hops, breathing, and the sleep-melt
+  all scale point offsets about the lowest rest point
+  (`y = bottom − (bottom − rest_y) * sy`), so the blob stays glued to its
+  ground line. Widths swell as `sy` shrinks — the fake volume conservation
+  is what sells squash/stretch. The blob is the one archetype with real
+  headroom, so its waiting hops genuinely leave the ground (clamp hop height
+  to `top_rest_y − 1.5`).
+- **Serpentine periscope**: raise the head as a rigid-length angle chain
+  from a mid-body point (`θ = π + curl`, stepping exact segment lengths),
+  never by offsetting Y per point — offsets stretch the neck visibly.
+  Scanning sway is an angle added down the chain, snake-charmer style.
+- **Serpentine sleep coil**: build spiral targets from the tail inward,
+  advancing `θ += seg_len / r` (arc-length-preserving) while shrinking `r`,
+  then lerp rest→target with the ease. Slither amplitude should *grow*
+  toward the tail (~0.3→1.0); the old even taper read as a wobbling stick.
+- **Winged hover**: body bob is downward-only (no headroom) and
+  counter-phased to the flap; the head follows only ~25% of it (birds
+  stabilize their heads — this one cue makes the hover read). Feet tuck to
+  ~55% of leg reach so the knees fold visibly. Wing flap: amplitude and
+  phase delay grow toward the tip.
+- **Quadruped sleep**: lerp everything to a lying pose (belly at
+  `ground − 2.2`), but keep the head a distinct lump ~1.4px above the body
+  line or the silhouette collapses into a single mound.
 
 `solve_two_bone_ik_dir(..., bend_dir)`: with y-down and target below anchor,
 `bend_dir = +1` puts the joint toward +x, `−1` toward −x. Front view: left
@@ -63,17 +101,22 @@ per tick relies on that.
 
 ## Per-creature personality
 
-`GaitStyle` / `IdleStyle`: sampled once in `LocomotionState::new` by hashing
-the skeleton's rest pose (FNV-1a over position/width bits) into an Xorshift
-seed, then drawing each parameter from a tuned range. Properties:
+One style struct per archetype (`GaitStyle`+`IdleStyle` for bipedal,
+`QuadStyle`, `WingStyle`, `BlobStyle`, `SnakeStyle`): sampled once in
+`LocomotionState::new` by hashing the skeleton's rest pose (`style_rng`:
+FNV-1a over position/width bits) into an Xorshift seed, then drawing each
+parameter from a tuned range. Properties:
 
 - Deterministic per creature across restarts, **no seed plumbing** through
   the app needed.
-- The two styles hash with flipped bits so gait and idle temperament don't
-  correlate.
-- Rare quirks are probability-gated draws: limp (~30%), arm flail (~20%),
-  idle toe-tap (~40%), sleep twitch (~25%). Quirks are what make creatures
-  memorable; continuous ranges alone blur together.
+- Each struct salts the hash differently so temperaments don't correlate
+  across states or archetypes.
+- Rare quirks are probability-gated draws: limp (~25-30%), arm flail (~20%),
+  idle toe-tap (~40%), sleep twitch (~25%), quadruped play-bow (~35%) and
+  dream-paddle (~30%), winged glide-pause (~30%) and feather-ruffle (~30%),
+  blob jiggle (~30%), snake head-flick (~35%). Quirks are what make
+  creatures memorable; continuous ranges alone blur together. Ramp every
+  gate window with `ease` so quirks fade in instead of popping.
 - `Xorshift::new(0)` is a fixed point — always seed with `h | 1`.
 
 Rate/phase irregularity must be a **bounded phase jitter**

@@ -31,8 +31,9 @@ src/
     skeleton.rs        # 5 archetypes (bipedal, quadruped, blob, winged, serpentine):
                        #   chain points, distance constraints, two-bone-IK limbs
     physics.rs         # Verlet integration, constraint solver, two-bone IK (bend_dir)
-    locomotion.rs      # Per-SessionState drivers; GaitStyle/IdleStyle personality
-                       #   sampled from a rest-pose hash — see docs/creature-animation.md
+    locomotion/        # Per-SessionState kinematic drivers, one file per archetype;
+                       #   personality structs sampled from a rest-pose hash —
+                       #   see docs/creature-animation.md
     outline.rs         # Skeleton -> pixels: SDF capsule rasterization, edge detection
     render.rs          # Half-block Unicode rendering, state palettes, capsule shading
   ui/

@@ -296,6 +296,48 @@ fn locomotion_sleeping_is_static() {
 }
 
 #[test]
+fn all_archetypes_working_animates() {
+    for archetype in 0..ARCHETYPE_COUNT {
+        let skel = Skeleton::instantiate(archetype, 42);
+        let mut loco = LocomotionState::new(skel, SessionState::Working);
+        let start: Vec<Vec2> = loco.skeleton().points.iter().map(|p| p.pos).collect();
+        let mut max_dev = 0.0f32;
+        for _ in 0..30 {
+            loco.tick(Duration::from_millis(33));
+            for (pt, s) in loco.skeleton().points.iter().zip(&start) {
+                max_dev = max_dev.max((pt.pos.x - s.x).abs() + (pt.pos.y - s.y).abs());
+            }
+        }
+        assert!(max_dev > 0.5,
+            "archetype {} barely moves when working: max deviation {max_dev}",
+            archetype_name(archetype));
+    }
+}
+
+#[test]
+fn all_archetypes_sleeping_settles_still() {
+    for archetype in 0..ARCHETYPE_COUNT {
+        let skel = Skeleton::instantiate(archetype, 42);
+        let mut loco = LocomotionState::new(skel, SessionState::Sleeping);
+        // Run well past every sleep driver's ease-in window.
+        for _ in 0..150 {
+            loco.tick(Duration::from_millis(33));
+        }
+        let before: Vec<Vec2> = loco.skeleton().points.iter().map(|p| p.pos).collect();
+        for _ in 0..10 {
+            loco.tick(Duration::from_millis(33));
+        }
+        for (b, pt) in before.iter().zip(loco.skeleton().points.iter()) {
+            let dx = (pt.pos.x - b.x).abs();
+            let dy = (pt.pos.y - b.y).abs();
+            assert!(dx < 2.0 && dy < 2.0,
+                "archetype {} sleeping point {} moved dx={dx} dy={dy}",
+                archetype_name(archetype), pt.name);
+        }
+    }
+}
+
+#[test]
 fn locomotion_state_change_resets() {
     let skel = Skeleton::instantiate(0, 42);
     let mut loco = LocomotionState::new(skel, SessionState::Working);
