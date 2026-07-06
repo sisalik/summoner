@@ -85,6 +85,19 @@ fn gait_phases(kind: u8) -> [f32; 4] {
 }
 
 impl LocomotionState {
+    /// Side-on depth read: the near legs (left, 0 and 2) draw in front of the
+    /// body; the far legs (right, 1 and 3) are slimmed and occluded behind it.
+    fn set_leg_depths(&mut self) {
+        for li in [0usize, 2] {
+            self.skeleton.limbs[li].depth = 1;
+        }
+        for li in [1usize, 3] {
+            self.skeleton.limbs[li].depth = -1;
+            self.skeleton.limbs[li].upper_width = self.rest_limb_widths[li].0 * 0.8;
+            self.skeleton.limbs[li].lower_width = self.rest_limb_widths[li].1 * 0.8;
+        }
+    }
+
     /// Treadmill gait in profile. Like the bipedal walk, each girdle vaults
     /// over its stance leg (inverted pendulum), so the spine rocks
     /// front/rear as diagonal pairs land — no synthetic bob.
@@ -164,11 +177,7 @@ impl LocomotionState {
             self.skeleton.limbs[li].end_effector = Vec2::new(rest_x + x_off, y);
         }
 
-        // Far-side legs (right: 1, 3) slimmer for depth.
-        for li in [1usize, 3] {
-            self.skeleton.limbs[li].upper_width = self.rest_limb_widths[li].0 * 0.8;
-            self.skeleton.limbs[li].lower_width = self.rest_limb_widths[li].1 * 0.8;
-        }
+        self.set_leg_depths();
 
         self.clamp_to_bounds();
     }
@@ -228,6 +237,7 @@ impl LocomotionState {
             self.skeleton.limbs[li].end_effector = foot;
         }
 
+        self.set_leg_depths();
         self.clamp_to_bounds();
     }
 
@@ -278,6 +288,7 @@ impl LocomotionState {
             self.skeleton.limbs[li].end_effector = Vec2::new(rest.x, gy);
         }
 
+        self.set_leg_depths();
         self.clamp_to_bounds();
     }
 
@@ -345,6 +356,7 @@ impl LocomotionState {
             self.skeleton.limbs[li].end_effector = foot;
         }
 
+        self.set_leg_depths();
         self.clamp_to_bounds();
     }
 }

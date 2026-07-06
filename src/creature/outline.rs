@@ -31,6 +31,9 @@ struct Capsule {
     r_a: f32,
     r_b: f32,
     id: u8,
+    /// Painter's depth: higher draws in front. Head/spine are 0; profile
+    /// limbs set +/-1 so near limbs occlude the torso (and vice versa).
+    depth: i8,
 }
 
 struct MembraneTriangle {
@@ -99,6 +102,7 @@ fn collect_capsules(skeleton: &Skeleton, scale_f: f32) -> Vec<Capsule> {
             r_a: radius.max(1.0),
             r_b: radius.max(1.0),
             id: 1,
+            depth: 0,
         });
     }
 
@@ -114,6 +118,7 @@ fn collect_capsules(skeleton: &Skeleton, scale_f: f32) -> Vec<Capsule> {
             r_a: ra,
             r_b: rb,
             id: 2 + ci as u8,
+            depth: 0,
         });
     }
 
@@ -139,6 +144,7 @@ fn collect_capsules(skeleton: &Skeleton, scale_f: f32) -> Vec<Capsule> {
             r_a: upper_r,
             r_b: upper_r,
             id: 100 + li as u8 * 2,
+            depth: limb.depth,
         });
 
         // Lower bone: mid → end
@@ -148,6 +154,7 @@ fn collect_capsules(skeleton: &Skeleton, scale_f: f32) -> Vec<Capsule> {
             r_a: lower_r,
             r_b: lower_r,
             id: 100 + li as u8 * 2 + 1,
+            depth: limb.depth,
         });
     }
 
@@ -155,62 +162,55 @@ fn collect_capsules(skeleton: &Skeleton, scale_f: f32) -> Vec<Capsule> {
 }
 
 /// Collect wing membrane triangles for the winged archetype.
-/// Finds "body" point, collects left/right wing points, builds triangles.
+///
+/// Each wing is filled as a solid panel: the fan runs from the body over the
+/// wing bones (the leading edge) and closes on a *flank* vertex low on the
+/// body's side, so the membrane spans the whole area beneath the bones —
+/// reading as an actual wing rather than a thin sliver along the struts.
 fn collect_wing_membranes(skeleton: &Skeleton, scale_f: f32) -> Vec<MembraneTriangle> {
     let mut membranes = Vec::new();
 
-    // Find body anchor point
-    let body_idx = skeleton
-        .points
-        .iter()
-        .position(|p| p.name == "body");
-    let body_pos = match body_idx {
-        Some(idx) => skeleton.points[idx].pos * scale_f,
+    let body_idx = skeleton.points.iter().position(|p| p.name == "body");
+    let (body_pos, body_r) = match body_idx {
+        Some(idx) => (
+            skeleton.points[idx].pos * scale_f,
+            skeleton.points[idx].width * scale_f / 2.0,
+        ),
         None => return membranes,
     };
 
-    // Collect left and right wing points (sorted by name for consistent ordering)
-    let mut left_wings: Vec<(usize, Vec2)> = skeleton
-        .points
-        .iter()
-        .enumerate()
-        .filter(|(_, p)| p.name.starts_with("lwing"))
-        .map(|(i, p)| (i, p.pos * scale_f))
-        .collect();
-    let mut right_wings: Vec<(usize, Vec2)> = skeleton
-        .points
-        .iter()
-        .enumerate()
-        .filter(|(_, p)| p.name.starts_with("rwing"))
-        .map(|(i, p)| (i, p.pos * scale_f))
-        .collect();
-
-    // Sort by index to preserve chain order
-    left_wings.sort_by_key(|(i, _)| *i);
-    right_wings.sort_by_key(|(i, _)| *i);
-
     let mut tri_index: u8 = 0;
-
-    // Left wing triangles
-    for pair in left_wings.windows(2) {
-        membranes.push(MembraneTriangle {
-            v0: body_pos,
-            v1: pair[0].1,
-            v2: pair[1].1,
-            id: 200 + tri_index,
-        });
-        tri_index += 1;
-    }
-
-    // Right wing triangles
-    for pair in right_wings.windows(2) {
-        membranes.push(MembraneTriangle {
-            v0: body_pos,
-            v1: pair[0].1,
-            v2: pair[1].1,
-            id: 200 + tri_index,
-        });
-        tri_index += 1;
+    for (prefix, side) in [("lwing", -1.0f32), ("rwing", 1.0)] {
+        let mut wings: Vec<(usize, Vec2)> = skeleton
+            .points
+            .iter()
+            .enumerate()
+            .filter(|(_, p)| p.name.starts_with(prefix))
+            .map(|(i, p)| (i, p.pos * scale_f))
+            .collect();
+        wings.sort_by_key(|(i, _)| *i);
+        if wings.is_empty() {
+            continue;
+        }
+        // Flank: low on the body's own side, so the trailing edge sweeps from
+        // the wing tip back down to the bird's flank.
+        let flank = Vec2::new(
+            body_pos.x + side * body_r * 0.5,
+            body_pos.y + body_r * 0.7,
+        );
+        // Fan the closed polygon [body, w1, w2, w3, flank] from the body.
+        let mut chain: Vec<Vec2> = Vec::with_capacity(wings.len() + 1);
+        chain.extend(wings.iter().map(|(_, v)| *v));
+        chain.push(flank);
+        for pair in chain.windows(2) {
+            membranes.push(MembraneTriangle {
+                v0: body_pos,
+                v1: pair[0],
+                v2: pair[1],
+                id: 200 + tri_index,
+            });
+            tri_index += 1;
+        }
     }
 
     membranes
@@ -237,28 +237,66 @@ pub fn rasterize_skeleton_scaled(skeleton: &Skeleton, scale: usize) -> RasterRes
     let capsules = collect_capsules(skeleton, scale_f);
     let membranes = collect_wing_membranes(skeleton, scale_f);
 
-    // Phase 1: SDF capsule evaluation
+    // Phase 1: depth-aware SDF capsule evaluation.
+    //
+    // When every capsule shares depth 0 this reduces exactly to the old
+    // min-distance union. With differing depths it becomes a painter's
+    // composite: the frontmost capsule covering a pixel owns it, and a front
+    // capsule's border ring is stamped even over a deeper capsule's body —
+    // that interior seam is what makes a profile limb read as being *in front
+    // of* the torso rather than melted into it.
     for y in 0..h {
         for x in 0..w {
             let p = Vec2::new(x as f32 + 0.5, y as f32 + 0.5);
-            let mut min_dist = f32::MAX;
-            let mut closest_id = 0u8;
+
+            // Frontmost capsule whose interior (sdf <= 0) covers the pixel.
+            let mut inside_depth = i8::MIN;
+            let mut inside_id = 0u8;
+            let mut inside_dist = f32::MAX;
+            let mut any_inside = false;
+            // Frontmost capsule whose border band (0 < sdf <= BORDER) touches it.
+            let mut border_depth = i8::MIN;
+            let mut border_id = 0u8;
+            let mut border_dist = f32::MAX;
+            let mut any_border = false;
 
             for cap in &capsules {
                 let d = sdf_tapered_capsule(p, cap.a, cap.b, cap.r_a, cap.r_b);
-                if d < min_dist {
-                    min_dist = d;
-                    closest_id = cap.id;
+                if d <= 0.0 {
+                    any_inside = true;
+                    if cap.depth > inside_depth
+                        || (cap.depth == inside_depth && d < inside_dist)
+                    {
+                        inside_depth = cap.depth;
+                        inside_id = cap.id;
+                        inside_dist = d;
+                    }
+                } else if d <= BORDER_WIDTH {
+                    any_border = true;
+                    if cap.depth > border_depth
+                        || (cap.depth == border_depth && d < border_dist)
+                    {
+                        border_depth = cap.depth;
+                        border_id = cap.id;
+                        border_dist = d;
+                    }
                 }
             }
 
             let idx = y * w + x;
-            if min_dist <= 0.0 {
-                cells[idx] = CellKind::Body;
-                ids[idx] = closest_id;
-            } else if min_dist <= BORDER_WIDTH {
+            if any_inside {
+                // A strictly-in-front capsule's outline cuts a seam across the
+                // body it sits over.
+                if any_border && border_depth > inside_depth {
+                    cells[idx] = CellKind::Border;
+                    ids[idx] = border_id;
+                } else {
+                    cells[idx] = CellKind::Body;
+                    ids[idx] = inside_id;
+                }
+            } else if any_border {
                 cells[idx] = CellKind::Border;
-                ids[idx] = closest_id;
+                ids[idx] = border_id;
             }
         }
     }

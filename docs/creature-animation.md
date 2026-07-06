@@ -89,8 +89,42 @@ same-side leg (armL in phase with legR).
   ~55% of leg reach so the knees fold visibly. Wing flap: amplitude and
   phase delay grow toward the tip.
 - **Quadruped sleep**: lerp everything to a lying pose (belly at
-  `ground − 2.2`), but keep the head a distinct lump ~1.4px above the body
+  `ground − 2.2`), but keep the head a distinct lump ~3.6px above the body
   line or the silhouette collapses into a single mound.
+- **Serpentine tail-chase (waiting)**: wrap the body into a ring by placing
+  each point at cumulative arc length around a circle (`ang = spin − arc/r`,
+  `r = body_len / (2π·0.85)` leaving a chase gap), then spin the whole ring.
+  The bright head wedge circling the gap is what sells "chasing its tail".
+
+## Profile depth ordering
+
+The rasterizer is a min-distance capsule union with no notion of front/back —
+in a side view both arms and both legs collapse into the torso silhouette and
+vanish. `Limb.depth` fixes this: the phase-1 SDF pass in `outline.rs` is
+depth-aware. The frontmost capsule (max `depth`, ties broken by distance)
+whose interior covers a pixel owns it, and a strictly-in-front capsule's
+border band is stamped **even over** a deeper capsule's body — that interior
+seam is what makes a limb read as being in front of the torso.
+
+- `depth = 0` everywhere reduces exactly to the old union (no seams), so
+  front-view archetypes (winged, blob, serpentine) and front-view bipedal
+  states are unaffected.
+- Bipedal *working* and all quadruped states set near limbs `+1`, far limbs
+  `−1` (far ones also drawn ~0.8× width). Near limbs draw in front with a
+  seam; far limbs are occluded behind the body.
+- Depth is written per-tick by the driver and reset to the rest value (0) in
+  `set_state`, so it never leaks into a front-view state.
+
+## Wing membranes are filled panels
+
+A wing is not just its bones. `collect_wing_membranes` fans triangles from the
+body over the wing chain (the leading edge) **and closes on a flank vertex**
+low on the body's side, so the fill spans the whole area beneath the struts.
+Without the flank the membrane is a thin sliver along the bones and reads as a
+stick. The membrane is rebuilt from live point positions each raster, so it
+flaps with the bones for free.
+
+## Two-bone IK bend direction
 
 `solve_two_bone_ik_dir(..., bend_dir)`: with y-down and target below anchor,
 `bend_dir = +1` puts the joint toward +x, `−1` toward −x. Front view: left

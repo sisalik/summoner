@@ -14,10 +14,6 @@ pub(super) struct SnakeStyle {
     freq: f32,       // wave passes per second
     wavelength: f32, // waves along the body
     amp: f32,        // peak amplitude at the tail
-    // Waiting: periscope.
-    bend: f32,       // total neck curl at the head, radians
-    scan_freq: f32,  // side-to-side scanning
-    scan_amp: f32,   // scanning angle, radians
     // Idle.
     drift: f32,      // lazy S amplitude
     flick: f32,      // ~35%: quick head-flick quirk, else 0
@@ -36,9 +32,6 @@ impl SnakeStyle {
             freq: pick(0.7, 1.4),
             wavelength: pick(1.2, 1.9),
             amp: pick(1.2, 2.0),
-            bend: pick(0.7, 1.2),
-            scan_freq: pick(0.14, 0.28),
-            scan_amp: pick(0.25, 0.5),
             drift: pick(0.4, 0.9),
             flick: if pick(0.0, 1.0) < 0.35 { pick(0.8, 1.4) } else { 0.0 },
             breath_freq: pick(0.15, 0.3),
@@ -75,40 +68,49 @@ impl LocomotionState {
         self.clamp_to_bounds();
     }
 
-    /// Periscope: the front of the chain curls up off the ground segment by
-    /// segment (exact segment lengths — no stretch) and the raised head
-    /// sways side to side, scanning. The rest of the body keeps a faint
-    /// wave so it doesn't die.
+    /// Chasing its own tail: the body wraps into a ring (each point placed by
+    /// exact segment arc length so nothing stretches) with a small gap where
+    /// the head reaches after the tail, and the whole ring spins. Eases out of
+    /// the rest line into the loop.
     pub(super) fn drive_waiting_serpentine(&mut self) {
-        use std::f32::consts::{PI, TAU};
-        let s = self.snake;
+        use std::f32::consts::TAU;
         let t = self.elapsed;
         let n = self.skeleton.points.len();
-        if n < 5 {
+        if n < 4 {
             return;
         }
-        let k = ease(t / 1.2);
 
-        // Body behind the neck: gentle settled wave.
-        for i in 3..n {
-            let u = i as f32 / (n - 1) as f32;
+        // Total body length → ring radius, leaving ~15% of the circumference
+        // as the chase gap. Clamp so the loop stays on-canvas.
+        let seg_len: Vec<f32> = (0..n - 1)
+            .map(|i| (self.rest_positions[i] - self.rest_positions[i + 1]).length())
+            .collect();
+        let body_len: f32 = seg_len.iter().sum();
+        let radius = (body_len / (TAU * 0.85)).clamp(2.5, 6.5);
+        let center = Vec2::new(9.0, 12.0);
+
+        // Spin accelerates from a standstill into an eager chase.
+        let k = ease(t / 1.0);
+        let spin = TAU * (0.25 + 0.35 * k) * t;
+
+        // Head leads at the spin angle; each following point trails by its arc
+        // length along the ring. The head lunges inward slightly, snapping at
+        // the tail just out of reach.
+        let mut arc = 0.0f32;
+        for i in 0..n {
+            if i > 0 {
+                arc += seg_len[i - 1];
+            }
+            let ang = spin - arc / radius;
+            let mut r = radius;
+            if i == 0 {
+                r += 0.6 * (TAU * 2.0 * t).sin(); // head bobs in and out, snapping
+            }
+            let ring = Vec2::new(center.x + ang.cos() * r, center.y + ang.sin() * r);
+            // Ease from the resting line pose into the ring.
             let rest = self.rest_positions[i];
-            let wave = 0.4 * (TAU * 0.22 * t - u * TAU).sin();
-            self.put_point(i, Vec2::new(rest.x, rest.y + wave * (0.3 + 0.7 * u)));
-        }
-
-        // Raise head + first two segments as a rigid-length chain from point
-        // 3, curling from horizontal toward vertical; scanning adds a slow
-        // angle sway shared down the neck (snake-charmer style).
-        let scan = s.scan_amp * (TAU * s.scan_freq * t).sin() * k;
-        let base = self.skeleton.points[3].pos;
-        let mut pos = base;
-        for (step, i) in [2usize, 1, 0].iter().enumerate().map(|(j, &i)| (j + 1, i)) {
-            let seg_len = (self.rest_positions[i] - self.rest_positions[i + 1]).length();
-            let curl = k * s.bend * (step as f32 / 3.0) + scan * (step as f32 / 3.0);
-            let ang = PI + curl; // PI = flat toward -x; +curl lifts (y-down)
-            pos = pos + Vec2::new(ang.cos() * seg_len, ang.sin() * seg_len);
-            self.put_point(i, pos);
+            self.put_point(i, Vec2::new(lerp(rest.x, ring.x, k), lerp(rest.y, ring.y, k)));
+            self.skeleton.points[i].width = self.base_widths[i];
         }
 
         self.clamp_to_bounds();

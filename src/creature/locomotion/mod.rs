@@ -58,6 +58,7 @@ pub struct LocomotionState {
     rest_effectors: Vec<Vec2>,
     rest_bend_dirs: Vec<f32>,
     rest_limb_widths: Vec<(f32, f32)>,
+    rest_depths: Vec<i8>,
     gait: GaitStyle,
     idle: IdleStyle,
     quad: QuadStyle,
@@ -78,6 +79,7 @@ impl LocomotionState {
         let rest_bend_dirs: Vec<f32> = skeleton.limbs.iter().map(|l| l.bend_dir).collect();
         let rest_limb_widths: Vec<(f32, f32)> =
             skeleton.limbs.iter().map(|l| (l.upper_width, l.lower_width)).collect();
+        let rest_depths: Vec<i8> = skeleton.limbs.iter().map(|l| l.depth).collect();
         let gait = GaitStyle::from_skeleton(&skeleton);
         let idle = IdleStyle::from_skeleton(&skeleton);
         let quad = QuadStyle::from_skeleton(&skeleton);
@@ -87,7 +89,7 @@ impl LocomotionState {
         let archetype = detect_archetype(&skeleton);
         let mut ls = Self {
             skeleton, base_widths, rest_positions, rest_effectors,
-            rest_bend_dirs, rest_limb_widths, gait, idle,
+            rest_bend_dirs, rest_limb_widths, rest_depths, gait, idle,
             quad, wing, blob, snake,
             state, elapsed: 0.0, archetype, settled: false,
         };
@@ -116,6 +118,7 @@ impl LocomotionState {
             limb.bend_dir = self.rest_bend_dirs[i];
             limb.upper_width = self.rest_limb_widths[i].0;
             limb.lower_width = self.rest_limb_widths[i].1;
+            limb.depth = self.rest_depths[i];
         }
         if state == SessionState::Disconnected {
             self.settle_disconnected();

@@ -231,8 +231,14 @@ impl LocomotionState {
             limb.bend_dir = -1.0;
         }
 
-        // Far-side limbs (right: 1, 3) drawn slimmer for a depth read.
+        // Depth read: the near-side arm and leg (left, 0 and 2) draw in front
+        // of the torso with a seam; the far-side pair (right, 1 and 3) is
+        // drawn slimmer and occluded behind it.
+        for li in [0usize, 2] {
+            self.skeleton.limbs[li].depth = 1;
+        }
         for li in [1usize, 3] {
+            self.skeleton.limbs[li].depth = -1;
             self.skeleton.limbs[li].upper_width = self.rest_limb_widths[li].0 * 0.85;
             self.skeleton.limbs[li].lower_width = self.rest_limb_widths[li].1 * 0.85;
         }

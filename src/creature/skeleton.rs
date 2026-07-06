@@ -135,6 +135,11 @@ pub struct Limb {
     /// Which side the IK joint (knee/elbow) bends toward: with y-down and the
     /// target below the anchor, +1.0 bends toward +x, -1.0 toward -x.
     pub bend_dir: f32,
+    /// Draw depth for profile views: >0 renders in front of the torso (with a
+    /// seam), <0 behind it (occluded), 0 unions seamlessly (the default). Only
+    /// the side-on archetypes (bipedal, quadruped) set this; front views leave
+    /// it 0. See docs/creature-animation.md.
+    pub depth: i8,
 }
 
 #[derive(Debug, Clone)]
@@ -167,8 +172,8 @@ impl Skeleton {
         let head_neck = Self::vary(rng, 1.2, 0.3);    // short neck
         let neck_upper = Self::vary(rng, 1.6, 0.4);   // shoulders sit high, just under the head
         let upper_lower = Self::vary(rng, 5.7, 1.0);  // torso; hips land ~y10.5 leaving room for legs
-        let head_w = Self::vary(rng, 4.0, 1.6);
-        let neck_w = Self::vary(rng, 2.5, 1.0);
+        let head_w = Self::vary(rng, 4.2, 1.4);
+        let neck_w = Self::vary(rng, 1.7, 0.4);       // clearly thinner than head and torso
         let upper_w = Self::vary(rng, 7.0, 2.0);      // wider shoulders
         let lower_w = Self::vary(rng, 5.0, 2.0);
         let head_y = 2.0;
@@ -178,7 +183,7 @@ impl Skeleton {
 
         let points = vec![
             ChainPoint { name: "head",       pos: Vec2::new(cx, head_y),  prev_pos: Vec2::new(cx, head_y),  width: head_w.max(2.0),  pinned: false },
-            ChainPoint { name: "neck",       pos: Vec2::new(cx, neck_y),  prev_pos: Vec2::new(cx, neck_y),  width: neck_w.max(1.5),  pinned: false },
+            ChainPoint { name: "neck",       pos: Vec2::new(cx, neck_y),  prev_pos: Vec2::new(cx, neck_y),  width: neck_w.max(1.2),  pinned: false },
             ChainPoint { name: "upper_body", pos: Vec2::new(cx, upper_y), prev_pos: Vec2::new(cx, upper_y), width: upper_w.max(3.0), pinned: false },
             ChainPoint { name: "lower_body", pos: Vec2::new(cx, lower_y), prev_pos: Vec2::new(cx, lower_y), width: lower_w.max(2.5), pinned: false },
             ChainPoint { name: "hip_l",      pos: Vec2::new(cx - 2.0, lower_y), prev_pos: Vec2::new(cx - 2.0, lower_y), width: 1.0, pinned: false },
@@ -205,10 +210,10 @@ impl Skeleton {
         let foot_y = (lower_y + leg_upper + leg_lower).min(22.5);
         let hand_y = upper_y + arm_upper + arm_lower * 0.6;
         let limbs = vec![
-            Limb { anchor: 2, upper_len: arm_upper, lower_len: arm_lower, upper_width: arm_width_upper, lower_width: arm_width_lower, end_effector: Vec2::new(cx - 4.0, hand_y), side: Side::Left, bend_dir: -1.0 },
-            Limb { anchor: 2, upper_len: arm_upper, lower_len: arm_lower, upper_width: arm_width_upper, lower_width: arm_width_lower, end_effector: Vec2::new(cx + 4.0, hand_y), side: Side::Right, bend_dir: 1.0 },
-            Limb { anchor: 4, upper_len: leg_upper, lower_len: leg_lower, upper_width: leg_width_upper, lower_width: leg_width_lower, end_effector: Vec2::new(cx - 2.5, foot_y), side: Side::Left, bend_dir: -1.0 },
-            Limb { anchor: 5, upper_len: leg_upper, lower_len: leg_lower, upper_width: leg_width_upper, lower_width: leg_width_lower, end_effector: Vec2::new(cx + 2.5, foot_y), side: Side::Right, bend_dir: 1.0 },
+            Limb { anchor: 2, upper_len: arm_upper, lower_len: arm_lower, upper_width: arm_width_upper, lower_width: arm_width_lower, end_effector: Vec2::new(cx - 4.0, hand_y), side: Side::Left, bend_dir: -1.0, depth: 0 },
+            Limb { anchor: 2, upper_len: arm_upper, lower_len: arm_lower, upper_width: arm_width_upper, lower_width: arm_width_lower, end_effector: Vec2::new(cx + 4.0, hand_y), side: Side::Right, bend_dir: 1.0, depth: 0 },
+            Limb { anchor: 4, upper_len: leg_upper, lower_len: leg_lower, upper_width: leg_width_upper, lower_width: leg_width_lower, end_effector: Vec2::new(cx - 2.5, foot_y), side: Side::Left, bend_dir: -1.0, depth: 0 },
+            Limb { anchor: 5, upper_len: leg_upper, lower_len: leg_lower, upper_width: leg_width_upper, lower_width: leg_width_lower, end_effector: Vec2::new(cx + 2.5, foot_y), side: Side::Right, bend_dir: 1.0, depth: 0 },
         ];
         Self { points, constraints, limbs }
     }
@@ -216,24 +221,24 @@ impl Skeleton {
     /// Profile view facing -x: raised head on a diagonal neck, level spine,
     /// perky up-curved tail, two-bone legs under each girdle.
     fn build_quadruped(rng: &mut Xorshift) -> Self {
-        let cy = Self::vary(rng, 12.0, 0.8);
+        let cy = Self::vary(rng, 11.5, 0.8);
         let head_lift = Self::vary(rng, 4.2, 1.0);   // head height above the spine
         let neck_lift = Self::vary(rng, 2.0, 0.5);
-        let front_rear = Self::vary(rng, 5.5, 1.2);  // spine length
+        let front_rear = Self::vary(rng, 6.6, 1.0);  // spine length (long-backed)
         let head_w = Self::vary(rng, 3.4, 1.2);
-        let neck_w = Self::vary(rng, 2.6, 0.9);
+        let neck_w = Self::vary(rng, 1.8, 0.4);       // clearly thinner than head and torso
         let front_w = Self::vary(rng, 5.0, 1.6);
         let rear_w = Self::vary(rng, 4.6, 1.6);
-        let head_x = 3.0;
-        let neck_x = 4.6;
-        let front_x = 6.4;
-        let rear_x = (front_x + front_rear).min(13.5);
+        let head_x = 2.6;
+        let neck_x = 4.2;
+        let front_x = 6.0;
+        let rear_x = (front_x + front_rear).min(14.2);
         let tail_lift = Self::vary(rng, 1.2, 0.5);
 
         let p = |x: f32, y: f32| Vec2::new(x.clamp(0.0, 17.0), y.clamp(0.0, 23.0));
         let positions = [
             ("head",       p(head_x, cy - head_lift), head_w.max(2.0)),
-            ("neck",       p(neck_x, cy - neck_lift), neck_w.max(1.8)),
+            ("neck",       p(neck_x, cy - neck_lift), neck_w.max(1.4)),
             ("front_body", p(front_x, cy),            front_w.max(3.0)),
             ("rear_body",  p(rear_x, cy),             rear_w.max(2.5)),
             ("tail_1",     p(rear_x + 1.6, cy - tail_lift),       1.6),
@@ -257,17 +262,19 @@ impl Skeleton {
         let leg_width_upper = Self::vary(rng, 1.3, 0.3).max(0.8);
         let leg_width_lower = Self::vary(rng, 1.0, 0.2).max(0.6);
         let foot_y = (cy + leg_upper + leg_lower).min(22.5);
-        // Facing -x: front knees bend backward (+x), rear stifles forward (-x).
+        // Facing -x: front elbows tuck back toward the body (+x), rear hocks
+        // kick back toward the tail as well (+x) — both joints point rearward,
+        // the natural dog stance.
         let leg = |anchor: usize, x: f32, side: Side, bend_dir: f32| Limb {
             anchor, upper_len: leg_upper, lower_len: leg_lower,
             upper_width: leg_width_upper, lower_width: leg_width_lower,
-            end_effector: Vec2::new(x, foot_y), side, bend_dir,
+            end_effector: Vec2::new(x, foot_y), side, bend_dir, depth: 0,
         };
         let limbs = vec![
             leg(2, front_x - 0.8, Side::Left, 1.0),
             leg(2, front_x + 0.8, Side::Right, 1.0),
-            leg(3, rear_x - 0.8, Side::Left, -1.0),
-            leg(3, rear_x + 0.8, Side::Right, -1.0),
+            leg(3, rear_x - 0.8, Side::Left, 1.0),
+            leg(3, rear_x + 0.8, Side::Right, 1.0),
         ];
         Self { points, constraints, limbs }
     }
@@ -303,25 +310,27 @@ impl Skeleton {
         let cx = 9.0;
         let head_neck = Self::vary(rng, 2.2, 0.6);
         let neck_body = Self::vary(rng, 4.2, 1.0);
-        let head_w = Self::vary(rng, 3.5, 1.4);
-        let neck_w = Self::vary(rng, 2.5, 1.0);
+        let head_w = Self::vary(rng, 3.7, 1.2);
+        let neck_w = Self::vary(rng, 1.6, 0.4);       // clearly thinner than head and body
         let body_w = Self::vary(rng, 5.5, 2.2);
         let head_y = 4.0;
         let neck_y = head_y + head_neck;
         let body_y = neck_y + neck_body;
-        let wing_seg = Self::vary(rng, 2.6, 0.6);
+        let wing_seg = Self::vary(rng, 2.7, 0.5);
 
         let p = |x: f32, y: f32| Vec2::new(x.clamp(0.5, 17.0), y.clamp(1.0, 23.0));
+        // Wing bones sweep up and out to a high shoulder, then the tip drops
+        // low and wide — the membrane fill (see outline.rs) spans beneath.
         let positions = [
             ("head",    p(cx, head_y), head_w.max(2.0)),
-            ("neck",    p(cx, neck_y), neck_w.max(1.5)),
+            ("neck",    p(cx, neck_y), neck_w.max(1.2)),
             ("body",    p(cx, body_y), body_w.max(3.0)),
-            ("lwing_1", p(cx - wing_seg, body_y - 1.2),        1.5),
-            ("lwing_2", p(cx - wing_seg * 1.9, body_y - 2.6),  1.0),
-            ("lwing_3", p(cx - wing_seg * 2.6, body_y - 3.8),  0.5),
-            ("rwing_1", p(cx + wing_seg, body_y - 1.2),        1.5),
-            ("rwing_2", p(cx + wing_seg * 1.9, body_y - 2.6),  1.0),
-            ("rwing_3", p(cx + wing_seg * 2.6, body_y - 3.8),  0.5),
+            ("lwing_1", p(cx - wing_seg * 0.9, body_y - 2.2),  1.4),
+            ("lwing_2", p(cx - wing_seg * 2.0, body_y - 2.8),  0.9),
+            ("lwing_3", p(cx - wing_seg * 2.9, body_y - 0.6),  0.5),
+            ("rwing_1", p(cx + wing_seg * 0.9, body_y - 2.2),  1.4),
+            ("rwing_2", p(cx + wing_seg * 2.0, body_y - 2.8),  0.9),
+            ("rwing_3", p(cx + wing_seg * 2.9, body_y - 0.6),  0.5),
         ];
         let points: Vec<ChainPoint> = positions.iter()
             .map(|(name, pos, w)| ChainPoint { name, pos: *pos, prev_pos: *pos, width: *w, pinned: false })
@@ -341,8 +350,8 @@ impl Skeleton {
         let leg_width_lower = Self::vary(rng, 1.0, 0.2).max(0.6);
         let foot_y = (body_y + leg_upper + leg_lower).min(22.5);
         let limbs = vec![
-            Limb { anchor: 2, upper_len: leg_upper, lower_len: leg_lower, upper_width: leg_width_upper, lower_width: leg_width_lower, end_effector: Vec2::new(cx - 1.8, foot_y), side: Side::Left, bend_dir: -1.0 },
-            Limb { anchor: 2, upper_len: leg_upper, lower_len: leg_lower, upper_width: leg_width_upper, lower_width: leg_width_lower, end_effector: Vec2::new(cx + 1.8, foot_y), side: Side::Right, bend_dir: 1.0 },
+            Limb { anchor: 2, upper_len: leg_upper, lower_len: leg_lower, upper_width: leg_width_upper, lower_width: leg_width_lower, end_effector: Vec2::new(cx - 1.8, foot_y), side: Side::Left, bend_dir: -1.0, depth: 0 },
+            Limb { anchor: 2, upper_len: leg_upper, lower_len: leg_lower, upper_width: leg_width_upper, lower_width: leg_width_lower, end_effector: Vec2::new(cx + 1.8, foot_y), side: Side::Right, bend_dir: 1.0, depth: 0 },
         ];
         Self { points, constraints, limbs }
     }
