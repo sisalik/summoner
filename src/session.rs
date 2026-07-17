@@ -124,6 +124,9 @@ pub struct SessionStats {
     pub jsonl_path: Option<std::path::PathBuf>,
     pub last_activity: std::time::Instant,
     pub prev_hook_state: Option<SessionState>,
+    /// When the user last pressed Escape while Working; compared against the
+    /// hook state file's mtime, hence SystemTime rather than Instant
+    pub esc_interrupt: Option<std::time::SystemTime>,
 }
 
 impl Default for SessionStats {
@@ -143,6 +146,7 @@ impl SessionStats {
             jsonl_path: None,
             last_activity: std::time::Instant::now(),
             prev_hook_state: None,
+            esc_interrupt: None,
         }
     }
 }

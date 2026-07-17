@@ -25,6 +25,13 @@ use crate::ui::status_bar::StatusBar;
 
 const SCROLLBACK_LEN: usize = 1000;
 
+/// How long a session must sit idle before its creature falls asleep.
+const SLEEP_AFTER_IDLE: Duration = Duration::from_secs(30 * 60);
+
+/// How long to wait after an Escape interrupt for a hook event before assuming
+/// Claude stopped without reporting it.
+const ESC_INTERRUPT_GRACE: Duration = Duration::from_secs(5);
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Mode {
     Dashboard,
@@ -437,11 +444,24 @@ impl App {
             // Primary: use Claude Code hooks for state detection
             // Detect Claude state via hooks (primary) or process check (fallback)
             let shell_pid = pty.pid();
-            let (hook_state, hook_session_id, hook_tool) = shell_pid
+            let (mut hook_state, hook_session_id, hook_tool) = shell_pid
                 .map(|pid| hooks::read_hook_state(&self.config_dir, pid))
                 .unwrap_or((None, None, None));
 
+            // Claude Code doesn't always report a Stop when the user interrupts, which
+            // would otherwise pin the session to Working forever
             if i < self.session_stats.len() {
+                if hook_state != Some(SessionState::Working) {
+                    self.session_stats[i].esc_interrupt = None;
+                } else if let Some(esc_at) = self.session_stats[i].esc_interrupt {
+                    let mtime = shell_pid.and_then(|pid| hooks::state_file_mtime(&self.config_dir, pid));
+                    if downgraded_after_esc(esc_at, mtime, std::time::SystemTime::now()) {
+                        hook_state = Some(SessionState::Idle);
+                    } else if mtime.is_some_and(|m| m > esc_at) {
+                        self.session_stats[i].esc_interrupt = None;
+                    }
+                }
+
                 self.session_stats[i].active_tool = hook_tool;
                 if hook_state.is_some() && hook_state != self.session_stats[i].prev_hook_state {
                     self.session_stats[i].last_activity = Instant::now();
@@ -464,10 +484,9 @@ impl App {
             let new_state = if shell_pid.is_some_and(is_claude_stopped) {
                 SessionState::Sleeping
             } else if let Some(state) = hook_state {
-                // If hook says idle but no activity for 30min, show as sleeping
                 if state == SessionState::Idle
                     && i < self.session_stats.len()
-                    && self.session_stats[i].last_activity.elapsed() >= Duration::from_secs(30 * 60)
+                    && self.session_stats[i].last_activity.elapsed() >= SLEEP_AFTER_IDLE
                 {
                     SessionState::Sleeping
                 } else {
@@ -907,11 +926,21 @@ impl App {
             return Ok(());
         }
         self.selection = None;
-        if idx < self.vt_parsers.len() && self.vt_parsers[idx].screen().scrollback() > 0 {
-            self.vt_parsers[idx].screen_mut().set_scrollback(0);
+        let mut app_cursor = false;
+        if idx < self.vt_parsers.len() {
+            if self.vt_parsers[idx].screen().scrollback() > 0 {
+                self.vt_parsers[idx].screen_mut().set_scrollback(0);
+            }
+            app_cursor = self.vt_parsers[idx].screen().application_cursor();
+        }
+        if key.code == KeyCode::Esc
+            && idx < self.session_stats.len()
+            && self.sessions[idx].state == SessionState::Working
+        {
+            self.session_stats[idx].esc_interrupt = Some(std::time::SystemTime::now());
         }
         if let Some(ref pty) = self.pty_sessions[idx] {
-            let bytes = key_to_bytes(key);
+            let bytes = key_to_bytes(key, app_cursor);
             if !bytes.is_empty() {
                 let _ = pty.write(&bytes);
             }
@@ -1186,7 +1215,22 @@ fn render_resume_dialog(frame: &mut ratatui::Frame, area: Rect, session: &Sessio
 
 use ratatui::widgets::Widget;
 
-fn key_to_bytes(key: KeyEvent) -> Vec<u8> {
+/// Whether a Working session should drop to Idle after an Escape interrupt:
+/// the grace period has passed with no hook event recorded since the keypress.
+fn downgraded_after_esc(
+    esc_at: std::time::SystemTime,
+    file_mtime: Option<std::time::SystemTime>,
+    now: std::time::SystemTime,
+) -> bool {
+    if file_mtime.is_some_and(|m| m > esc_at) {
+        return false;
+    }
+    now.duration_since(esc_at)
+        .map(|elapsed| elapsed >= ESC_INTERRUPT_GRACE)
+        .unwrap_or(false)
+}
+
+fn key_to_bytes(key: KeyEvent, app_cursor: bool) -> Vec<u8> {
     let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
     let alt = key.modifiers.contains(KeyModifiers::ALT);
     let shift = key.modifiers.contains(KeyModifiers::SHIFT);
@@ -1224,13 +1268,12 @@ fn key_to_bytes(key: KeyEvent) -> Vec<u8> {
         KeyCode::Tab => vec![b'\t'],
         KeyCode::BackTab => b"\x1b[Z".to_vec(),
         KeyCode::Esc => vec![0x1b],
-        // Cursor keys: unmodified ESC[X, modified ESC[1;<mod>X
-        KeyCode::Up    => csi_final(b'A', xterm_mod, has_mod),
-        KeyCode::Down  => csi_final(b'B', xterm_mod, has_mod),
-        KeyCode::Right => csi_final(b'C', xterm_mod, has_mod),
-        KeyCode::Left  => csi_final(b'D', xterm_mod, has_mod),
-        KeyCode::Home  => csi_final(b'H', xterm_mod, has_mod),
-        KeyCode::End   => csi_final(b'F', xterm_mod, has_mod),
+        KeyCode::Up    => cursor_key(b'A', xterm_mod, has_mod, app_cursor),
+        KeyCode::Down  => cursor_key(b'B', xterm_mod, has_mod, app_cursor),
+        KeyCode::Right => cursor_key(b'C', xterm_mod, has_mod, app_cursor),
+        KeyCode::Left  => cursor_key(b'D', xterm_mod, has_mod, app_cursor),
+        KeyCode::Home  => cursor_key(b'H', xterm_mod, has_mod, app_cursor),
+        KeyCode::End   => cursor_key(b'F', xterm_mod, has_mod, app_cursor),
         // Tilde keys: unmodified ESC[<n>~, modified ESC[<n>;<mod>~
         KeyCode::PageUp   => csi_tilde(5, xterm_mod, has_mod),
         KeyCode::PageDown => csi_tilde(6, xterm_mod, has_mod),
@@ -1239,6 +1282,16 @@ fn key_to_bytes(key: KeyEvent) -> Vec<u8> {
         // F-keys: F1-4 use SS3 unmodified / CSI 1;<mod> modified; F5+ use tilde form
         KeyCode::F(n) => f_key_bytes(n, xterm_mod, has_mod),
         _ => vec![],
+    }
+}
+
+/// Cursor key: SS3 (ESC O X) in application cursor mode, CSI otherwise.
+/// Modified keys always use CSI, matching xterm.
+fn cursor_key(letter: u8, xterm_mod: u8, has_mod: bool, app_cursor: bool) -> Vec<u8> {
+    if app_cursor && !has_mod {
+        vec![0x1b, b'O', letter]
+    } else {
+        csi_final(letter, xterm_mod, has_mod)
     }
 }
 
@@ -1600,5 +1653,71 @@ pub fn run(terminal: &mut DefaultTerminal) -> Result<()> {
         if matches!(app.mode, Mode::Dashboard | Mode::DirPicker) {
             app.tick_animations(dt);
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::time::SystemTime;
+
+    fn key(code: KeyCode) -> KeyEvent {
+        KeyEvent::new(code, KeyModifiers::NONE)
+    }
+
+    #[test]
+    fn cursor_keys_use_csi_in_normal_mode() {
+        assert_eq!(key_to_bytes(key(KeyCode::Up), false), b"\x1b[A");
+        assert_eq!(key_to_bytes(key(KeyCode::Down), false), b"\x1b[B");
+        assert_eq!(key_to_bytes(key(KeyCode::Right), false), b"\x1b[C");
+        assert_eq!(key_to_bytes(key(KeyCode::Left), false), b"\x1b[D");
+        assert_eq!(key_to_bytes(key(KeyCode::Home), false), b"\x1b[H");
+        assert_eq!(key_to_bytes(key(KeyCode::End), false), b"\x1b[F");
+    }
+
+    #[test]
+    fn cursor_keys_use_ss3_in_application_mode() {
+        assert_eq!(key_to_bytes(key(KeyCode::Up), true), b"\x1bOA");
+        assert_eq!(key_to_bytes(key(KeyCode::Down), true), b"\x1bOB");
+        assert_eq!(key_to_bytes(key(KeyCode::Right), true), b"\x1bOC");
+        assert_eq!(key_to_bytes(key(KeyCode::Left), true), b"\x1bOD");
+        assert_eq!(key_to_bytes(key(KeyCode::Home), true), b"\x1bOH");
+        assert_eq!(key_to_bytes(key(KeyCode::End), true), b"\x1bOF");
+    }
+
+    #[test]
+    fn modified_cursor_keys_stay_csi_in_both_modes() {
+        let ctrl_up = KeyEvent::new(KeyCode::Up, KeyModifiers::CONTROL);
+        assert_eq!(key_to_bytes(ctrl_up, false), b"\x1b[1;5A");
+        assert_eq!(key_to_bytes(ctrl_up, true), b"\x1b[1;5A");
+    }
+
+    #[test]
+    fn non_cursor_keys_ignore_application_mode() {
+        assert_eq!(key_to_bytes(key(KeyCode::PageUp), true), b"\x1b[5~");
+        assert_eq!(key_to_bytes(key(KeyCode::Esc), true), vec![0x1b]);
+    }
+
+    #[test]
+    fn esc_downgrade_waits_for_grace_period() {
+        let now = SystemTime::now();
+        let esc_at = now - ESC_INTERRUPT_GRACE / 2;
+        assert!(!downgraded_after_esc(esc_at, None, now));
+    }
+
+    #[test]
+    fn esc_downgrade_fires_once_grace_period_elapsed() {
+        let now = SystemTime::now();
+        let esc_at = now - ESC_INTERRUPT_GRACE - Duration::from_secs(1);
+        assert!(downgraded_after_esc(esc_at, None, now));
+        assert!(downgraded_after_esc(esc_at, Some(esc_at - Duration::from_secs(10)), now));
+    }
+
+    #[test]
+    fn hook_event_after_esc_cancels_downgrade() {
+        let now = SystemTime::now();
+        let esc_at = now - ESC_INTERRUPT_GRACE - Duration::from_secs(1);
+        let mtime = esc_at + Duration::from_secs(1);
+        assert!(!downgraded_after_esc(esc_at, Some(mtime), now));
     }
 }

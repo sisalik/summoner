@@ -1,5 +1,6 @@
 use std::fs;
 use std::path::{Path, PathBuf};
+use std::time::SystemTime;
 
 use crate::session::SessionState;
 
@@ -18,11 +19,22 @@ sid=$(extract session_id)
 tool=$(extract tool_name)
 notif_type=$(extract notification_type)
 agent_id=$(extract agent_id)
+trigger=$(extract trigger)
 
-# For Notification events, pass notification_type as third field instead of tool
+# Notifications that don't change session state would otherwise clobber the last
+# meaningful event (idle_prompt fires periodically and would hide Stop)
+if [ "$event" = "Notification" ]; then
+    case "$notif_type" in
+        permission_prompt|agent_needs_input|elicitation_dialog) ;;
+        *) exit 0 ;;
+    esac
+fi
+
+# Third field carries the event-specific payload
 extra="$tool"
 [ "$event" = "Notification" ] && extra="$notif_type"
 [ "$event" = "SubagentStart" ] || [ "$event" = "SubagentStop" ] && extra="$agent_id"
+[ "$event" = "PreCompact" ] || [ "$event" = "PostCompact" ] && extra="$trigger"
 
 # Hook process tree: shell → claude → bash → this script
 # Walk up to find the shell PID
@@ -75,6 +87,8 @@ const HOOK_EVENTS: &[&str] = &[
     "PostToolUse",
     "SubagentStart",
     "SubagentStop",
+    "PreCompact",
+    "PostCompact",
 ];
 
 /// Install the hook script and configure ~/.claude/settings.json.
@@ -275,6 +289,13 @@ fn state_file_path(summoner_dir: &Path, shell_pid: u32) -> PathBuf {
     summoner_dir.join("claude-states").join(shell_pid.to_string())
 }
 
+/// Last time a hook event was recorded for a shell PID.
+pub fn state_file_mtime(summoner_dir: &Path, shell_pid: u32) -> Option<SystemTime> {
+    fs::metadata(state_file_path(summoner_dir, shell_pid))
+        .and_then(|m| m.modified())
+        .ok()
+}
+
 /// Count active subagents for a shell PID by counting marker files.
 fn active_subagent_count(summoner_dir: &Path, shell_pid: u32) -> usize {
     let agents_dir = summoner_dir.join("claude-states").join(format!("{}.agents", shell_pid));
@@ -299,24 +320,38 @@ pub fn read_hook_state(summoner_dir: &Path, shell_pid: u32) -> (Option<SessionSt
 
     let has_active_subagents = active_subagent_count(summoner_dir, shell_pid) > 0;
 
+    let idle_or_working = |has_active_subagents: bool| {
+        if has_active_subagents {
+            Some(SessionState::Working)
+        } else {
+            Some(SessionState::Idle)
+        }
+    };
+
     let state = match event {
         "UserPromptSubmit" => Some(SessionState::Working),
-        "Stop" | "SessionStart" => {
-            if has_active_subagents {
-                Some(SessionState::Working)
-            } else {
-                Some(SessionState::Idle)
-            }
-        }
-        "Notification" => {
-            if tool_name.as_deref() == Some("permission_prompt") {
+        "Stop" | "SessionStart" => idle_or_working(has_active_subagents),
+        "Notification" => match tool_name.as_deref() {
+            // agent_needs_input covers permission prompts bubbling up from subagents
+            Some("permission_prompt" | "agent_needs_input" | "elicitation_dialog") => {
                 Some(SessionState::Waiting)
-            } else {
-                None
             }
-        }
+            // A pre-whitelist hook script may still write these
+            Some("idle_prompt") => Some(SessionState::Idle),
+            _ => None,
+        },
         "PreToolUse" => Some(SessionState::Working),
         "PostToolUse" => Some(SessionState::Working),
+        // Auto-compaction happens mid-turn, so more events follow; manual /compact
+        // is issued from an idle prompt and returns there
+        "PreCompact" => Some(SessionState::Working),
+        "PostCompact" => {
+            if tool_name.as_deref() == Some("auto") {
+                Some(SessionState::Working)
+            } else {
+                idle_or_working(has_active_subagents)
+            }
+        }
         "SessionEnd" => {
             let _ = fs::remove_file(&state_file);
             return (None, None, None);
