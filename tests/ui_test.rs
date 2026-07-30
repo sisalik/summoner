@@ -60,3 +60,74 @@ fn status_bar_shows_f12_hint() {
         .collect();
     assert!(text.contains("F12"), "Should contain F12 dashboard hint");
 }
+
+#[test]
+fn session_view_underlines_detected_urls() {
+    use ratatui::layout::Position;
+    use ratatui::style::Modifier;
+    use summoner::ui::links;
+    use summoner::ui::session_view::TerminalView;
+
+    let mut p = vt100::Parser::new(4, 40, 100);
+    p.process(b"go https://example.com now");
+
+    let found = links::scan_screen(p.screen());
+    let area = Rect::new(0, 0, 40, 4);
+    let mut buf = Buffer::empty(area);
+    TerminalView::new(p.screen())
+        .with_links(Some(&found))
+        .render(area, &mut buf);
+
+    let underlined = |x: u16| {
+        buf[Position { x, y: 0 }]
+            .style()
+            .add_modifier
+            .contains(Modifier::UNDERLINED)
+    };
+    // "go " is not part of the link; the URL that follows is.
+    assert!(!underlined(0));
+    assert!(underlined(3));
+    assert!(underlined(21));
+    // The trailing " now" is outside the link.
+    assert!(!underlined(23));
+}
+
+#[test]
+fn session_view_highlights_only_the_copied_cells() {
+    use ratatui::layout::Position;
+    use ratatui::style::Modifier;
+    use summoner::ui::selection::{Selection, SelectionMode};
+    use summoner::ui::session_view::TerminalView;
+    use summoner::ui::smart;
+
+    let mut p = vt100::Parser::new(4, 40, 100);
+    p.process("⏺ Ran tool".as_bytes());
+
+    let sel = Selection {
+        anchor: (0, 0),
+        moving: (0, 39),
+        dragged: true,
+        mode: SelectionMode::Smart,
+    };
+    let spans = smart::compute_spans(p.screen(), &sel);
+    let area = Rect::new(0, 0, 40, 4);
+    let mut buf = Buffer::empty(area);
+    TerminalView::new(p.screen())
+        .with_selection(Some(&spans))
+        .render(area, &mut buf);
+
+    let reversed = |x: u16| {
+        buf[Position { x, y: 0 }]
+            .style()
+            .add_modifier
+            .contains(Modifier::REVERSED)
+    };
+    // The gutter marker and its space are stripped, so they stay unhighlighted.
+    assert!(!reversed(0));
+    assert!(!reversed(1));
+    assert!(reversed(2));
+    assert!(reversed(9));
+    // Trailing blanks are not copied, so they are not highlighted either
+    // (column 10 holds the cursor, which is reversed for its own reasons).
+    assert!(!reversed(11));
+}

@@ -183,11 +183,11 @@ impl LocomotionState {
             0.0
         };
 
-        for i in 0..n {
+        for (i, target) in targets.iter().enumerate().take(n) {
             let rest = self.rest_positions[i];
             let mut pos = Vec2::new(
-                lerp(rest.x, targets[i].x, k),
-                lerp(rest.y, targets[i].y, k) + breath * 0.15 * k,
+                lerp(rest.x, target.x, k),
+                lerp(rest.y, target.y, k) + breath * 0.15 * k,
             );
             if i == n - 1 {
                 pos.y -= twitch;

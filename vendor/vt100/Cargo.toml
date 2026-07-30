@@ -1,0 +1,20 @@
+[package]
+name = "vt100"
+version = "0.16.2"
+edition = "2021"
+rust-version = "1.70"
+authors = ["Jesse Luehrs <doy@tozt.net>"]
+description = "Library for parsing terminal data (vendored for summoner, see README)"
+homepage = "https://github.com/doy/vt100-rust"
+repository = "https://github.com/doy/vt100-rust"
+license = "MIT"
+readme = "README.md"
+
+[lib]
+name = "vt100"
+path = "src/lib.rs"
+
+[dependencies]
+itoa = "1.0.15"
+unicode-width = "0.2.1"
+vte = "0.15.0"

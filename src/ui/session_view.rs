@@ -3,20 +3,32 @@ use ratatui::layout::{Position, Rect};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::widgets::Widget;
 
-use super::selection::Selection;
+use super::links::Links;
+use super::selection::viewport_top;
+use super::smart::SpanSet;
+
+/// Colour for detected URLs (bright blue).
+const LINK_COLOR: Color = Color::Indexed(12);
 
 pub struct TerminalView<'a> {
     screen: &'a vt100::Screen,
-    selection: Option<&'a Selection>,
+    selection: Option<&'a SpanSet>,
+    links: Option<&'a Links>,
 }
 
 impl<'a> TerminalView<'a> {
     pub fn new(screen: &'a vt100::Screen) -> Self {
-        Self { screen, selection: None }
+        Self { screen, selection: None, links: None }
     }
 
-    pub fn with_selection(mut self, selection: Option<&'a Selection>) -> Self {
+    /// Highlight exactly the cells a selection would copy.
+    pub fn with_selection(mut self, selection: Option<&'a SpanSet>) -> Self {
         self.selection = selection;
+        self
+    }
+
+    pub fn with_links(mut self, links: Option<&'a Links>) -> Self {
+        self.links = links;
         self
     }
 }
@@ -24,7 +36,7 @@ impl<'a> TerminalView<'a> {
 impl<'a> Widget for TerminalView<'a> {
     fn render(self, area: Rect, buf: &mut Buffer) {
         let (vt_rows, vt_cols) = self.screen.size();
-        let scrollback = self.screen.scrollback();
+        let top = viewport_top(self.screen);
 
         for row in 0..area.height.min(vt_rows) {
             for col in 0..area.width.min(vt_cols) {
@@ -42,7 +54,15 @@ impl<'a> Widget for TerminalView<'a> {
                         let contents = vt_cell.contents();
                         buf_cell.set_symbol(if contents.is_empty() { " " } else { contents });
 
-                        let fg = convert_color(vt_cell.fgcolor());
+                        let stream_row = top + u64::from(row);
+                        let is_link = self.links
+                            .is_some_and(|links| links.contains(stream_row, col));
+
+                        let fg = if is_link {
+                            LINK_COLOR
+                        } else {
+                            convert_color(vt_cell.fgcolor())
+                        };
                         let bg = convert_color(vt_cell.bgcolor());
 
                         let mut modifiers = Modifier::empty();
@@ -55,16 +75,15 @@ impl<'a> Widget for TerminalView<'a> {
                         if vt_cell.italic() {
                             modifiers |= Modifier::ITALIC;
                         }
-                        if vt_cell.underline() {
+                        if vt_cell.underline() || is_link {
                             modifiers |= Modifier::UNDERLINED;
                         }
                         if vt_cell.inverse() {
                             modifiers |= Modifier::REVERSED;
                         }
 
-                        let abs_row = row as isize - scrollback as isize;
                         let selected = self.selection
-                            .is_some_and(|sel| sel.contains(abs_row, col));
+                            .is_some_and(|sel| sel.contains(stream_row, col));
                         if selected {
                             modifiers |= Modifier::REVERSED;
                         }

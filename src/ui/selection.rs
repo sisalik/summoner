@@ -1,27 +1,42 @@
 /// In-app text selection for PTY session views.
-/// Positions use an absolute coordinate system where:
-///   abs_row = viewport_row - scrollback_offset
-/// This keeps selection stable as the user scrolls — the same content
-/// always maps to the same abs_row regardless of current scrollback.
+///
+/// Positions use vt100 stream rows: the row drawn at viewport row `v` is
+/// `screen.scrolled_lines() - screen.scrollback() + v`. Because
+/// `scrolled_lines` counts every row that has ever scrolled off the top,
+/// a given piece of content keeps the same stream row forever — the
+/// selection stays glued to its text both while the user scrolls and while
+/// new output streams in underneath it.
+use ratatui::layout::Rect;
+
+/// How a selection turns screen cells into text.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SelectionMode {
+    /// Join soft-wrapped lines, strip Claude Code gutters, dedent.
+    Smart,
+    /// Copy the cells verbatim.
+    Raw,
+}
 
 #[derive(Debug, Clone)]
 pub struct Selection {
-    pub anchor: (isize, u16),
-    pub moving: (isize, u16),
+    pub anchor: (u64, u16),
+    pub moving: (u64, u16),
     pub dragged: bool,
+    pub mode: SelectionMode,
 }
 
 impl Selection {
-    pub fn new(abs_row: isize, col: u16) -> Self {
+    pub fn new(stream_row: u64, col: u16, mode: SelectionMode) -> Self {
         Self {
-            anchor: (abs_row, col),
-            moving: (abs_row, col),
+            anchor: (stream_row, col),
+            moving: (stream_row, col),
             dragged: false,
+            mode,
         }
     }
 
     /// Returns (start, end) in reading order.
-    pub fn normalised(&self) -> ((isize, u16), (isize, u16)) {
+    pub fn normalised(&self) -> ((u64, u16), (u64, u16)) {
         if self.anchor.0 < self.moving.0
             || (self.anchor.0 == self.moving.0 && self.anchor.1 <= self.moving.1)
         {
@@ -34,94 +49,58 @@ impl Selection {
     pub fn is_empty(&self) -> bool {
         self.anchor == self.moving
     }
-
-    /// Whether the cell at (abs_row, col) falls within the selection.
-    pub fn contains(&self, abs_row: isize, col: u16) -> bool {
-        if !self.dragged {
-            return false;
-        }
-        let ((sr, sc), (er, ec)) = self.normalised();
-        if abs_row < sr || abs_row > er {
-            return false;
-        }
-        if sr == er {
-            return col >= sc && col <= ec;
-        }
-        if abs_row == sr {
-            return col >= sc;
-        }
-        if abs_row == er {
-            return col <= ec;
-        }
-        true
-    }
 }
 
-/// Convert mouse terminal coordinates to absolute buffer position.
-pub fn mouse_to_abs(
+/// Convert mouse terminal coordinates to a stream-row position.
+pub fn mouse_to_stream(
     mouse_row: u16,
     mouse_col: u16,
-    area_y: u16,
-    area_x: u16,
-    area_height: u16,
-    area_width: u16,
-    scrollback: usize,
-) -> (isize, u16) {
-    let vrow = mouse_row.saturating_sub(area_y).min(area_height.saturating_sub(1));
-    let vcol = mouse_col.saturating_sub(area_x).min(area_width.saturating_sub(1));
-    (vrow as isize - scrollback as isize, vcol)
+    area: Rect,
+    screen: &vt100::Screen,
+) -> (u64, u16) {
+    let vrow = mouse_row
+        .saturating_sub(area.y)
+        .min(area.height.saturating_sub(1));
+    let vcol = mouse_col
+        .saturating_sub(area.x)
+        .min(area.width.saturating_sub(1));
+    (viewport_top(screen) + u64::from(vrow), vcol)
 }
 
-/// Extract selected text from a vt100 screen.
-/// Temporarily adjusts scrollback so the selection range is visible,
-/// extracts via `contents_between`, then restores the original scrollback.
-pub fn extract_text(
-    screen: &mut vt100::Screen,
-    selection: &Selection,
-) -> String {
-    let ((sr, sc), (er, ec)) = selection.normalised();
-    let (rows, _) = screen.size();
-    let original_scrollback = screen.scrollback();
-
-    // Set scrollback so that the start of selection maps to visible row 0:
-    //   visible_row = abs_row + scrollback  →  0 = sr + sb  →  sb = -sr
-    let needed_sb = if sr < 0 { (-sr) as usize } else { 0 };
-    screen.set_scrollback(needed_sb);
-
-    let start_vrow = (sr + needed_sb as isize) as u16;
-    let end_vrow = ((er + needed_sb as isize) as u16).min(rows.saturating_sub(1));
-
-    let text = screen.contents_between(start_vrow, sc, end_vrow, ec + 1);
-    screen.set_scrollback(original_scrollback);
-    text
+/// Stream row of the topmost row currently drawn in the viewport.
+pub fn viewport_top(screen: &vt100::Screen) -> u64 {
+    screen.scrolled_lines() - screen.scrollback() as u64
 }
 
-/// Select the word under (abs_row, col) by scanning for word boundaries.
-/// A "word" is a contiguous run of non-whitespace, non-ASCII-punctuation characters.
-pub fn select_word(screen: &mut vt100::Screen, abs_row: isize, col: u16) -> Selection {
-    let (rows, cols) = screen.size();
-    let original_sb = screen.scrollback();
+/// Select the word under (stream_row, col) by scanning for word boundaries.
+///
+/// A "word" is a contiguous run of non-whitespace, non-punctuation
+/// characters, except that `_` counts as a word character so `snake_case`
+/// and `SCREAMING_SNAKE_CASE` identifiers select as one word.
+pub fn select_word(screen: &vt100::Screen, stream_row: u64, col: u16) -> Selection {
+    let (_, cols) = screen.size();
+    let point = Selection {
+        anchor: (stream_row, col),
+        moving: (stream_row, col),
+        dragged: true,
+        mode: SelectionMode::Raw,
+    };
 
-    let needed_sb = if abs_row < 0 { (-abs_row) as usize } else { 0 };
-    screen.set_scrollback(needed_sb);
-    let vrow = (abs_row + needed_sb as isize) as u16;
-
-    if vrow >= rows {
-        screen.set_scrollback(original_sb);
-        return Selection { anchor: (abs_row, col), moving: (abs_row, col), dragged: true };
+    if screen.stream_row_wrapped(stream_row).is_none() {
+        return point;
     }
 
-    let line: Vec<char> = (0..cols).map(|c| {
-        let cell = screen.cell(vrow, c);
-        cell.map_or(' ', |c| c.contents().chars().next().unwrap_or(' '))
-    }).collect();
-    screen.set_scrollback(original_sb);
+    let line: Vec<char> = (0..cols)
+        .map(|c| {
+            screen
+                .stream_cell(stream_row, c)
+                .map_or(' ', |cell| cell.contents().chars().next().unwrap_or(' '))
+        })
+        .collect();
 
     let col_idx = (col as usize).min(line.len().saturating_sub(1));
-    let is_word_char = |ch: char| !ch.is_ascii_whitespace() && !ch.is_ascii_punctuation();
-
-    if !is_word_char(line[col_idx]) {
-        return Selection { anchor: (abs_row, col), moving: (abs_row, col), dragged: true };
+    if line.is_empty() || !is_word_char(line[col_idx]) {
+        return point;
     }
 
     let mut start = col_idx;
@@ -133,15 +112,25 @@ pub fn select_word(screen: &mut vt100::Screen, abs_row: isize, col: u16) -> Sele
         end += 1;
     }
 
-    Selection { anchor: (abs_row, start as u16), moving: (abs_row, end as u16), dragged: true }
+    Selection {
+        anchor: (stream_row, start as u16),
+        moving: (stream_row, end as u16),
+        dragged: true,
+        mode: SelectionMode::Raw,
+    }
 }
 
-/// Select the entire line at abs_row.
-pub fn select_line(abs_row: isize, cols: u16) -> Selection {
+fn is_word_char(ch: char) -> bool {
+    ch == '_' || (!ch.is_ascii_whitespace() && !ch.is_ascii_punctuation())
+}
+
+/// Select the entire line at `stream_row`.
+pub fn select_line(stream_row: u64, cols: u16) -> Selection {
     Selection {
-        anchor: (abs_row, 0),
-        moving: (abs_row, cols.saturating_sub(1)),
+        anchor: (stream_row, 0),
+        moving: (stream_row, cols.saturating_sub(1)),
         dragged: true,
+        mode: SelectionMode::Smart,
     }
 }
 

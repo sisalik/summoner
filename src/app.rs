@@ -2,7 +2,9 @@ use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
 use anyhow::Result;
-use crossterm::event::{self, Event, KeyCode, KeyEvent, KeyModifiers, MouseButton, MouseEventKind};
+use crossterm::event::{
+    self, Event, KeyCode, KeyEvent, KeyModifiers, MouseButton, MouseEvent, MouseEventKind,
+};
 use ratatui::layout::{Constraint, Layout, Rect};
 use ratatui::DefaultTerminal;
 
@@ -19,8 +21,10 @@ use crate::ui::dashboard::{card_metrics, layout_width, Dashboard, session_at_pos
 use crate::ui::status_bar::{tab_at_x, tab_visible_range, TabHit};
 use crate::ui::dashboard_nav::DashboardNav;
 use crate::ui::dir_picker::{DirPicker, DirPickerAction};
-use crate::ui::selection::{self, Selection};
+use crate::ui::links::{self, Links};
+use crate::ui::selection::{self, Selection, SelectionMode};
 use crate::ui::session_view::TerminalView;
+use crate::ui::smart::{self, SpanSet};
 use crate::ui::status_bar::StatusBar;
 
 const SCROLLBACK_LEN: usize = 1000;
@@ -31,6 +35,14 @@ const SLEEP_AFTER_IDLE: Duration = Duration::from_secs(30 * 60);
 /// How long to wait after an Escape interrupt for a hook event before assuming
 /// Claude stopped without reporting it.
 const ESC_INTERRUPT_GRACE: Duration = Duration::from_secs(5);
+
+/// PTY grid size for a terminal of `term_rows` x `term_cols`: one row goes to
+/// the status bar. Never returns a zero dimension — vt100 panics on a grid
+/// with no rows or no columns, which a very small or not-yet-sized terminal
+/// would otherwise produce.
+fn session_size(term_rows: u16, term_cols: u16) -> (u16, u16) {
+    (term_rows.saturating_sub(1).max(1), term_cols.max(1))
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Mode {
@@ -65,6 +77,10 @@ struct App {
     last_stats_update: Instant,
     last_statusline_check: Instant,
     selection: Option<Selection>,
+    /// Cells the current selection copies; recomputed each frame so the
+    /// highlight tracks streaming output and live dragging.
+    session_spans: Option<SpanSet>,
+    session_links: Links,
     session_area: Rect,
     dashboard_area: Rect,
     status_bar_area: Rect,
@@ -183,6 +199,8 @@ impl App {
             last_stats_update: Instant::now(),
             last_statusline_check: Instant::now(),
             selection: None,
+            session_spans: None,
+            session_links: Links::default(),
             session_area: Rect::default(),
             dashboard_area: Rect::default(),
             status_bar_area: Rect::default(),
@@ -336,7 +354,10 @@ impl App {
         new_vec_idx
     }
 
+    /// `rows` and `cols` are the PTY grid size, not the terminal size — see
+    /// `session_size`.
     fn spawn_session(&mut self, directory: String, rows: u16, cols: u16) -> Result<()> {
+        let (rows, cols) = (rows.max(1), cols.max(1));
         let seed = rand_seed();
         let enabled = crate::creature::skeleton::ENABLED_ARCHETYPES;
         let archetype_idx = enabled[self.sessions.len() % enabled.len()];
@@ -580,6 +601,8 @@ impl App {
             // Clear selection when not in session mode
             if !matches!(self.mode, Mode::Session(_)) {
                 self.selection = None;
+                self.session_spans = None;
+                self.session_links = Links::default();
             }
 
             // Render main content
@@ -622,8 +645,15 @@ impl App {
                     } else if idx < self.vt_parsers.len() {
                         self.session_area = main_area;
                         let screen = self.vt_parsers[idx].screen();
+                        self.session_links = links::scan_screen(screen);
+                        self.session_spans = self
+                            .selection
+                            .as_ref()
+                            .filter(|sel| sel.dragged && !sel.is_empty())
+                            .map(|sel| smart::compute_spans(screen, sel));
                         let view = TerminalView::new(screen)
-                            .with_selection(self.selection.as_ref());
+                            .with_selection(self.session_spans.as_ref())
+                            .with_links(Some(&self.session_links));
                         frame.render_widget(view, main_area);
                     }
                 }
@@ -756,8 +786,8 @@ impl App {
                 if let Some(&sess_idx) = order.get(pos) {
                     self.reordering = false;
                     if let Some(Some(pty)) = self.pty_sessions.get(sess_idx) {
-                        let pty_rows = rows.saturating_sub(1);
-                        let _ = pty.resize(pty_rows, cols);
+                        let (pty_rows, pty_cols) = session_size(rows, cols);
+                        let _ = pty.resize(pty_rows, pty_cols);
                     }
                     self.last_session = Some(sess_idx);
                     self.mode = Mode::Session(sess_idx);
@@ -776,8 +806,8 @@ impl App {
                         DirPickerAction::Select(dir) => {
                             self.dir_picker = None;
                             // Status bar takes 1 row
-                            let pty_rows = rows.saturating_sub(1);
-                            self.spawn_session(dir, pty_rows, cols)?;
+                            let (pty_rows, pty_cols) = session_size(rows, cols);
+                            self.spawn_session(dir, pty_rows, pty_cols)?;
                         }
                         DirPickerAction::None => {}
                     }
@@ -794,15 +824,19 @@ impl App {
                 {
                     if let Some(ref sel) = self.selection
                         && !sel.is_empty() && idx < self.vt_parsers.len() {
-                            let text = selection::extract_text(
-                                self.vt_parsers[idx].screen_mut(),
-                                sel,
-                            );
-                            if !text.is_empty() {
-                                selection::copy_to_clipboard(&text);
+                            // Copy exactly what the highlight showed.
+                            let spans = match self.session_spans.take() {
+                                Some(spans) => spans,
+                                None => smart::compute_spans(
+                                    self.vt_parsers[idx].screen(),
+                                    sel,
+                                ),
+                            };
+                            if !spans.text().is_empty() {
+                                selection::copy_to_clipboard(spans.text());
                             }
                         }
-                    self.selection = None;
+                    self.clear_selection();
                     return Ok(false);
                 }
                 // Disconnected session: any key resumes it
@@ -836,8 +870,8 @@ impl App {
                 // New session in same directory as selected session
                 if let Some(sess_idx) = sel {
                     let dir = self.sessions[sess_idx].directory.clone();
-                    let pty_rows = rows.saturating_sub(1);
-                    self.spawn_session(dir, pty_rows, cols)?;
+                    let (pty_rows, pty_cols) = session_size(rows, cols);
+                    self.spawn_session(dir, pty_rows, pty_cols)?;
                 } else {
                     // No sessions, open dir picker
                     let cwd = std::env::current_dir()
@@ -907,9 +941,9 @@ impl App {
                         self.mode = Mode::Session(sess_idx);
                     } else {
                         // Active session — switch to it
-                        let pty_rows = rows.saturating_sub(1);
+                        let (pty_rows, pty_cols) = session_size(rows, cols);
                         if let Some(Some(pty)) = self.pty_sessions.get(sess_idx) {
-                            let _ = pty.resize(pty_rows, cols);
+                            let _ = pty.resize(pty_rows, pty_cols);
                         }
                         self.last_session = Some(sess_idx);
                         self.mode = Mode::Session(sess_idx);
@@ -921,11 +955,128 @@ impl App {
         Ok(())
     }
 
+    fn clear_selection(&mut self) {
+        self.selection = None;
+        self.session_spans = None;
+    }
+
+    fn handle_session_mouse(&mut self, mouse: MouseEvent, idx: usize) {
+        let area = self.session_area;
+        let scrollback = self.vt_parsers[idx].screen().scrollback();
+
+        match mouse.kind {
+            MouseEventKind::ScrollUp => {
+                let new = scrollback.saturating_add(3);
+                if new != scrollback {
+                    self.vt_parsers[idx].screen_mut().set_scrollback(new);
+                }
+            }
+            MouseEventKind::ScrollDown => {
+                let new = scrollback.saturating_sub(3);
+                if new != scrollback {
+                    self.vt_parsers[idx].screen_mut().set_scrollback(new);
+                }
+            }
+            MouseEventKind::Down(MouseButton::Left) => {
+                self.clear_selection();
+                let inside = mouse.row >= area.y
+                    && mouse.row < area.y + area.height
+                    && mouse.column >= area.x
+                    && mouse.column < area.x + area.width;
+                if !inside {
+                    return;
+                }
+
+                let (stream_row, col) = selection::mouse_to_stream(
+                    mouse.row,
+                    mouse.column,
+                    area,
+                    self.vt_parsers[idx].screen(),
+                );
+                let link = self.session_links.span_at(stream_row, col).cloned();
+
+                // Ctrl+click opens a URL instead of starting a selection.
+                if mouse.modifiers.contains(KeyModifiers::CONTROL)
+                    && let Some(span) = link.as_ref() {
+                        links::open_url(&span.url);
+                        self.last_click = None;
+                        self.click_count = 0;
+                        return;
+                    }
+
+                let now = Instant::now();
+                let is_multi = self.last_click.as_ref().is_some_and(|&(t, r, c)| {
+                    now.duration_since(t) < Duration::from_millis(500)
+                        && r == mouse.row
+                        && c == mouse.column
+                });
+
+                if is_multi && self.click_count == 1 {
+                    // Double-click selects the word, or the whole URL if the
+                    // click landed on one
+                    self.click_count = 2;
+                    self.selection = Some(match link {
+                        Some(span) => url_selection(&span),
+                        None => selection::select_word(
+                            self.vt_parsers[idx].screen(),
+                            stream_row,
+                            col,
+                        ),
+                    });
+                } else if is_multi && self.click_count == 2 {
+                    self.click_count = 3;
+                    let (_, cols) = self.vt_parsers[idx].screen().size();
+                    self.selection = Some(selection::select_line(stream_row, cols));
+                } else {
+                    self.click_count = 1;
+                    // Alt bypasses smart selection
+                    let mode = if mouse.modifiers.contains(KeyModifiers::ALT) {
+                        SelectionMode::Raw
+                    } else {
+                        SelectionMode::Smart
+                    };
+                    self.selection = Some(Selection::new(stream_row, col, mode));
+                }
+                self.last_click = Some((now, mouse.row, mouse.column));
+            }
+            MouseEventKind::Drag(MouseButton::Left) => {
+                if self.selection.is_none() {
+                    return;
+                }
+                // Edge auto-scroll
+                if mouse.row < area.y {
+                    let new = scrollback.saturating_add(1);
+                    self.vt_parsers[idx].screen_mut().set_scrollback(new);
+                } else if mouse.row >= area.y + area.height {
+                    let new = scrollback.saturating_sub(1);
+                    self.vt_parsers[idx].screen_mut().set_scrollback(new);
+                }
+                let moving = selection::mouse_to_stream(
+                    mouse.row,
+                    mouse.column,
+                    area,
+                    self.vt_parsers[idx].screen(),
+                );
+                if let Some(ref mut sel) = self.selection {
+                    sel.dragged = true;
+                    sel.moving = moving;
+                }
+            }
+            MouseEventKind::Up(MouseButton::Left) => {
+                // Clear empty selections (click without drag)
+                if self.selection.as_ref().is_some_and(|s| s.is_empty()) {
+                    self.clear_selection();
+                }
+            }
+            _ => {}
+        }
+    }
+
     fn handle_session_input(&mut self, key: KeyEvent, idx: usize) -> Result<()> {
         if idx >= self.pty_sessions.len() {
             return Ok(());
         }
-        self.selection = None;
+        self.clear_selection();
         let mut app_cursor = false;
         if idx < self.vt_parsers.len() {
             if self.vt_parsers[idx].screen().scrollback() > 0 {
@@ -960,8 +1111,8 @@ impl App {
         }
 
         let directory = self.sessions[index].directory.clone();
-        let session_rows = rows.saturating_sub(1);
-        let pty = PtySession::spawn(&self.config.general.default_shell, &directory, session_rows, cols)?;
+        let (session_rows, session_cols) = session_size(rows, cols);
+        let pty = PtySession::spawn(&self.config.general.default_shell, &directory, session_rows, session_cols)?;
 
         // Clear any stale hook state file for this PID
         if let Some(pid) = pty.pid() {
@@ -976,8 +1127,10 @@ impl App {
         // Shell sessions don't need a newline — the shell shows a prompt on startup
 
         self.pty_sessions[index] = Some(pty);
-        // Reset vt100 parser to current terminal size
-        self.vt_parsers[index] = vt100::Parser::new(session_rows, cols, SCROLLBACK_LEN);
+        // Reset vt100 parser to current terminal size — the fresh parser
+        // restarts its stream-row numbering, so any selection is stale
+        self.vt_parsers[index] = vt100::Parser::new(session_rows, session_cols, SCROLLBACK_LEN);
+        self.clear_selection();
         self.sessions[index].state = SessionState::ShellOnly;
         self.locomotions[index].set_state(SessionState::ShellOnly);
         self.last_session = Some(index);
@@ -1230,6 +1383,18 @@ fn downgraded_after_esc(
         .unwrap_or(false)
 }
 
+/// A raw selection covering exactly the cells of a detected URL.
+fn url_selection(span: &links::UrlSpan) -> Selection {
+    let first = span.cells.first().copied().unwrap_or((0, 0, 0));
+    let last = span.cells.last().copied().unwrap_or(first);
+    Selection {
+        anchor: (first.0, first.1),
+        moving: (last.0, last.2),
+        dragged: true,
+        mode: SelectionMode::Raw,
+    }
+}
+
 fn key_to_bytes(key: KeyEvent, app_cursor: bool) -> Vec<u8> {
     let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
     let alt = key.modifiers.contains(KeyModifiers::ALT);
@@ -1399,17 +1564,19 @@ pub fn run(terminal: &mut DefaultTerminal) -> Result<()> {
                     }
                 }
                 Event::Resize(cols, rows) => {
-                    let session_rows = rows.saturating_sub(1);
+                    let (session_rows, session_cols) = session_size(rows, cols);
                     app.last_term_width = cols;
-                    app.selection = None;
+                    // vt100 doesn't reflow, so stream rows no longer describe
+                    // the same text after a resize
+                    app.clear_selection();
                     app.refresh_nav_layout();
                     // Resize all active PTY sessions
                     for pty in app.pty_sessions.iter().flatten() {
-                        let _ = pty.resize(session_rows, cols);
+                        let _ = pty.resize(session_rows, session_cols);
                     }
                     // Also resize all vt parsers
                     for parser in &mut app.vt_parsers {
-                        parser.screen_mut().set_size(session_rows, cols);
+                        parser.screen_mut().set_size(session_rows, session_cols);
                     }
                 }
                 Event::Paste(text) => {
@@ -1437,8 +1604,8 @@ pub fn run(terminal: &mut DefaultTerminal) -> Result<()> {
                                 if let Some(&sess_idx) = order.get(pos) {
                                     app.reordering = false;
                                     if let Some(Some(pty)) = app.pty_sessions.get(sess_idx) {
-                                        let pty_rows = size.height.saturating_sub(1);
-                                        let _ = pty.resize(pty_rows, size.width);
+                                        let (pty_rows, pty_cols) = session_size(size.height, size.width);
+                                        let _ = pty.resize(pty_rows, pty_cols);
                                     }
                                     app.last_session = Some(sess_idx);
                                     app.mode = Mode::Session(sess_idx);
@@ -1454,8 +1621,8 @@ pub fn run(terminal: &mut DefaultTerminal) -> Result<()> {
                                     if let Some(&sess_idx) = order.get(pos) {
                                         app.reordering = false;
                                         if let Some(Some(pty)) = app.pty_sessions.get(sess_idx) {
-                                            let pty_rows = size.height.saturating_sub(1);
-                                            let _ = pty.resize(pty_rows, size.width);
+                                            let (pty_rows, pty_cols) = session_size(size.height, size.width);
+                                            let _ = pty.resize(pty_rows, pty_cols);
                                         }
                                         app.last_session = Some(sess_idx);
                                         app.mode = Mode::Session(sess_idx);
@@ -1470,8 +1637,8 @@ pub fn run(terminal: &mut DefaultTerminal) -> Result<()> {
                                 if let Some(&sess_idx) = order.get(vis_end) {
                                     app.reordering = false;
                                     if let Some(Some(pty)) = app.pty_sessions.get(sess_idx) {
-                                        let pty_rows = size.height.saturating_sub(1);
-                                        let _ = pty.resize(pty_rows, size.width);
+                                        let (pty_rows, pty_cols) = session_size(size.height, size.width);
+                                        let _ = pty.resize(pty_rows, pty_cols);
                                     }
                                     app.last_session = Some(sess_idx);
                                     app.mode = Mode::Session(sess_idx);
@@ -1527,8 +1694,8 @@ pub fn run(terminal: &mut DefaultTerminal) -> Result<()> {
                                         if let Some(&sess_idx) = order.get(pos) {
                                             let size = terminal.size()?;
                                             if let Some(Some(pty)) = app.pty_sessions.get(sess_idx) {
-                                                let pty_rows = size.height.saturating_sub(1);
-                                                let _ = pty.resize(pty_rows, size.width);
+                                                let (pty_rows, pty_cols) = session_size(size.height, size.width);
+                                                let _ = pty.resize(pty_rows, pty_cols);
                                             }
                                             app.last_session = Some(sess_idx);
                                             app.mode = Mode::Session(sess_idx);
@@ -1550,86 +1717,7 @@ pub fn run(terminal: &mut DefaultTerminal) -> Result<()> {
                     // Session view mouse handling
                     else if let Mode::Session(idx) = app.mode
                         && idx < app.vt_parsers.len() {
-                            let area = app.session_area;
-                            let screen = app.vt_parsers[idx].screen();
-                            let scrollback = screen.scrollback();
-                            match mouse.kind {
-                                MouseEventKind::ScrollUp => {
-                                    let new = scrollback.saturating_add(3);
-                                    if new != scrollback {
-                                        app.vt_parsers[idx].screen_mut().set_scrollback(new);
-                                    }
-                                }
-                                MouseEventKind::ScrollDown => {
-                                    let new = scrollback.saturating_sub(3);
-                                    if new != scrollback {
-                                        app.vt_parsers[idx].screen_mut().set_scrollback(new);
-                                    }
-                                }
-                                MouseEventKind::Down(MouseButton::Left) => {
-                                    app.selection = None;
-                                    if mouse.row >= area.y
-                                        && mouse.row < area.y + area.height
-                                        && mouse.column >= area.x
-                                        && mouse.column < area.x + area.width
-                                    {
-                                        let (abs_row, col) = selection::mouse_to_abs(
-                                            mouse.row, mouse.column,
-                                            area.y, area.x, area.height, area.width,
-                                            scrollback,
-                                        );
-                                        // Detect multi-click
-                                        let now = Instant::now();
-                                        let is_multi = app.last_click.as_ref().is_some_and(|&(t, r, c)| {
-                                            now.duration_since(t) < Duration::from_millis(500)
-                                                && r == mouse.row && c == mouse.column
-                                        });
-                                        if is_multi && app.click_count == 1 {
-                                            // Double-click — select word
-                                            app.click_count = 2;
-                                            app.selection = Some(selection::select_word(
-                                                app.vt_parsers[idx].screen_mut(), abs_row, col,
-                                            ));
-                                        } else if is_multi && app.click_count == 2 {
-                                            // Triple-click — select line
-                                            app.click_count = 3;
-                                            let (_, cols) = app.vt_parsers[idx].screen().size();
-                                            app.selection = Some(selection::select_line(abs_row, cols));
-                                        } else {
-                                            app.click_count = 1;
-                                            app.selection = Some(Selection::new(abs_row, col));
-                                        }
-                                        app.last_click = Some((now, mouse.row, mouse.column));
-                                    }
-                                }
-                                MouseEventKind::Drag(MouseButton::Left) => {
-                                    if let Some(ref mut sel) = app.selection {
-                                        sel.dragged = true;
-                                        // Edge auto-scroll
-                                        if mouse.row < area.y {
-                                            let new = scrollback.saturating_add(1);
-                                            app.vt_parsers[idx].screen_mut().set_scrollback(new);
-                                        } else if mouse.row >= area.y + area.height {
-                                            let new = scrollback.saturating_sub(1);
-                                            app.vt_parsers[idx].screen_mut().set_scrollback(new);
-                                        }
-                                        let current_sb = app.vt_parsers[idx].screen().scrollback();
-                                        let (abs_row, col) = selection::mouse_to_abs(
-                                            mouse.row, mouse.column,
-                                            area.y, area.x, area.height, area.width,
-                                            current_sb,
-                                        );
-                                        sel.moving = (abs_row, col);
-                                    }
-                                }
-                                MouseEventKind::Up(MouseButton::Left) => {
-                                    // Clear empty selections (click without drag)
-                                    if app.selection.as_ref().is_some_and(|s| s.is_empty()) {
-                                        app.selection = None;
-                                    }
-                                }
-                                _ => {}
-                            }
+                            app.handle_session_mouse(mouse, idx);
                         }
                 }
                 _ => {}

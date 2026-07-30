@@ -163,10 +163,10 @@ impl LocomotionState {
             self.base_widths[3] + 0.25 * (2.0 * TAU * cyc + PI).cos();
 
         // Legs: stance slides back linearly (treadmill), swing arcs forward.
-        for li in 0..4 {
+        for (li, phase) in phases.iter().enumerate().take(4) {
             let hitch = hitch_of(li);
             let st = stride * hitch;
-            let p = (cyc + phases[li]).rem_euclid(1.0);
+            let p = (cyc + phase).rem_euclid(1.0);
             let rest_x = self.rest_effectors[li].x;
             let (x_off, y) = if p < s.duty {
                 (dir * (st / 2.0 - (p / s.duty) * st), gy)

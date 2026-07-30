@@ -39,14 +39,24 @@ src/
   ui/
     dashboard.rs       # Project card grid with creatures, state labels, selection
     dashboard_nav.rs   # Grid navigation (arrow keys, group-aware movement)
-    session_view.rs    # vt100::Screen -> Ratatui buffer (colors, modifiers, cursor)
+    session_view.rs    # vt100::Screen -> Ratatui buffer (colors, modifiers, cursor,
+                       #   selection highlight, URL underline)
+    selection.rs       # Mouse selection state in stream-row coordinates,
+                       #   word/line select, OSC 52 clipboard
+    smart.rs           # Smart vs raw selection -> SpanSet (the exact copied cells)
+    links.rs           # URL detection across soft wraps, opening via wslview/xdg-open
     status_bar.rs      # Bottom bar: F-key session tabs with state icons, F12 hint
     dir_picker.rs      # Modal: recent dirs + fuzzy search (nucleo)
+vendor/
+  vt100/               # Patched vt100 0.16.2 (stream-row API) — see its README
 tests/
   creature_test.rs
   config_test.rs
   terminal_test.rs
   ui_test.rs
+  selection_test.rs
+  smart_test.rs
+  links_test.rs
 ```
 
 ## Architecture
@@ -61,6 +71,14 @@ tests/
 
 **Input routing**: Global keys (Ctrl+C/Q, F12 toggle, F1-F11 session switch) are handled first, then mode-specific handlers (dashboard nav, PTY forwarding via `key_to_bytes`, dir picker).
 
+**Text selection**: Summoner runs nested inside the host terminal, which sees only the rendered grid — so selection, copy and link clicking are all in-app. Mouse is captured (`main.rs`), never forwarded to the inner PTY.
+
+- Coordinates are *stream rows*: `screen.scrolled_lines() - screen.scrollback() + viewport_row`, via `selection::viewport_top`. `scrolled_lines` counts every row that ever scrolled off the top, so a selection stays glued to its text while output streams and while scrolling. It comes from the patched vt100 in `vendor/vt100` (`[patch.crates-io]`) — upstream exposes no such counter, and it can't be derived once the scrollback ring evicts rows.
+- Drag selects smart (join soft wraps, strip `⏺ │ ⎿ >` gutters and box borders, dedent per gutter depth); Alt+drag selects raw. Double-click selects a word (underscores included, so `snake_case` is one word) or a whole URL; triple-click selects a logical line. Ctrl+C copies via OSC 52.
+- `smart::compute_spans` returns the exact cells that will be copied, and the renderer highlights those cells — the highlight is what the clipboard gets. It is recomputed every frame, which is what keeps it correct during streaming and live dragging.
+- URLs are found by scanning the visible rows, joining soft-wrapped rows first (`links::scan_screen`). They render underlined; Ctrl+click opens via wslview / xdg-open / powershell / cmd.
+- Both per-frame scans are on the render path (~160 µs idle at 200x50). Keep them allocation-light — borrow cell text via `Cow` rather than building a `String` per cell.
+
 **Creature animation**: Design principles, canvas constraints, and the dev/verification workflow (`--test-creatures`, `--render-creature`, both behind the `dev-creature` feature) are documented in [docs/creature-animation.md](docs/creature-animation.md). Read it before changing anything under `src/creature/`.
 
 ## Key Dependencies
@@ -69,7 +87,7 @@ tests/
 |-------|---------|
 | `ratatui` + `crossterm` | TUI rendering and terminal I/O |
 | `portable-pty` | Cross-platform PTY spawning |
-| `vt100` | Terminal emulation (ANSI parsing) |
+| `vt100` | Terminal emulation (ANSI parsing) — patched fork in `vendor/vt100` |
 | `nucleo-matcher` | Fuzzy matching in dir picker |
 | `serde` + `toml` | Config/session serialization |
 | `uuid` | Session identifiers |
