@@ -215,25 +215,51 @@ fn trim_trailing(chars: &[char], start: usize, mut end: usize) -> usize {
     end
 }
 
+/// Whether we are running under WSL, where links belong in the Windows
+/// browser rather than whatever `xdg-open` picks on the Linux side.
+fn is_wsl() -> bool {
+    if std::env::var_os("WSL_DISTRO_NAME").is_some()
+        || std::env::var_os("WSL_INTEROP").is_some()
+    {
+        return true;
+    }
+    std::fs::read_to_string("/proc/sys/kernel/osrelease")
+        .is_ok_and(|s| s.to_ascii_lowercase().contains("microsoft"))
+}
+
+/// PowerShell command that opens `url`, encoded so nothing re-parses it.
+///
+/// `-EncodedCommand` takes base64 of a UTF-16LE script, which sidesteps
+/// every quoting layer between here and PowerShell — `&` in a query string
+/// would otherwise break `-Command`.
+fn powershell_encoded_command(url: &str) -> String {
+    use base64::Engine;
+    let script = format!("Start-Process '{}'", url.replace('\'', "''"));
+    let utf16: Vec<u8> = script
+        .encode_utf16()
+        .flat_map(|unit| unit.to_le_bytes())
+        .collect();
+    base64::engine::general_purpose::STANDARD.encode(utf16)
+}
+
 /// Open a URL in the user's browser, without blocking the UI.
 pub fn open_url(url: &str) {
     if !(url.starts_with("http://") || url.starts_with("https://")) {
         return;
     }
 
-    // wslview and xdg-open take the URL as a plain argument. The Windows
-    // fallbacks re-parse their argument line, so the URL is quoted there —
-    // the scanner never produces a URL containing a single quote.
-    let quoted = format!("'{}'", url);
-    let attempts: [(&str, Vec<&str>); 4] = [
-        ("wslview", vec![url]),
-        ("xdg-open", vec![url]),
-        (
-            "powershell.exe",
-            vec!["-NoProfile", "-Command", "Start-Process", &quoted],
-        ),
-        ("cmd.exe", vec!["/c", "start", "", url]),
-    ];
+    let encoded = powershell_encoded_command(url);
+    let mut attempts: Vec<(&str, Vec<&str>)> = Vec::new();
+    if is_wsl() {
+        // wslview hands off to the Windows default browser; the PowerShell
+        // and cmd fallbacks do the same without needing wslu installed.
+        // xdg-open comes last: on WSL it would open a Linux browser.
+        attempts.push(("wslview", vec![url]));
+        attempts.push(("powershell.exe", vec!["-NoProfile", "-EncodedCommand", &encoded]));
+        attempts.push(("cmd.exe", vec!["/c", "start", "", url]));
+    }
+    attempts.push(("xdg-open", vec![url]));
+    attempts.push(("open", vec![url]));
 
     for (cmd, args) in attempts {
         let spawned = std::process::Command::new(cmd)

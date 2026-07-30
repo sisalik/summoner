@@ -63,6 +63,78 @@ fn code_indentation_inside_a_gutter_survives() {
     assert_eq!(text, "fn main() {\n    body();\n}");
 }
 
+/// Starting the drag on the first character of a line used to make that line
+/// look un-indented, which cancelled the dedent for the whole block.
+#[test]
+fn dedents_even_when_the_drag_starts_at_the_first_character() {
+    let rows = rows(&["    alpha", "    beta"]);
+    let computed = smart::spans_core(&rows, 4, COLS - 1, SelectionMode::Smart);
+    assert_eq!(computed.text, "alpha\nbeta");
+}
+
+fn wide(lines: &[&str]) -> Vec<RowIn<'static>> {
+    lines
+        .iter()
+        .map(|l| RowIn::from_text(l, false, 80))
+        .collect()
+}
+
+#[test]
+fn rejoins_prose_the_program_wrapped() {
+    let rows = wide(&[
+        "  Selections were anchored to the live screen top, so streaming output slid",
+        "  the text out from under the highlight.",
+    ]);
+    let computed = smart::spans_core(&rows, 0, 79, SelectionMode::Smart);
+    assert_eq!(
+        computed.text,
+        "Selections were anchored to the live screen top, so streaming output slid \
+         the text out from under the highlight.",
+    );
+}
+
+#[test]
+fn keeps_a_break_when_the_next_word_would_have_fit() {
+    let rows = wide(&[
+        "  Short.",
+        "  This is a long line that runs most of the way out to the eightieth column",
+    ]);
+    let computed = smart::spans_core(&rows, 0, 79, SelectionMode::Smart);
+    assert_eq!(
+        computed.text,
+        "Short.\nThis is a long line that runs most of the way out to the eightieth column",
+    );
+}
+
+#[test]
+fn rejoins_a_wrapped_list_item_across_its_hanging_indent() {
+    let rows = wide(&[
+        "  2. Links work in-app instead of via Windows Terminal. Windows Terminal",
+        "     only ever sees the rendered grid, which is why URL detection kept",
+        "     producing mangled links.",
+    ]);
+    let computed = smart::spans_core(&rows, 0, 79, SelectionMode::Smart);
+    assert_eq!(
+        computed.text,
+        "2. Links work in-app instead of via Windows Terminal. Windows Terminal \
+         only ever sees the rendered grid, which is why URL detection kept \
+         producing mangled links.",
+    );
+}
+
+#[test]
+fn does_not_join_list_items() {
+    let rows = wide(&[
+        "  - first item that runs right out to the far end of the eighty column line",
+        "  - second item",
+    ]);
+    let computed = smart::spans_core(&rows, 0, 79, SelectionMode::Smart);
+    assert_eq!(
+        computed.text,
+        "- first item that runs right out to the far end of the eighty column line\n- second item",
+    );
+}
+
 #[test]
 fn joins_soft_wrapped_rows_into_one_logical_line() {
     let rows = vec![
