@@ -115,6 +115,54 @@ fn keeps_following_prose_out_of_a_hard_wrapped_url() {
     );
 }
 
+/// Claude Code wraps to its own width inside its gutter, so the cut lands
+/// several columns short of the terminal's last column.
+#[test]
+fn detects_a_hard_wrap_short_of_the_last_column() {
+    let cols = 70;
+    let mut p = vt100::Parser::new(6, cols, 100);
+    p.process(
+        "  ⎿  ### ![Passed](https://sonarqube.test/static/comBranchPlugi\r\n     n/checks/passed-16px.png) Quality Gate passed"
+            .as_bytes(),
+    );
+    // The cut is well short of the terminal's last column.
+    assert_eq!(p.screen().stream_row_wrapped(0), Some(false));
+
+    let links = scan_screen(p.screen());
+    assert_eq!(
+        links.spans.iter().map(|s| s.url.as_str()).collect::<Vec<_>>(),
+        vec!["https://sonarqube.test/static/comBranchPlugin/checks/passed-16px.png"],
+    );
+}
+
+/// A line that merely ends with a link is not a wrap: the token below it
+/// would have fitted, so the break was the program's own.
+#[test]
+fn keeps_a_short_line_ending_in_a_url_separate() {
+    let cols = 60;
+    let mut p = vt100::Parser::new(6, cols, 100);
+    p.process(b"see https://ex.com/x\r\ndocs/setup.md explains it");
+
+    let links = scan_screen(p.screen());
+    assert_eq!(
+        links.spans.iter().map(|s| s.url.as_str()).collect::<Vec<_>>(),
+        vec!["https://ex.com/x"],
+    );
+}
+
+#[test]
+fn does_not_glue_two_links_together() {
+    let cols = 20;
+    let mut p = vt100::Parser::new(5, cols, 100);
+    p.process(b"go https://a.test/xy\r\nhttps://b.test/other");
+
+    let links = scan_screen(p.screen());
+    assert_eq!(
+        links.spans.iter().map(|s| s.url.as_str()).collect::<Vec<_>>(),
+        vec!["https://a.test/xy", "https://b.test/other"],
+    );
+}
+
 #[test]
 fn follows_a_url_split_across_three_rows() {
     let cols = 20;

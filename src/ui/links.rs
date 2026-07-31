@@ -99,7 +99,7 @@ pub fn scan_screen(screen: &vt100::Screen) -> Links {
         for (from, scheme_len, raw_end) in find_urls(&line.chars) {
             let mut chars = line.chars[from..raw_end].to_vec();
             let mut map = line.map[from..raw_end].to_vec();
-            join_hard_wraps(&lines, i, cols, &mut chars, &mut map);
+            join_hard_wraps(&lines, i, raw_end, cols, &mut chars, &mut map);
 
             let end = trim_trailing(&chars, 0, chars.len());
             if end <= scheme_len {
@@ -164,28 +164,40 @@ fn logical_lines(screen: &vt100::Screen, start: u64, end: u64, cols: u16) -> Vec
 
 /// Follow a URL that a hard line break cut in two.
 ///
-/// Only a URL running flush into the last column can have been cut, and only
-/// a continuation that still looks like a URL — a path or query fragment, not
-/// an ordinary word — is taken, so prose following a link that happens to end
-/// at the margin is left alone.
+/// The URL has to run to the end of its line, and the next line's leading
+/// token has to be one the break can explain: too long to have fitted after
+/// the URL. Text wrapped by the producing program is wrapped at its own
+/// width, not the terminal's, so the cut lands short of the last column and
+/// the column alone says nothing. The token must also still look like a URL —
+/// a path or query fragment, not a word — so a line that merely ends with a
+/// link keeps the prose below it out.
 fn join_hard_wraps(
     lines: &[Logical],
     from: usize,
+    url_end: usize,
     cols: u16,
     chars: &mut Vec<char>,
     map: &mut Vec<(u64, u16)>,
 ) {
     let mut i = from;
-    while map.last().is_some_and(|&(_, col)| col == cols - 1) {
-        let Some(next) = lines.get(i + 1) else {
+    let mut run_end = url_end;
+    loop {
+        if !lines[i].chars[run_end..].iter().all(|c| *c == ' ') {
+            return;
+        }
+        let (Some(next), Some(&(_, last_col))) = (lines.get(i + 1), map.last()) else {
             return;
         };
         let Some((start, end)) = continuation_token(&next.chars) else {
             return;
         };
+        if usize::from(last_col) + 1 + (end - start) <= usize::from(cols) {
+            return;
+        }
         chars.extend_from_slice(&next.chars[start..end]);
         map.extend_from_slice(&next.map[start..end]);
         i += 1;
+        run_end = end;
     }
 }
 
@@ -194,8 +206,14 @@ fn continuation_token(chars: &[char]) -> Option<(usize, usize)> {
     let start = chars.iter().take_while(|c| **c == ' ').count();
     let end = start + chars[start..].iter().take_while(|c| is_url_char(**c)).count();
     let token = &chars[start..end];
-    let url_like = token.iter().any(|c| URL_PUNCT.contains(c));
-    (!token.is_empty() && url_like).then_some((start, end))
+    if token.is_empty() || !token.iter().any(|c| URL_PUNCT.contains(c)) {
+        return None;
+    }
+    // A token with a scheme of its own is the next link, not this one's tail.
+    let has_scheme = token
+        .windows(3)
+        .any(|w| w == [':', '/', '/']);
+    (!has_scheme).then_some((start, end))
 }
 
 fn group_cells(map: &[(u64, u16)]) -> Vec<(u64, u16, u16)> {
