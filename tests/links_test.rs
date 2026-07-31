@@ -80,3 +80,50 @@ fn detects_url_split_across_a_soft_wrap() {
     assert!(links.contains(span.cells[0].0, 4));
     assert!(!links.contains(span.cells[0].0, 0));
 }
+
+/// Claude Code wraps its own output, so a split URL arrives as two rows with
+/// a real newline between them and no wrap flag to follow.
+#[test]
+fn detects_url_split_across_a_hard_wrap() {
+    let cols = 20;
+    let mut p = vt100::Parser::new(5, cols, 100);
+    // Exactly `cols` characters, then an explicit line break.
+    p.process(b"see https://ex.com/x\r\ny/z.png) passed");
+    assert_eq!(p.screen().stream_row_wrapped(0), Some(false));
+
+    let links = scan_screen(p.screen());
+    assert_eq!(
+        links.spans.iter().map(|s| s.url.as_str()).collect::<Vec<_>>(),
+        vec!["https://ex.com/xy/z.png"],
+    );
+    let cells = &links.spans[0].cells;
+    assert_eq!(cells.len(), 2);
+    assert_eq!(cells[0], (0, 4, 19));
+    assert_eq!(cells[1], (1, 0, 6));
+}
+
+#[test]
+fn keeps_following_prose_out_of_a_hard_wrapped_url() {
+    let cols = 20;
+    let mut p = vt100::Parser::new(5, cols, 100);
+    p.process(b"see https://ex.com/x\r\nQuality gate passed");
+
+    let links = scan_screen(p.screen());
+    assert_eq!(
+        links.spans.iter().map(|s| s.url.as_str()).collect::<Vec<_>>(),
+        vec!["https://ex.com/x"],
+    );
+}
+
+#[test]
+fn follows_a_url_split_across_three_rows() {
+    let cols = 20;
+    let mut p = vt100::Parser::new(5, cols, 100);
+    p.process(b"see https://ex.com/x\r\nabcx/def/ghi/jkl/mno\r\np.png here");
+
+    let links = scan_screen(p.screen());
+    assert_eq!(
+        links.spans.iter().map(|s| s.url.as_str()).collect::<Vec<_>>(),
+        vec!["https://ex.com/xabcx/def/ghi/jkl/mnop.png"],
+    );
+}

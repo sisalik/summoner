@@ -3,13 +3,22 @@
 //! vt100 drops OSC 8 hyperlinks and the host terminal only sees Summoner's
 //! own grid, so links are found by scanning the rendered text. Soft-wrapped
 //! rows are joined before scanning, which is what makes a URL split across
-//! two rows resolve to one string instead of two broken halves.
+//! two rows resolve to one string instead of two broken halves. Claude Code
+//! wraps its own output instead of letting the terminal do it, so a URL can
+//! also be split by a real newline; those rows are rejoined too, but only
+//! when the break falls on the right margin mid-URL.
 
 use super::selection::viewport_top;
 
 /// How far outside the viewport to follow soft wraps when reassembling a
 /// logical line.
 const WRAP_LOOKAROUND: u64 = 32;
+
+/// How far outside the viewport to look for hard-wrapped continuations.
+const HARD_LOOKAROUND: u64 = 2;
+
+/// Characters that make a token look like part of a URL rather than a word.
+const URL_PUNCT: [char; 11] = ['/', '.', '-', '_', '?', '=', '&', '#', '%', '~', '+'];
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct UrlSpan {
@@ -38,8 +47,15 @@ impl Links {
     }
 }
 
-/// Scan the visible rows (plus any soft-wrap continuations just outside the
-/// viewport) for URLs.
+/// One logical line: a row plus its soft-wrap continuations, with each
+/// character mapped back to the cell it came from.
+struct Logical {
+    chars: Vec<char>,
+    map: Vec<(u64, u16)>,
+}
+
+/// Scan the visible rows (plus any continuations just outside the viewport)
+/// for URLs.
 pub fn scan_screen(screen: &vt100::Screen) -> Links {
     let (rows, cols) = screen.size();
     if rows == 0 || cols == 0 {
@@ -50,26 +66,64 @@ pub fn scan_screen(screen: &vt100::Screen) -> Links {
 
     // A URL may start above the viewport or continue below it.
     let mut start = top;
-    let mut budget = WRAP_LOOKAROUND;
-    while start > 0 && budget > 0 && screen.stream_row_wrapped(start - 1) == Some(true) {
-        start -= 1;
-        budget -= 1;
+    let mut budget = WRAP_LOOKAROUND + HARD_LOOKAROUND;
+    for _ in 0..=HARD_LOOKAROUND {
+        while start > 0 && budget > 0 && screen.stream_row_wrapped(start - 1) == Some(true) {
+            start -= 1;
+            budget -= 1;
+        }
+        if start > 0 && budget > 0 {
+            start -= 1;
+            budget -= 1;
+        }
     }
     let mut end = bottom;
-    let mut budget = WRAP_LOOKAROUND;
-    while budget > 0
-        && screen.stream_row_wrapped(end) == Some(true)
-        && screen.stream_row_wrapped(end + 1).is_some()
-    {
-        end += 1;
-        budget -= 1;
+    let mut budget = WRAP_LOOKAROUND + HARD_LOOKAROUND;
+    for _ in 0..=HARD_LOOKAROUND {
+        while budget > 0
+            && screen.stream_row_wrapped(end) == Some(true)
+            && screen.stream_row_wrapped(end + 1).is_some()
+        {
+            end += 1;
+            budget -= 1;
+        }
+        if budget > 0 && screen.stream_row_wrapped(end + 1).is_some() {
+            end += 1;
+            budget -= 1;
+        }
     }
 
+    let lines = logical_lines(screen, start, end, cols);
     let mut spans = Vec::new();
+    for (i, line) in lines.iter().enumerate() {
+        for (from, scheme_len, raw_end) in find_urls(&line.chars) {
+            let mut chars = line.chars[from..raw_end].to_vec();
+            let mut map = line.map[from..raw_end].to_vec();
+            join_hard_wraps(&lines, i, cols, &mut chars, &mut map);
+
+            let end = trim_trailing(&chars, 0, chars.len());
+            if end <= scheme_len {
+                continue;
+            }
+            let cells = group_cells(&map[..end]);
+            // Keep only links with at least one cell on screen.
+            if cells.iter().any(|&(r, _, _)| r >= top && r <= bottom) {
+                spans.push(UrlSpan {
+                    url: chars[..end].iter().collect(),
+                    cells,
+                });
+            }
+        }
+    }
+
+    Links { spans }
+}
+
+fn logical_lines(screen: &vt100::Screen, start: u64, end: u64, cols: u16) -> Vec<Logical> {
+    let mut lines = Vec::new();
     let mut row = start;
     while row <= end {
-        // Gather one logical line: this row plus its wrap continuations.
-        let mut text = String::new();
+        let mut chars = Vec::new();
         let mut map: Vec<(u64, u16)> = Vec::new();
         let mut last = row;
         loop {
@@ -84,11 +138,11 @@ pub fn scan_screen(screen: &vt100::Screen) -> Links {
                     }
                     if cell.has_contents() {
                         for ch in cell.contents().chars() {
-                            text.push(ch);
+                            chars.push(ch);
                             map.push((last, col));
                         }
                     } else {
-                        text.push(' ');
+                        chars.push(' ');
                         map.push((last, col));
                     }
                 }
@@ -102,18 +156,46 @@ pub fn scan_screen(screen: &vt100::Screen) -> Links {
             }
         }
 
-        for (from, to, url) in scan_logical_line(&text) {
-            let cells = group_cells(&map[from..to]);
-            // Keep only links with at least one cell on screen.
-            if cells.iter().any(|&(r, _, _)| r >= top && r <= bottom) {
-                spans.push(UrlSpan { url, cells });
-            }
-        }
-
+        lines.push(Logical { chars, map });
         row = last + 1;
     }
+    lines
+}
 
-    Links { spans }
+/// Follow a URL that a hard line break cut in two.
+///
+/// Only a URL running flush into the last column can have been cut, and only
+/// a continuation that still looks like a URL — a path or query fragment, not
+/// an ordinary word — is taken, so prose following a link that happens to end
+/// at the margin is left alone.
+fn join_hard_wraps(
+    lines: &[Logical],
+    from: usize,
+    cols: u16,
+    chars: &mut Vec<char>,
+    map: &mut Vec<(u64, u16)>,
+) {
+    let mut i = from;
+    while map.last().is_some_and(|&(_, col)| col == cols - 1) {
+        let Some(next) = lines.get(i + 1) else {
+            return;
+        };
+        let Some((start, end)) = continuation_token(&next.chars) else {
+            return;
+        };
+        chars.extend_from_slice(&next.chars[start..end]);
+        map.extend_from_slice(&next.map[start..end]);
+        i += 1;
+    }
+}
+
+/// The leading token of a line, if it could be the tail of a split URL.
+fn continuation_token(chars: &[char]) -> Option<(usize, usize)> {
+    let start = chars.iter().take_while(|c| **c == ' ').count();
+    let end = start + chars[start..].iter().take_while(|c| is_url_char(**c)).count();
+    let token = &chars[start..end];
+    let url_like = token.iter().any(|c| URL_PUNCT.contains(c));
+    (!token.is_empty() && url_like).then_some((start, end))
 }
 
 fn group_cells(map: &[(u64, u16)]) -> Vec<(u64, u16, u16)> {
@@ -133,6 +215,21 @@ fn group_cells(map: &[(u64, u16)]) -> Vec<(u64, u16, u16)> {
 /// into the line's character sequence.
 pub fn scan_logical_line(line: &str) -> Vec<(usize, usize, String)> {
     let chars: Vec<char> = line.chars().collect();
+    find_urls(&chars)
+        .into_iter()
+        .filter_map(|(start, scheme_len, raw_end)| {
+            let end = trim_trailing(&chars, start, raw_end);
+            (end > start + scheme_len)
+                .then(|| (start, end, chars[start..end].iter().collect()))
+        })
+        .collect()
+}
+
+/// Locate URL runs, untrimmed: (start, scheme length, end exclusive).
+///
+/// Trailing punctuation is left on so callers that stitch rows together can
+/// decide what belongs to the URL once the whole thing is assembled.
+fn find_urls(chars: &[char]) -> Vec<(usize, usize, usize)> {
     let lower: Vec<char> = chars
         .iter()
         .map(|c| c.to_ascii_lowercase())
@@ -172,10 +269,7 @@ pub fn scan_logical_line(line: &str) -> Vec<(usize, usize, String)> {
             continue;
         }
 
-        end = trim_trailing(&chars, i, end);
-        if end > i + scheme_len {
-            out.push((i, end, chars[i..end].iter().collect()));
-        }
+        out.push((i, scheme_len, end));
         i = end.max(i + 1);
     }
 
