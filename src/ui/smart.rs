@@ -2,8 +2,9 @@
 //!
 //! A raw selection is a rectangle of grid cells. What the user usually wants
 //! is the *text*: soft-wrapped lines joined back together, Claude Code's
-//! gutter chrome (`⏺ `, `│ `, `⎿ `, `> `) and box borders dropped, and the
-//! block dedented. Both modes are expressed as a [`SpanSet`] — the exact
+//! gutter chrome (`⏺ `, `⎿ `, `> `, quote bars like `│ ` and `▎ `) and box
+//! borders dropped, and the block dedented. Both modes are expressed as a
+//! [`SpanSet`] — the exact
 //! cells that will be copied — so the selection highlight can show what the
 //! clipboard is going to get.
 
@@ -11,8 +12,14 @@ use std::borrow::Cow;
 
 use super::selection::{Selection, SelectionMode};
 
-/// Gutter markers stripped from the start of a logical line.
-const GUTTER_MARKERS: [char; 4] = ['⏺', '│', '⎿', '>'];
+/// Gutter markers that introduce a block of their own: the line they mark
+/// starts something new, so the line above it ended deliberately.
+const ITEM_MARKERS: [char; 3] = ['⏺', '⎿', '>'];
+
+/// Gutter markers that only draw a container around text — box sides and the
+/// quote bars Claude Code puts down the left of quoted/pasted blocks. Every
+/// line of the block carries one, so they say nothing about where it breaks.
+const BAR_MARKERS: [char; 6] = ['│', '┃', '▏', '▎', '▍', '▌'];
 
 /// Characters that make a line pure box-drawing chrome.
 const BOX_CHARS: [char; 19] = [
@@ -265,7 +272,7 @@ fn smart_spans(rows: &[RowIn], first_col: u16, last_col: u16) -> Computed {
         if is_box_border(&cells) {
             continue;
         }
-        let start = gutter_end(&cells);
+        let (start, marked) = gutter_end(&cells);
         let indent = cells[start..]
             .iter()
             .take_while(|c| c.text == " ")
@@ -276,7 +283,7 @@ fn smart_spans(rows: &[RowIn], first_col: u16, last_col: u16) -> Computed {
             start,
             indent,
             blank,
-            marked: start > 0,
+            marked,
         });
     }
 
@@ -463,32 +470,37 @@ fn trim_trailing_blanks<'a, 'b>(cells: &'a [Taken<'b>]) -> &'a [Taken<'b>] {
     &cells[..end]
 }
 
-/// Index of the first cell after any leading gutter markers.
-fn gutter_end(cells: &[Taken]) -> usize {
-    let mut idx = 0;
+/// Index of the first cell after any leading gutter markers, and whether one
+/// of them was an item marker rather than a mere container bar.
+fn gutter_end(cells: &[Taken]) -> (usize, bool) {
+    let (mut idx, mut item) = (0, false);
     // Two passes handle nesting like "│ > ".
     for _ in 0..2 {
         let marker = idx + cells[idx..].iter().take_while(|c| c.text == " ").count();
         let Some(cell) = cells.get(marker) else {
             break;
         };
-        let is_marker = cell
+        let ch = cell
             .text
             .chars()
             .next()
-            .is_some_and(|ch| GUTTER_MARKERS.contains(&ch))
-            && cell.text.chars().count() == 1;
+            .filter(|_| cell.text.chars().count() == 1);
+        let Some(ch) = ch.filter(|ch| ITEM_MARKERS.contains(ch) || BAR_MARKERS.contains(ch))
+        else {
+            break;
+        };
         // Require a separating space (or end of line) so real content that
         // merely starts with a marker character is left alone.
         let separated = cells
             .get(marker + 1)
             .is_none_or(|next| next.text == " ");
-        if !is_marker || !separated {
+        if !separated {
             break;
         }
+        item |= ITEM_MARKERS.contains(&ch);
         idx = (marker + 2).min(cells.len());
     }
-    idx
+    (idx, item)
 }
 
 fn is_box_border(cells: &[Taken]) -> bool {

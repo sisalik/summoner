@@ -24,6 +24,20 @@ fn strips_claude_gutter_markers() {
 }
 
 #[test]
+fn strips_quote_bar_markers() {
+    assert_eq!(smart_text(&["▎ pasted text"]), "pasted text");
+    assert_eq!(smart_text(&["▌ pasted text"]), "pasted text");
+    let text = smart_text(&["▎ first line", "▎", "▎ second line"]);
+    assert_eq!(text, "first line\n\nsecond line");
+}
+
+#[test]
+fn strips_indented_quote_bars() {
+    let text = smart_text(&["    ▎ short", "    ▎ a second line of the same block"]);
+    assert_eq!(text, "short\na second line of the same block");
+}
+
+#[test]
 fn strips_nested_gutters() {
     assert_eq!(smart_text(&["│ > nested quote"]), "nested quote");
 }
@@ -89,6 +103,35 @@ fn rejoins_prose_the_program_wrapped() {
     assert_eq!(
         computed.text,
         "Selections were anchored to the live screen top, so streaming output slid \
+         the text out from under the highlight.",
+    );
+}
+
+#[test]
+fn rejoins_prose_wrapped_behind_a_quote_bar() {
+    let rows = wide(&[
+        "  ▎ Selections were anchored to the live screen top, so streaming output slid",
+        "  ▎ the text out from under the highlight.",
+    ]);
+    let computed = smart::spans_core(&rows, 0, 79, SelectionMode::Smart);
+    assert_eq!(
+        computed.text,
+        "Selections were anchored to the live screen top, so streaming output slid \
+         the text out from under the highlight.",
+    );
+}
+
+/// Bars are containers, but an item marker behind one still starts a block.
+#[test]
+fn keeps_a_break_at_an_item_marker_behind_a_bar() {
+    let rows = wide(&[
+        "  ▎ Selections were anchored to the live screen top, so streaming output slid",
+        "  ▎ > the text out from under the highlight.",
+    ]);
+    let computed = smart::spans_core(&rows, 0, 79, SelectionMode::Smart);
+    assert_eq!(
+        computed.text,
+        "Selections were anchored to the live screen top, so streaming output slid\n\
          the text out from under the highlight.",
     );
 }
