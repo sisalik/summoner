@@ -503,7 +503,8 @@ impl App {
                     }
 
             let new_state = if shell_pid.is_some_and(is_claude_stopped) {
-                SessionState::Sleeping
+                // Ctrl+Z suspends claude and hands the terminal back to the shell
+                SessionState::ShellOnly
             } else if let Some(state) = hook_state {
                 if state == SessionState::Idle
                     && i < self.session_stats.len()
