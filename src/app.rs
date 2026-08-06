@@ -1658,12 +1658,18 @@ pub fn run(terminal: &mut DefaultTerminal) -> Result<()> {
                     if let Mode::Session(idx) = app.mode
                         && let Some(ref pty) = app.pty_sessions[idx] {
                             // Wrap in bracketed paste sequences so the child app
-                            // (e.g. Claude Code) treats it as a single paste event
-                            let mut buf = Vec::with_capacity(text.len() + 12);
-                            buf.extend_from_slice(b"\x1b[200~");
-                            buf.extend_from_slice(text.as_bytes());
-                            buf.extend_from_slice(b"\x1b[201~");
-                            let _ = pty.write(&buf);
+                            // (e.g. Claude Code) treats it as a single paste event —
+                            // but only if it enabled the mode (DECSET 2004); apps
+                            // that didn't would print the markers as literal text
+                            if app.vt_parsers[idx].screen().bracketed_paste() {
+                                let mut buf = Vec::with_capacity(text.len() + 12);
+                                buf.extend_from_slice(b"\x1b[200~");
+                                buf.extend_from_slice(text.as_bytes());
+                                buf.extend_from_slice(b"\x1b[201~");
+                                let _ = pty.write(&buf);
+                            } else {
+                                let _ = pty.write(text.as_bytes());
+                            }
                         }
                 }
                 Event::Mouse(mouse) => {

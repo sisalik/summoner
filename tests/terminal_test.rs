@@ -23,3 +23,15 @@ fn pty_session_can_resize() {
     let session = PtySession::spawn("/bin/bash", "/tmp", 24, 80).unwrap();
     session.resize(40, 120).unwrap();
 }
+
+#[test]
+fn bracketed_paste_mode_tracks_child_requests() {
+    // The paste path only wraps in \x1b[200~..201~ when the child app
+    // enabled bracketed paste; guard the vendored vt100 API it relies on
+    let mut parser = vt100::Parser::new(24, 80, 0);
+    assert!(!parser.screen().bracketed_paste());
+    parser.process(b"\x1b[?2004h");
+    assert!(parser.screen().bracketed_paste());
+    parser.process(b"\x1b[?2004l");
+    assert!(!parser.screen().bracketed_paste());
+}
