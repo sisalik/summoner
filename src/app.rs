@@ -219,6 +219,14 @@ impl App {
         self.nav.update_layout_with_rows(&group_sizes, layout.row_groups);
     }
 
+    /// Move the dashboard cursor onto a session, so leaving its view lands back on it.
+    fn select_session_in_nav(&mut self, sess_idx: usize) {
+        let order = session_order(&self.sessions);
+        if let Some(pos) = order.iter().position(|&i| i == sess_idx) {
+            self.nav.set_selected(pos);
+        }
+    }
+
     fn swap_sessions(&mut self, a: usize, b: usize) {
         self.sessions.swap(a, b);
         self.pty_sessions.swap(a, b);
@@ -773,6 +781,7 @@ impl App {
                 }
                 Mode::Session(idx) => {
                     self.last_session = Some(idx);
+                    self.select_session_in_nav(idx);
                     self.mode = Mode::Dashboard;
                 }
             }
