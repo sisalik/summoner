@@ -21,6 +21,7 @@ use crate::ui::dashboard::{card_metrics, layout_width, Dashboard, session_at_pos
 use crate::ui::status_bar::{tab_at_x, tab_visible_range, TabHit};
 use crate::ui::dashboard_nav::DashboardNav;
 use crate::ui::dir_picker::{DirPicker, DirPickerAction};
+use crate::ui::session_switcher::{SessionSwitcher, SwitcherAction};
 use crate::ui::links::{self, Links};
 use crate::ui::selection::{self, Selection, SelectionMode};
 use crate::ui::session_view::TerminalView;
@@ -60,6 +61,8 @@ struct App {
     sprites: Vec<RasterResult>,
     nav: DashboardNav,
     dir_picker: Option<DirPicker>,
+    session_switcher: Option<SessionSwitcher>,
+    focus_counter: u64,
     config: AppConfig,
     recent_dirs: RecentDirs,
     config_dir: PathBuf,
@@ -182,6 +185,8 @@ impl App {
             sprites,
             nav,
             dir_picker,
+            session_switcher: None,
+            focus_counter: 0,
             config,
             recent_dirs,
             config_dir,
@@ -217,6 +222,26 @@ impl App {
         let group_sizes: Vec<usize> = groups.iter().map(|g| g.sessions.len()).collect();
         let layout = crate::ui::dashboard::flow_layout(&group_sizes, layout_width(self.last_term_width));
         self.nav.update_layout_with_rows(&group_sizes, layout.row_groups);
+    }
+
+    /// Enter a session's view: resize its PTY to the current terminal,
+    /// stamp it as most recently used, and switch mode.
+    fn activate_session(&mut self, sess_idx: usize, rows: u16, cols: u16) {
+        self.reordering = false;
+        if let Some(Some(pty)) = self.pty_sessions.get(sess_idx) {
+            let (pty_rows, pty_cols) = session_size(rows, cols);
+            let _ = pty.resize(pty_rows, pty_cols);
+        }
+        self.stamp_focus(sess_idx);
+        self.last_session = Some(sess_idx);
+        self.mode = Mode::Session(sess_idx);
+    }
+
+    fn stamp_focus(&mut self, sess_idx: usize) {
+        self.focus_counter += 1;
+        if let Some(stats) = self.session_stats.get_mut(sess_idx) {
+            stats.focus_seq = self.focus_counter;
+        }
     }
 
     /// Move the dashboard cursor onto a session, so leaving its view lands back on it.
@@ -397,6 +422,7 @@ impl App {
 
         self.refresh_nav_layout();
 
+        self.stamp_focus(idx);
         self.last_session = Some(idx);
         self.mode = Mode::Session(idx);
         Ok(())
@@ -668,6 +694,12 @@ impl App {
                 }
             }
 
+            // Session switcher overlays whichever screen is active
+            if let Some(ref switcher) = self.session_switcher {
+                let (w, h) = switcher.preferred_size();
+                frame.render_widget(switcher, centered_fixed(w, h, main_area));
+            }
+
             if self.confirm_quit {
                 ConfirmDialog {
                     title: "Quit Summoner",
@@ -766,15 +798,59 @@ impl App {
             return Ok(false);
         }
 
+        // Shift+F12 toggles the session switcher overlay
+        if key.code == KeyCode::F(12) && key.modifiers.contains(KeyModifiers::SHIFT) {
+            if self.session_switcher.is_some() {
+                self.session_switcher = None;
+            } else if !self.sessions.is_empty() && self.mode != Mode::DirPicker {
+                let focus_seqs: Vec<u64> =
+                    self.session_stats.iter().map(|s| s.focus_seq).collect();
+                let current = match self.mode {
+                    Mode::Session(idx) => Some(idx),
+                    _ => None,
+                };
+                self.session_switcher =
+                    Some(SessionSwitcher::new(&self.sessions, &focus_seqs, current));
+            }
+            return Ok(false);
+        }
+
+        if self.session_switcher.is_some() {
+            if matches!(key.code, KeyCode::F(_)) {
+                // Close and fall through so the global F-key handlers fire
+                self.session_switcher = None;
+            } else {
+                let current = match self.mode {
+                    Mode::Session(idx) => Some(idx),
+                    _ => None,
+                };
+                let action = self
+                    .session_switcher
+                    .as_mut()
+                    .map(|s| s.handle_key(key))
+                    .unwrap_or(SwitcherAction::None);
+                match action {
+                    SwitcherAction::Cancel => self.session_switcher = None,
+                    SwitcherAction::Select(sess_idx) => {
+                        self.session_switcher = None;
+                        if Some(sess_idx) != current {
+                            self.activate_session(sess_idx, rows, cols);
+                        }
+                    }
+                    SwitcherAction::None => {}
+                }
+                return Ok(false);
+            }
+        }
+
         // F12 toggles between dashboard and last session
-        if key.code == KeyCode::F(12) {
+        if key.code == KeyCode::F(12) && !key.modifiers.contains(KeyModifiers::SHIFT) {
             match self.mode {
                 Mode::Dashboard | Mode::DirPicker => {
                     // Go back to last session if one exists (active or disconnected)
                     if let Some(idx) = self.last_session
                         && idx < self.sessions.len() {
-                            self.reordering = false;
-                            self.mode = Mode::Session(idx);
+                            self.activate_session(idx, rows, cols);
                             return Ok(false);
                         }
                     // No session to return to
@@ -794,13 +870,7 @@ impl App {
                 let pos = (n - 1) as usize;
                 let order = session_order(&self.sessions);
                 if let Some(&sess_idx) = order.get(pos) {
-                    self.reordering = false;
-                    if let Some(Some(pty)) = self.pty_sessions.get(sess_idx) {
-                        let (pty_rows, pty_cols) = session_size(rows, cols);
-                        let _ = pty.resize(pty_rows, pty_cols);
-                    }
-                    self.last_session = Some(sess_idx);
-                    self.mode = Mode::Session(sess_idx);
+                    self.activate_session(sess_idx, rows, cols);
                 }
                 return Ok(false);
             }
@@ -944,20 +1014,9 @@ impl App {
                 self.reordering = false;
             }
             KeyCode::Enter => {
+                // Disconnected sessions show the resume dialog; active ones switch
                 if let Some(sess_idx) = sel {
-                    if self.pty_sessions[sess_idx].is_none() {
-                        // Disconnected session — show resume dialog (like F-keys)
-                        self.last_session = Some(sess_idx);
-                        self.mode = Mode::Session(sess_idx);
-                    } else {
-                        // Active session — switch to it
-                        let (pty_rows, pty_cols) = session_size(rows, cols);
-                        if let Some(Some(pty)) = self.pty_sessions.get(sess_idx) {
-                            let _ = pty.resize(pty_rows, pty_cols);
-                        }
-                        self.last_session = Some(sess_idx);
-                        self.mode = Mode::Session(sess_idx);
-                    }
+                    self.activate_session(sess_idx, rows, cols);
                 }
             }
             _ => {}
@@ -1143,6 +1202,7 @@ impl App {
         self.clear_selection();
         self.sessions[index].state = SessionState::ShellOnly;
         self.locomotions[index].set_state(SessionState::ShellOnly);
+        self.stamp_focus(index);
         self.last_session = Some(index);
         self.mode = Mode::Session(index);
         Ok(())
@@ -1418,6 +1478,11 @@ fn key_to_bytes(key: KeyEvent, app_cursor: bool) -> Vec<u8> {
     let has_mod = xterm_mod > 1;
 
     match key.code {
+        // Ctrl+Backspace: delete word. Sent as Ctrl+W (0x17), which readline,
+        // zsh and Claude Code all bind to word-rubout. Legacy terminals emit
+        // 0x08 for Ctrl+Backspace, which crossterm reports as Ctrl+H — the two
+        // are indistinguishable, so Ctrl+H is remapped along with it.
+        KeyCode::Backspace | KeyCode::Char('h') if ctrl => vec![0x17],
         // Ctrl+char: control byte (optionally with Alt ESC prefix)
         KeyCode::Char(c) if ctrl => {
             let byte = (c as u8).wrapping_sub(b'a').wrapping_add(1);
@@ -1602,6 +1667,14 @@ pub fn run(terminal: &mut DefaultTerminal) -> Result<()> {
                         }
                 }
                 Event::Mouse(mouse) => {
+                    // Session switcher overlay swallows all mouse input;
+                    // a left click dismisses it
+                    if app.session_switcher.is_some() {
+                        if matches!(mouse.kind, MouseEventKind::Down(MouseButton::Left)) {
+                            app.session_switcher = None;
+                        }
+                        continue;
+                    }
                     // Status bar clicks — all modes
                     if mouse.row == app.status_bar_area.y
                         && matches!(mouse.kind, MouseEventKind::Down(MouseButton::Left))
@@ -1612,13 +1685,7 @@ pub fn run(terminal: &mut DefaultTerminal) -> Result<()> {
                             Some(TabHit::Tab(pos)) => {
                                 let order = session_order(&app.sessions);
                                 if let Some(&sess_idx) = order.get(pos) {
-                                    app.reordering = false;
-                                    if let Some(Some(pty)) = app.pty_sessions.get(sess_idx) {
-                                        let (pty_rows, pty_cols) = session_size(size.height, size.width);
-                                        let _ = pty.resize(pty_rows, pty_cols);
-                                    }
-                                    app.last_session = Some(sess_idx);
-                                    app.mode = Mode::Session(sess_idx);
+                                    app.activate_session(sess_idx, size.height, size.width);
                                 }
                             }
                             Some(TabHit::ScrollLeft) => {
@@ -1626,18 +1693,10 @@ pub fn run(terminal: &mut DefaultTerminal) -> Result<()> {
                                 let (vis_start, _) = tab_visible_range(
                                     &app.sessions, active, app.status_bar_area,
                                 );
-                                if vis_start > 0 {
-                                    let pos = vis_start - 1;
-                                    if let Some(&sess_idx) = order.get(pos) {
-                                        app.reordering = false;
-                                        if let Some(Some(pty)) = app.pty_sessions.get(sess_idx) {
-                                            let (pty_rows, pty_cols) = session_size(size.height, size.width);
-                                            let _ = pty.resize(pty_rows, pty_cols);
-                                        }
-                                        app.last_session = Some(sess_idx);
-                                        app.mode = Mode::Session(sess_idx);
+                                if vis_start > 0
+                                    && let Some(&sess_idx) = order.get(vis_start - 1) {
+                                        app.activate_session(sess_idx, size.height, size.width);
                                     }
-                                }
                             }
                             Some(TabHit::ScrollRight) => {
                                 let order = session_order(&app.sessions);
@@ -1645,13 +1704,7 @@ pub fn run(terminal: &mut DefaultTerminal) -> Result<()> {
                                     &app.sessions, active, app.status_bar_area,
                                 );
                                 if let Some(&sess_idx) = order.get(vis_end) {
-                                    app.reordering = false;
-                                    if let Some(Some(pty)) = app.pty_sessions.get(sess_idx) {
-                                        let (pty_rows, pty_cols) = session_size(size.height, size.width);
-                                        let _ = pty.resize(pty_rows, pty_cols);
-                                    }
-                                    app.last_session = Some(sess_idx);
-                                    app.mode = Mode::Session(sess_idx);
+                                    app.activate_session(sess_idx, size.height, size.width);
                                 }
                             }
                             Some(TabHit::Dashboard) => {
@@ -1703,12 +1756,7 @@ pub fn run(terminal: &mut DefaultTerminal) -> Result<()> {
                                         let order = session_order(&app.sessions);
                                         if let Some(&sess_idx) = order.get(pos) {
                                             let size = terminal.size()?;
-                                            if let Some(Some(pty)) = app.pty_sessions.get(sess_idx) {
-                                                let (pty_rows, pty_cols) = session_size(size.height, size.width);
-                                                let _ = pty.resize(pty_rows, pty_cols);
-                                            }
-                                            app.last_session = Some(sess_idx);
-                                            app.mode = Mode::Session(sess_idx);
+                                            app.activate_session(sess_idx, size.height, size.width);
                                         }
                                     } else {
                                         app.click_count = 1;

@@ -127,6 +127,9 @@ pub struct SessionStats {
     /// When the user last pressed Escape while Working; compared against the
     /// hook state file's mtime, hence SystemTime rather than Instant
     pub esc_interrupt: Option<std::time::SystemTime>,
+    /// Monotonic focus stamp from App.focus_counter; higher = more recently
+    /// activated. Drives MRU ordering in the session switcher.
+    pub focus_seq: u64,
 }
 
 impl Default for SessionStats {
@@ -147,6 +150,7 @@ impl SessionStats {
             last_activity: std::time::Instant::now(),
             prev_hook_state: None,
             esc_interrupt: None,
+            focus_seq: 0,
         }
     }
 }

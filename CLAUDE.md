@@ -47,6 +47,8 @@ src/
     links.rs           # URL detection across soft wraps, opening via wslview/xdg-open
     status_bar.rs      # Bottom bar: F-key session tabs with state icons, F12 hint
     dir_picker.rs      # Modal: recent dirs + fuzzy search (nucleo)
+    session_switcher.rs # Shift+F12 overlay: fuzzy session search (nucleo), MRU
+                       #   order, waiting pinned, current session dimmed
 vendor/
   vt100/               # Patched vt100 0.16.2 (stream-row API) — see its README
 tests/
@@ -57,6 +59,7 @@ tests/
   selection_test.rs
   smart_test.rs
   links_test.rs
+  switcher_test.rs
 ```
 
 ## Architecture
@@ -69,7 +72,7 @@ tests/
 
 **Session persistence**: `SessionStore` (TOML) saves all sessions every 10s and on exit. Disconnected sessions restore by re-spawning PTY in same directory and optionally running `claude --resume <conversation_id>`.
 
-**Input routing**: Global keys (Ctrl+C/Q, F12 toggle, F1-F11 session switch) are handled first, then mode-specific handlers (dashboard nav, PTY forwarding via `key_to_bytes`, dir picker).
+**Input routing**: Global keys (Ctrl+C/Q, Shift+F12 session switcher, F12 toggle, F1-F11 session switch) are handled first, then mode-specific handlers (dashboard nav, PTY forwarding via `key_to_bytes`, dir picker). The session switcher is an overlay (`Option<SessionSwitcher>`), not a `Mode` — it renders on top of whichever screen is active and swallows keys and mouse while open.
 
 **Text selection**: Summoner runs nested inside the host terminal, which sees only the rendered grid — so selection, copy and link clicking are all in-app. Mouse is captured (`main.rs`), never forwarded to the inner PTY.
 

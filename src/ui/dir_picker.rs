@@ -95,6 +95,17 @@ impl DirPicker {
                 self.selected = 0;
                 DirPickerAction::None
             }
+            // Ctrl+Backspace deletes the last word; legacy terminals send it
+            // as 0x08, which crossterm reports as Ctrl+H
+            KeyCode::Backspace | KeyCode::Char('h')
+                if key.modifiers.contains(KeyModifiers::CONTROL) =>
+            {
+                self.user_typed = true;
+                crate::ui::delete_last_word(&mut self.query);
+                self.update_filter();
+                self.selected = 0;
+                DirPickerAction::None
+            }
             KeyCode::Char(c) => {
                 self.user_typed = true;
                 self.query.push(c);
