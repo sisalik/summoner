@@ -201,19 +201,30 @@ fn join_hard_wraps(
     }
 }
 
+/// Shortest punctuation-free token accepted as a URL tail. Prose words run
+/// shorter; base64-ish query values (OAuth state, code challenges) run longer.
+const BARE_TAIL_MIN: usize = 16;
+
 /// The leading token of a line, if it could be the tail of a split URL.
 fn continuation_token(chars: &[char]) -> Option<(usize, usize)> {
     let start = chars.iter().take_while(|c| **c == ' ').count();
     let end = start + chars[start..].iter().take_while(|c| is_url_char(**c)).count();
     let token = &chars[start..end];
-    if token.is_empty() || !token.iter().any(|c| URL_PUNCT.contains(c)) {
+    if token.is_empty() {
         return None;
     }
     // A token with a scheme of its own is the next link, not this one's tail.
-    let has_scheme = token
-        .windows(3)
-        .any(|w| w == [':', '/', '/']);
-    (!has_scheme).then_some((start, end))
+    if token.windows(3).any(|w| w == [':', '/', '/']) {
+        return None;
+    }
+    if token.iter().any(|c| URL_PUNCT.contains(c)) {
+        return Some((start, end));
+    }
+    // No URL punctuation: a long bare value (e.g. a base64 state parameter)
+    // can still end a URL. Accept it only when it is the line's sole content —
+    // prose below a link comes as a sentence, not one long lone word.
+    let alone = chars[end..].iter().all(|c| *c == ' ');
+    (alone && end - start >= BARE_TAIL_MIN).then_some((start, end))
 }
 
 fn group_cells(map: &[(u64, u16)]) -> Vec<(u64, u16, u16)> {

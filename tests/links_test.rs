@@ -175,3 +175,43 @@ fn follows_a_url_split_across_three_rows() {
         vec!["https://ex.com/xabcx/def/ghi/jkl/mnop.png"],
     );
 }
+
+#[test]
+fn follows_a_bare_alphanumeric_url_tail() {
+    // An OAuth state value has no URL punctuation, but a long lone token
+    // on its own line is still the URL's tail (real case: claude login)
+    let cols = 30;
+    let mut p = vt100::Parser::new(5, cols, 100);
+    p.process(b"https://ex.com/a?x=y&state=8AB\r\nCNlVoy0nQt6Q3uhCsmqjRTTWZCc");
+
+    let links = scan_screen(p.screen());
+    assert_eq!(
+        links.spans.iter().map(|s| s.url.as_str()).collect::<Vec<_>>(),
+        vec!["https://ex.com/a?x=y&state=8ABCNlVoy0nQt6Q3uhCsmqjRTTWZCc"],
+    );
+}
+
+#[test]
+fn keeps_short_bare_words_out_of_a_hard_wrapped_url() {
+    let cols = 20;
+    let mut p = vt100::Parser::new(5, cols, 100);
+    p.process(b"see https://ex.com/x\r\nDone");
+
+    let links = scan_screen(p.screen());
+    assert_eq!(
+        links.spans.iter().map(|s| s.url.as_str()).collect::<Vec<_>>(),
+        vec!["https://ex.com/x"],
+    );
+}
+
+#[test]
+fn keeps_a_long_word_with_prose_after_it_out() {
+    // Long bare token, but not alone on its line — a sentence, not a tail
+    let cols = 40;
+    let mut p = vt100::Parser::new(5, cols, 100);
+    p.process(b"see https://ex.com/abcdefghijklmnopqrstuvwxy\r\nInternationalisation is hard");
+
+    let links = scan_screen(p.screen());
+    assert_eq!(links.spans.len(), 1);
+    assert!(links.spans[0].url.ends_with("uvwxy"));
+}
