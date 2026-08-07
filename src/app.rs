@@ -8,7 +8,7 @@ use crossterm::event::{
 use ratatui::layout::{Constraint, Layout, Rect};
 use ratatui::DefaultTerminal;
 
-use crate::claude::{find_claude_child, find_conversation_id, is_claude_stopped};
+use crate::claude::{conversation_exists, find_claude_child, find_conversation_id, is_claude_stopped};
 use crate::hooks;
 use crate::config::{AppConfig, RecentDirs, SessionStore, SessionEntry};
 use crate::creature::locomotion::LocomotionState;
@@ -72,6 +72,8 @@ struct App {
     confirm_quit: bool,
     confirm_quit_selection: bool,
     last_session: Option<usize>,
+    /// Selection in the disconnected-session dialog: true = resume Claude.
+    resume_selection: bool,
     last_save: Instant,
     last_term_width: u16,
     session_stats: Vec<SessionStats>,
@@ -196,6 +198,7 @@ impl App {
             confirm_quit: false,
             confirm_quit_selection: true,
             last_session: None,
+            resume_selection: true,
             last_save: Instant::now(),
             last_term_width: 80, // default, updated on first render/resize
             session_stats,
@@ -234,6 +237,7 @@ impl App {
         }
         self.stamp_focus(sess_idx);
         self.last_session = Some(sess_idx);
+        self.resume_selection = true;
         self.mode = Mode::Session(sess_idx);
     }
 
@@ -676,7 +680,7 @@ impl App {
                         && self.pty_sessions[idx].is_none();
 
                     if is_disconnected && idx < self.sessions.len() {
-                        render_resume_dialog(frame, main_area, &self.sessions[idx]);
+                        render_resume_dialog(frame, main_area, &self.sessions[idx], self.resume_selection);
                     } else if idx < self.vt_parsers.len() {
                         self.session_area = main_area;
                         let screen = self.vt_parsers[idx].screen();
@@ -919,10 +923,36 @@ impl App {
                     self.clear_selection();
                     return Ok(false);
                 }
-                // Disconnected session: any key resumes it
+                // Disconnected session: dialog chooses between resuming the
+                // Claude conversation (when its transcript exists) and a
+                // fresh shell; without one, any key starts the shell
                 if idx < self.pty_sessions.len() && self.pty_sessions[idx].is_none() {
                     if idx < self.sessions.len() {
-                        self.restore_session(idx, rows, cols)?;
+                        if session_resumable(&self.sessions[idx]) {
+                            match key.code {
+                                KeyCode::Left | KeyCode::Right | KeyCode::Up | KeyCode::Down => {
+                                    self.resume_selection = !self.resume_selection;
+                                }
+                                KeyCode::Enter => {
+                                    let resume = self.resume_selection;
+                                    self.restore_session(idx, rows, cols, resume)?;
+                                }
+                                KeyCode::Char('r') | KeyCode::Char('y') => {
+                                    self.restore_session(idx, rows, cols, true)?;
+                                }
+                                KeyCode::Char('s') | KeyCode::Char('n') => {
+                                    self.restore_session(idx, rows, cols, false)?;
+                                }
+                                KeyCode::Esc => {
+                                    self.last_session = Some(idx);
+                                    self.select_session_in_nav(idx);
+                                    self.mode = Mode::Dashboard;
+                                }
+                                _ => {}
+                            }
+                        } else {
+                            self.restore_session(idx, rows, cols, false)?;
+                        }
                     }
                 } else {
                     self.handle_session_input(key, idx)?;
@@ -1169,7 +1199,7 @@ impl App {
         Ok(())
     }
 
-    fn restore_session(&mut self, index: usize, rows: u16, cols: u16) -> Result<()> {
+    fn restore_session(&mut self, index: usize, rows: u16, cols: u16, resume: bool) -> Result<()> {
         if index >= self.sessions.len() {
             return Ok(());
         }
@@ -1188,8 +1218,8 @@ impl App {
             hooks::clear_state_file(&self.config_dir, pid);
         }
 
-        // If there's a claude conversation id, resume it
-        if let Some(ref conv_id) = self.sessions[index].claude_conversation_id.clone() {
+        // If the user chose to resume the claude conversation, run it
+        if resume && let Some(ref conv_id) = self.sessions[index].claude_conversation_id.clone() {
             let cmd = format!("claude --resume {}\r\n", conv_id);
             let _ = pty.write(cmd.as_bytes());
         }
@@ -1376,7 +1406,21 @@ impl ConfirmDialog<'_> {
     }
 }
 
-fn render_resume_dialog(frame: &mut ratatui::Frame, area: Rect, session: &Session) {
+/// Whether a disconnected session's Claude conversation can be resumed:
+/// it has an id and the transcript still exists on disk.
+fn session_resumable(session: &Session) -> bool {
+    session
+        .claude_conversation_id
+        .as_deref()
+        .is_some_and(|id| conversation_exists(&session.directory, id))
+}
+
+fn render_resume_dialog(
+    frame: &mut ratatui::Frame,
+    area: Rect,
+    session: &Session,
+    resume_selected: bool,
+) {
     use ratatui::widgets::{Block, Borders, Clear, Padding};
     use ratatui::style::{Color, Modifier, Style};
 
@@ -1390,17 +1434,30 @@ fn render_resume_dialog(frame: &mut ratatui::Frame, area: Rect, session: &Sessio
         }
     }
 
+    let resumable = session_resumable(session);
     let dir_value = display_path(&session.directory);
-    let claude_value = session.claude_conversation_id.as_deref().unwrap_or("none");
-    let hint = "Press any key to resume this session";
+    let claude_value = match session.claude_conversation_id.as_deref() {
+        Some(id) if resumable => id.to_string(),
+        Some(id) => format!("{} (not found)", id),
+        None => "none".to_string(),
+    };
+    let resume_label = "[ Resume Claude ]";
+    let shell_label = "[ New shell ]";
+    let hint = if resumable {
+        "\u{25c4} \u{25ba} to switch  Enter to confirm  Esc to go back"
+    } else {
+        "Press any key to start a shell here"
+    };
 
     let dir_line = format!("Directory: {}", dir_value);
     let claude_line = format!("Claude session: {}", claude_value);
     let content_width = dir_line.len()
         .max(claude_line.len())
-        .max(hint.len()) as u16;
-    // Content: dir, blank, claude, blank, hint = 5 lines + 2 border + 2 padding = 9
-    let popup_area = centered_fixed(content_width + 4, 9, area);
+        .max(hint.len())
+        .max(resume_label.len() + 4 + shell_label.len()) as u16;
+    // Content: dir, blank, claude, blank, [buttons, blank,] hint
+    let content_height = if resumable { 7 } else { 5 };
+    let popup_area = centered_fixed(content_width + 4, content_height + 4, area);
     Clear.render(popup_area, frame.buffer_mut());
 
     let block = Block::default()
@@ -1426,14 +1483,40 @@ fn render_resume_dialog(frame: &mut ratatui::Frame, area: Rect, session: &Sessio
 
     let claude_label = "Claude session: ";
     frame.buffer_mut().set_string(inner.x, inner.y + 2, claude_label, label_style);
-    frame.buffer_mut().set_string(inner.x + claude_label.len() as u16, inner.y + 2, claude_value, value_style);
+    frame.buffer_mut().set_string(inner.x + claude_label.len() as u16, inner.y + 2, &claude_value, value_style);
 
-    let hint_len = hint.len() as u16;
+    let hint_y = if resumable {
+        let btn_y = inner.y + 4;
+        let selected_style = Style::default()
+            .fg(Color::Rgb(20, 20, 30))
+            .bg(Color::Rgb(255, 180, 50))
+            .add_modifier(Modifier::BOLD);
+        let normal_style = Style::default()
+            .fg(Color::Rgb(150, 150, 170))
+            .add_modifier(Modifier::DIM);
+        let (resume_style, shell_style) = if resume_selected {
+            (selected_style, normal_style)
+        } else {
+            (normal_style, selected_style)
+        };
+        frame.buffer_mut().set_string(inner.x, btn_y, resume_label, resume_style);
+        frame.buffer_mut().set_string(
+            inner.x + resume_label.len() as u16 + 4,
+            btn_y,
+            shell_label,
+            shell_style,
+        );
+        inner.y + 6
+    } else {
+        inner.y + 4
+    };
+
+    let hint_len = hint.chars().count() as u16;
     let hint_x = inner.x + inner.width.saturating_sub(hint_len) / 2;
     let hint_style = Style::default()
         .fg(Color::Rgb(150, 150, 200))
         .add_modifier(Modifier::BOLD);
-    frame.buffer_mut().set_string(hint_x, inner.y + 4, hint, hint_style);
+    frame.buffer_mut().set_string(hint_x, hint_y, hint, hint_style);
 }
 
 use ratatui::widgets::Widget;

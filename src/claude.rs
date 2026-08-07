@@ -84,3 +84,23 @@ fn extract_json_field(json: &str, field: &str) -> Option<String> {
     let end = after_quote.find('"')?;
     Some(after_quote[..end].to_string())
 }
+
+/// Directory munging used by Claude Code for `~/.claude/projects` entries:
+/// every non-alphanumeric character becomes '-'.
+pub fn munge_project_dir(directory: &str) -> String {
+    directory
+        .chars()
+        .map(|c| if c.is_ascii_alphanumeric() { c } else { '-' })
+        .collect()
+}
+
+/// Whether a conversation transcript exists on disk, i.e. whether
+/// `claude --resume <id>` would have anything to resume.
+pub fn conversation_exists(directory: &str, conversation_id: &str) -> bool {
+    dirs::home_dir().is_some_and(|home| {
+        home.join(".claude/projects")
+            .join(munge_project_dir(directory))
+            .join(format!("{}.jsonl", conversation_id))
+            .exists()
+    })
+}
