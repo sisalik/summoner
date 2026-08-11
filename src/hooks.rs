@@ -6,20 +6,30 @@ use crate::session::SessionState;
 
 const HOOK_SCRIPT: &str = r#"#!/bin/bash
 # Summoner Claude Code hook — reports state changes via file
-input=$(cat)
 
-# Extract fields with simple parameter expansion (no jq needed)
-extract() {
-    local tmp="${input##*"\"$1\":\""}"
-    printf '%s' "${tmp%%\"*}"
-}
-
-event=$(extract hook_event_name)
-sid=$(extract session_id)
-tool=$(extract tool_name)
-notif_type=$(extract notification_type)
-agent_id=$(extract agent_id)
-trigger=$(extract trigger)
+# Extract fields without buffering the full payload in bash — PostToolUse JSON
+# embeds tool_response (hundreds of KB for image reads), and ${var##*pattern}
+# expansion over it costs minutes of CPU
+if command -v jq >/dev/null 2>&1; then
+    mapfile -t fields < <(jq -r '[.hook_event_name, .session_id, .tool_name, .notification_type, .agent_id, .trigger] | map(. // "")[]' 2>/dev/null)
+    event="${fields[0]}" sid="${fields[1]}" tool="${fields[2]}"
+    notif_type="${fields[3]}" agent_id="${fields[4]}" trigger="${fields[5]}"
+else
+    # Fallback: the fields we need all precede tool_input/tool_response, so an
+    # 8 KB cap keeps the expansion cheap
+    input=$(head -c 8192)
+    extract() {
+        local tmp="${input##*"\"$1\":\""}"
+        printf '%s' "${tmp%%\"*}"
+    }
+    event=$(extract hook_event_name)
+    sid=$(extract session_id)
+    tool=$(extract tool_name)
+    notif_type=$(extract notification_type)
+    agent_id=$(extract agent_id)
+    trigger=$(extract trigger)
+fi
+[ -z "$event" ] && exit 0
 
 # Notifications that don't change session state would otherwise clobber the last
 # meaningful event (idle_prompt fires periodically and would hide Stop)
