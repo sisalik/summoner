@@ -1,7 +1,8 @@
 use unicode_width::UnicodeWidthChar as _;
 
-// chosen to make the size of the cell struct 32 bytes
-const CONTENT_BYTES: usize = 22;
+// chosen to make the size of the cell struct 32 bytes, alongside the u16
+// hyperlink id
+const CONTENT_BYTES: usize = 20;
 
 const IS_WIDE: u8 = 0b1000_0000;
 const IS_WIDE_CONTINUATION: u8 = 0b0100_0000;
@@ -13,6 +14,8 @@ pub struct Cell {
     contents: [u8; CONTENT_BYTES],
     len: u8,
     attrs: crate::attrs::Attrs,
+    /// OSC 8 hyperlink id, or 0 for none. Resolve via `Screen::hyperlink`.
+    link: u16,
 }
 const _: () = assert!(std::mem::size_of::<Cell>() == 32);
 
@@ -22,6 +25,9 @@ impl PartialEq<Self> for Cell {
             return false;
         }
         if self.attrs != other.attrs {
+            return false;
+        }
+        if self.link != other.link {
             return false;
         }
         let len = self.len();
@@ -35,6 +41,7 @@ impl Cell {
             contents: Default::default(),
             len: 0,
             attrs: crate::attrs::Attrs::default(),
+            link: 0,
         }
     }
 
@@ -42,7 +49,7 @@ impl Cell {
         usize::from(self.len & LEN_BITS)
     }
 
-    pub(crate) fn set(&mut self, c: char, a: crate::attrs::Attrs) {
+    pub(crate) fn set(&mut self, c: char, a: crate::attrs::Attrs, link: u16) {
         self.len = 0;
         self.append_char(0, c);
         // strings in this context should always be an arbitrary character
@@ -50,6 +57,7 @@ impl Cell {
         // have to look at the first character
         self.set_wide(c.width().unwrap_or(1) > 1);
         self.attrs = a;
+        self.link = link;
     }
 
     pub(crate) fn append(&mut self, c: char) {
@@ -76,6 +84,11 @@ impl Cell {
     pub(crate) fn clear(&mut self, attrs: crate::attrs::Attrs) {
         self.len = 0;
         self.attrs = attrs;
+        self.link = 0;
+    }
+
+    pub(crate) fn set_link(&mut self, link: u16) {
+        self.link = link;
     }
 
     /// Returns the text contents of the cell.
@@ -128,6 +141,14 @@ impl Cell {
 
     pub(crate) fn attrs(&self) -> &crate::attrs::Attrs {
         &self.attrs
+    }
+
+    /// Returns the cell's OSC 8 hyperlink id, or 0 when it carries no link.
+    ///
+    /// Resolve the id to its target with [`crate::Screen::hyperlink`].
+    #[must_use]
+    pub fn link_id(&self) -> u16 {
+        self.link
     }
 
     /// Returns the foreground color of the cell.

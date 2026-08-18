@@ -131,3 +131,54 @@ fn session_view_highlights_only_the_copied_cells() {
     // (column 10 holds the cursor, which is reversed for its own reasons).
     assert!(!reversed(11));
 }
+
+#[test]
+fn session_view_underlines_osc8_labels() {
+    use ratatui::layout::Position;
+    use ratatui::style::Modifier;
+    use summoner::ui::links;
+    use summoner::ui::session_view::TerminalView;
+
+    let mut p = vt100::Parser::new(4, 40, 100);
+    p.process(b"see \x1b]8;;https://example.com/docs\x1b\\the docs\x1b]8;;\x1b\\ ok");
+
+    let found = links::scan_screen(p.screen());
+    let area = Rect::new(0, 0, 40, 4);
+    let mut buf = Buffer::empty(area);
+    TerminalView::new(p.screen())
+        .with_links(Some(&found))
+        .render(area, &mut buf);
+
+    let styled = |x: u16| {
+        let style = buf[Position { x, y: 0 }].style();
+        (style.add_modifier.contains(Modifier::UNDERLINED), style.fg)
+    };
+    // "see " is plain; the "the docs" label is a link; " ok" is plain again.
+    assert!(!styled(3).0);
+    assert!(styled(4).0);
+    assert!(styled(11).0);
+    assert!(!styled(12).0);
+    assert_eq!(styled(4).1, styled(11).1);
+    assert_ne!(styled(4).1, styled(3).1);
+}
+
+#[test]
+fn status_bar_shows_hovered_link_target() {
+    let sessions = vec![make_session("alpha", SessionState::Working)];
+    let area = Rect::new(0, 0, 60, 1);
+
+    let mut buf = Buffer::empty(area);
+    StatusBar::new(&sessions, Some(0))
+        .with_hover_url(Some("https://example.com/docs"))
+        .render(area, &mut buf);
+    let text: String = (0..60).map(|x| buf[(x, 0)].symbol()).collect();
+    assert!(text.contains("https://example.com/docs"), "got {text:?}");
+    assert!(text.contains("F12"), "the dashboard hint stays put");
+    assert!(!text.contains("alpha"), "the tab strip gives way to the URL");
+
+    // Without a hover the bar is unchanged.
+    let mut buf = Buffer::empty(area);
+    StatusBar::new(&sessions, Some(0)).render(area, &mut buf);
+    let text: String = (0..60).map(|x| buf[(x, 0)].symbol()).collect();
+    assert!(text.contains("alpha"));
+}

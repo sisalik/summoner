@@ -213,6 +213,16 @@ impl Grid {
         self.scrolled_lines
     }
 
+    /// Drops every cell's hyperlink id, in the live rows and the scrollback.
+    pub fn clear_links(&mut self) {
+        for row in &mut self.rows {
+            row.clear_links();
+        }
+        for row in &mut self.scrollback {
+            row.clear_links();
+        }
+    }
+
     /// Looks up a row by its stream row, without touching the scrollback
     /// offset.
     ///

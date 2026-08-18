@@ -44,13 +44,15 @@ src/
     selection.rs       # Mouse selection state in stream-row coordinates,
                        #   word/line select, OSC 52 clipboard
     smart.rs           # Smart vs raw selection -> SpanSet (the exact copied cells)
-    links.rs           # URL detection across soft wraps, opening via wslview/xdg-open
-    status_bar.rs      # Bottom bar: F-key session tabs with state icons, F12 hint
+    links.rs           # OSC 8 hyperlinks + URL detection across soft wraps,
+                       #   opening via wslview/xdg-open
+    status_bar.rs      # Bottom bar: F-key session tabs with state icons, F12 hint;
+                       #   shows the hovered link's target in place of the tabs
     dir_picker.rs      # Modal: recent dirs + fuzzy search (nucleo)
     session_switcher.rs # Shift+F12 overlay: fuzzy session search (nucleo), MRU
                        #   order, waiting pinned, current session dimmed
 vendor/
-  vt100/               # Patched vt100 0.16.2 (stream-row API) — see its README
+  vt100/               # Patched vt100 0.16.2 (stream-row API, OSC 8) — see its README
 tests/
   creature_test.rs
   config_test.rs
@@ -79,8 +81,8 @@ tests/
 - Coordinates are *stream rows*: `screen.scrolled_lines() - screen.scrollback() + viewport_row`, via `selection::viewport_top`. `scrolled_lines` counts every row that ever scrolled off the top, so a selection stays glued to its text while output streams and while scrolling. It comes from the patched vt100 in `vendor/vt100` (`[patch.crates-io]`) — upstream exposes no such counter, and it can't be derived once the scrollback ring evicts rows.
 - Drag selects smart (join soft wraps, strip `⏺ ⎿ >` item gutters and `│ ┃ ▏ ▎ ▍ ▌` quote bars plus box borders, dedent per gutter depth, reflow prose the producing program wrapped); Alt+drag selects raw. Item markers start a block, so the line above one keeps its break; bars are only containers every line of the block carries, so quoted prose still reflows. Chrome and indents are measured against the *whole* line, not the selected part — otherwise starting a drag on a line's first character makes it look un-indented and cancels the block's dedent. Double-click selects a word (underscores included, so `snake_case` is one word) or a whole URL; triple-click selects a logical line. Ctrl+C copies via OSC 52.
 - `smart::compute_spans` returns the exact cells that will be copied, and the renderer highlights those cells — the highlight is what the clipboard gets. It is recomputed every frame, which is what keeps it correct during streaming and live dragging.
-- URLs are found by scanning the visible rows, joining soft-wrapped rows first (`links::scan_screen`). They render underlined; Ctrl+click opens them. Under WSL the Windows browser wins (wslview, then `powershell.exe -EncodedCommand`, then `cmd.exe start`) and `xdg-open` is the last resort, since on WSL it opens a Linux browser. PowerShell is handed a base64 UTF-16LE script so no layer re-parses the URL — `&` in a query string would otherwise break it.
-- Both per-frame scans are on the render path (~160 µs idle at 200x50). Keep them allocation-light — borrow cell text via `Cow` rather than building a `String` per cell.
+- Links come from two sources, both assembled by `links::scan_screen`. OSC 8 hyperlinks are read off the grid: the patched vt100 stamps an interned link id on every cell of the label, so a label that wraps, scrolls or repaints keeps its target. Bare URLs are found by scanning the visible rows, joining soft-wrapped rows first. OSC 8 spans are listed first, so a label that reads like a URL still resolves to the target the program declared, not the one it printed. Only `http(s)` targets become spans — `links::is_openable` gates both what is drawn as clickable and what `open_url` will launch, so nothing is ever underlined that a click would ignore. Both render underlined; Ctrl+click opens them, and hovering one shows its real target in the status bar, since an OSC 8 label can name anywhere. Under WSL the Windows browser wins (wslview, then `powershell.exe -EncodedCommand`, then `cmd.exe start`) and `xdg-open` is the last resort, since on WSL it opens a Linux browser. PowerShell is handed a base64 UTF-16LE script so no layer re-parses the URL — `&` in a query string would otherwise break it.
+- All three per-frame scans are on the render path (~160 µs idle at 200x50). Keep them allocation-light — borrow cell text via `Cow` rather than building a `String` per cell.
 
 **Creature animation**: Design principles, canvas constraints, and the dev/verification workflow (`--test-creatures`, `--render-creature`, both behind the `dev-creature` feature) are documented in [docs/creature-animation.md](docs/creature-animation.md). Read it before changing anything under `src/creature/`.
 

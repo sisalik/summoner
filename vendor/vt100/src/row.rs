@@ -33,6 +33,12 @@ impl Row {
         self.cells.iter()
     }
 
+    pub fn clear_links(&mut self) {
+        for cell in &mut self.cells {
+            cell.set_link(0);
+        }
+    }
+
     pub fn get(&self, col: u16) -> Option<&crate::Cell> {
         self.cells.get(usize::from(col))
     }

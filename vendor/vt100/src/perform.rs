@@ -207,6 +207,15 @@ impl<CB: crate::callbacks::Callbacks> vte::Perform for WrappedScreen<CB> {
             [b"2", s] => {
                 self.callbacks.set_window_title(&mut self.screen, s);
             }
+            // OSC 8 ; params ; URI  opens a hyperlink; an empty URI closes
+            // it. vte splits params on ';', so the URI is rejoined in case it
+            // contains one.
+            [b"8", _params, uri @ ..] => {
+                self.screen.set_hyperlink(&uri.join(&b';'));
+            }
+            [b"8"] => {
+                self.screen.set_hyperlink(b"");
+            }
             [b"52", ty, data] => {
                 match (
                     ty.iter().all(|c| CLIPBOARD_SELECTOR.contains(c)),

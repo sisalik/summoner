@@ -59,6 +59,9 @@ pub struct Screen {
     attrs: crate::attrs::Attrs,
     saved_attrs: crate::attrs::Attrs,
 
+    link: u16,
+    links: crate::links::Links,
+
     modes: u8,
     mouse_protocol_mode: MouseProtocolMode,
     mouse_protocol_encoding: MouseProtocolEncoding,
@@ -77,6 +80,9 @@ impl Screen {
 
             attrs: crate::attrs::Attrs::default(),
             saved_attrs: crate::attrs::Attrs::default(),
+
+            link: 0,
+            links: crate::links::Links::default(),
 
             modes: 0,
             mouse_protocol_mode: MouseProtocolMode::default(),
@@ -192,6 +198,35 @@ impl Screen {
         col: u16,
     ) -> Option<&crate::Cell> {
         self.grid().stream_row(stream_row).and_then(|r| r.get(col))
+    }
+
+    /// Returns the target of the OSC 8 hyperlink `id`, as reported by
+    /// [`crate::Cell::link_id`].
+    ///
+    /// Returns `None` for id `0` (no link) or an id that is no longer known.
+    #[must_use]
+    pub fn hyperlink(&self, id: u16) -> Option<&str> {
+        self.links.get(id)
+    }
+
+    /// Opens an OSC 8 hyperlink, so subsequent text carries `uri`. An empty or
+    /// malformed `uri` closes the current one.
+    pub(crate) fn set_hyperlink(&mut self, uri: &[u8]) {
+        self.link = match self.links.intern(uri) {
+            crate::links::Intern::Id(id) => id,
+            crate::links::Intern::Exhausted => {
+                // Ids must never be reused while cells still reference them:
+                // a stale id would resolve to some other program's URL. Drop
+                // every reference first, then start the table over.
+                self.grid.clear_links();
+                self.alternate_grid.clear_links();
+                self.links.recycle();
+                match self.links.intern(uri) {
+                    crate::links::Intern::Id(id) => id,
+                    crate::links::Intern::Exhausted => 0,
+                }
+            }
+        };
     }
 
     /// Returns the text contents of the terminal.
@@ -777,6 +812,7 @@ impl Screen {
         let pos = self.grid().pos();
         let size = self.grid().size();
         let attrs = self.attrs;
+        let link = self.link;
 
         let width = c.width();
         if width.is_none() && (u32::from(c)) < 256 {
@@ -939,7 +975,7 @@ impl Screen {
                     // wide character, so it must have the second half of the
                     // wide character after it.
                     .unwrap();
-                next_cell.set(' ', attrs);
+                next_cell.set(' ', attrs, link);
             }
 
             let cell = self
@@ -950,7 +986,7 @@ impl Screen {
                 // called col_wrap() immediately before this, which ensures
                 // that self.grid().pos().col has a valid value.
                 .unwrap();
-            cell.set(c, attrs);
+            cell.set(c, attrs, link);
             self.grid_mut().col_inc(1);
             if width > 1 {
                 let pos = self.grid().pos();
@@ -1006,6 +1042,7 @@ impl Screen {
                     // into account.
                     .unwrap();
                 next_cell.clear(crate::attrs::Attrs::default());
+                next_cell.set_link(link);
                 next_cell.set_wide_continuation(true);
                 self.grid_mut().col_inc(1);
             }

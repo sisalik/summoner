@@ -9,11 +9,20 @@ use crate::session::{group_by_project, Session, SessionState};
 pub struct StatusBar<'a> {
     sessions: &'a [Session],
     active_index: Option<usize>,
+    hover_url: Option<&'a str>,
 }
 
 impl<'a> StatusBar<'a> {
     pub fn new(sessions: &'a [Session], active_index: Option<usize>) -> Self {
-        Self { sessions, active_index }
+        Self { sessions, active_index, hover_url: None }
+    }
+
+    /// Show the target of the link under the mouse in place of the tab strip.
+    /// An OSC 8 label can name anywhere, so the destination is only ever one
+    /// hover away.
+    pub fn with_hover_url(mut self, url: Option<&'a str>) -> Self {
+        self.hover_url = url;
+        self
     }
 }
 
@@ -32,6 +41,16 @@ impl<'a> Widget for StatusBar<'a> {
         let f12_hint = "\u{2317} F12";
         let f12_hint_width = f12_hint.width();
         let tab_budget = (area.width as usize).saturating_sub(f12_hint_width + 1);
+
+        if let Some(url) = self.hover_url {
+            let style = Style::default()
+                .fg(Color::Rgb(120, 170, 255))
+                .bg(Color::Rgb(30, 30, 40));
+            let text = format!(" \u{1F517} {} ", url);
+            write_str(buf, area.x, area.y, &text, style, area.x + tab_budget as u16);
+            write_hint(buf, area, f12_hint);
+            return;
+        }
 
         let groups = group_by_project(self.sessions);
         let mut session_order: Vec<usize> = Vec::new();
@@ -112,12 +131,16 @@ impl<'a> Widget for StatusBar<'a> {
             write_str(buf, x, area.y, &text, overflow_style, max_tab_x);
         }
 
-        let hint_x = area.x + area.width - f12_hint_width as u16;
-        let hint_style = Style::default()
-            .fg(Color::Rgb(150, 150, 170))
-            .bg(Color::Rgb(30, 30, 40));
-        write_str(buf, hint_x, area.y, f12_hint, hint_style, area.x + area.width);
+        write_hint(buf, area, f12_hint);
     }
+}
+
+fn write_hint(buf: &mut Buffer, area: Rect, hint: &str) {
+    let hint_x = area.x + area.width - hint.width() as u16;
+    let style = Style::default()
+        .fg(Color::Rgb(150, 150, 170))
+        .bg(Color::Rgb(30, 30, 40));
+    write_str(buf, hint_x, area.y, hint, style, area.x + area.width);
 }
 
 /// Result of a status bar hit-test.

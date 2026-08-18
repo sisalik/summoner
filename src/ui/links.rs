@@ -1,12 +1,15 @@
 //! URL detection for PTY session views.
 //!
-//! vt100 drops OSC 8 hyperlinks and the host terminal only sees Summoner's
-//! own grid, so links are found by scanning the rendered text. Soft-wrapped
-//! rows are joined before scanning, which is what makes a URL split across
-//! two rows resolve to one string instead of two broken halves. Claude Code
-//! wraps its own output instead of letting the terminal do it, so a URL can
-//! also be split by a real newline; those rows are rejoined too, but only
-//! when the break falls on the right margin mid-URL.
+//! Links come from two places. A program may mark one explicitly with an
+//! OSC 8 escape, which the patched vt100 records as a link id on every cell of
+//! the label; those are read straight off the grid. Everything else is found
+//! by scanning the rendered text, because the host terminal only ever sees
+//! Summoner's composed grid and cannot do it for us. Soft-wrapped rows are
+//! joined before scanning, which is what makes a URL split across two rows
+//! resolve to one string instead of two broken halves. Claude Code wraps its
+//! own output instead of letting the terminal do it, so a URL can also be
+//! split by a real newline; those rows are rejoined too, but only when the
+//! break falls on the right margin mid-URL.
 
 use super::selection::viewport_top;
 
@@ -45,6 +48,38 @@ impl Links {
                 .any(|&(r, start, end)| r == stream_row && col >= start && col <= end)
         })
     }
+}
+
+/// Collect the OSC 8 hyperlinks marked on the visible cells.
+///
+/// Needs no wrap lookaround: the link id travels on the cell, so a label split
+/// across rows is reassembled by grouping on the id alone.
+fn scan_osc8(screen: &vt100::Screen, top: u64, rows: u16, cols: u16) -> Vec<UrlSpan> {
+    let mut spans: Vec<(u16, UrlSpan)> = Vec::new();
+    for row in 0..rows {
+        let stream_row = top + u64::from(row);
+        let mut col = 0;
+        while col < cols {
+            let id = screen.cell(row, col).map_or(0, vt100::Cell::link_id);
+            if id == 0 {
+                col += 1;
+                continue;
+            }
+            let start = col;
+            while col < cols
+                && screen.cell(row, col).map_or(0, vt100::Cell::link_id) == id
+            {
+                col += 1;
+            }
+            let run = (stream_row, start, col - 1);
+            if let Some(entry) = spans.iter_mut().find(|(seen, _)| *seen == id) {
+                entry.1.cells.push(run);
+            } else if let Some(url) = screen.hyperlink(id).filter(|u| is_openable(u)) {
+                spans.push((id, UrlSpan { url: url.to_string(), cells: vec![run] }));
+            }
+        }
+    }
+    spans.into_iter().map(|(_, span)| span).collect()
 }
 
 /// One logical line: a row plus its soft-wrap continuations, with each
@@ -94,7 +129,9 @@ pub fn scan_screen(screen: &vt100::Screen) -> Links {
     }
 
     let lines = logical_lines(screen, start, end, cols);
-    let mut spans = Vec::new();
+    // OSC 8 spans come first so `span_at` prefers a link the program declared
+    // over a bare URL matched in the same cells.
+    let mut spans = scan_osc8(screen, top, rows, cols);
     for (i, line) in lines.iter().enumerate() {
         for (from, scheme_len, raw_end) in find_urls(&line.chars) {
             let mut chars = line.chars[from..raw_end].to_vec();
@@ -365,9 +402,16 @@ fn powershell_encoded_command(url: &str) -> String {
     base64::engine::general_purpose::STANDARD.encode(utf16)
 }
 
+/// Whether a URL is one Summoner will hand to a browser. Also gates which
+/// OSC 8 links are drawn as clickable, so nothing is ever underlined that a
+/// Ctrl+click would silently ignore.
+fn is_openable(url: &str) -> bool {
+    url.starts_with("http://") || url.starts_with("https://")
+}
+
 /// Open a URL in the user's browser, without blocking the UI.
 pub fn open_url(url: &str) {
-    if !(url.starts_with("http://") || url.starts_with("https://")) {
+    if !is_openable(url) {
         return;
     }
 

@@ -215,3 +215,177 @@ fn keeps_a_long_word_with_prose_after_it_out() {
     assert_eq!(links.spans.len(), 1);
     assert!(links.spans[0].url.ends_with("uvwxy"));
 }
+
+/// Wraps `label` in an OSC 8 hyperlink pointing at `url`, ST-terminated.
+fn osc8(url: &str, label: &str) -> Vec<u8> {
+    format!("\x1b]8;;{}\x1b\\{}\x1b]8;;\x1b\\", url, label).into_bytes()
+}
+
+#[test]
+fn finds_osc8_hyperlink() {
+    let mut p = vt100::Parser::new(4, 40, 100);
+    p.process(b"see ");
+    p.process(&osc8("https://example.com/docs", "the docs"));
+    p.process(b" ok");
+
+    // The label renders as plain text, with no escape residue.
+    assert!(p.screen().contents().starts_with("see the docs ok"));
+
+    let links = scan_screen(p.screen());
+    assert_eq!(links.spans.len(), 1);
+    assert_eq!(links.spans[0].url, "https://example.com/docs");
+    assert_eq!(links.spans[0].cells, vec![(0, 4, 11)]);
+    assert!(links.contains(0, 4));
+    assert!(links.contains(0, 11));
+    assert!(!links.contains(0, 3));
+    assert!(!links.contains(0, 12));
+}
+
+#[test]
+fn accepts_bel_terminated_hyperlink() {
+    let mut p = vt100::Parser::new(4, 40, 100);
+    p.process(b"\x1b]8;;https://example.com\x07link\x1b]8;;\x07 after");
+
+    let links = scan_screen(p.screen());
+    assert_eq!(links.spans.len(), 1);
+    assert_eq!(links.spans[0].url, "https://example.com");
+    assert_eq!(links.spans[0].cells, vec![(0, 0, 3)]);
+}
+
+#[test]
+fn hyperlink_label_spanning_soft_wrap_is_one_span() {
+    let cols = 10;
+    let mut p = vt100::Parser::new(4, cols, 100);
+    p.process(&osc8("https://example.com", "aaaaaaaaaaaa"));
+
+    assert_eq!(p.screen().stream_row_wrapped(0), Some(true));
+    let links = scan_screen(p.screen());
+    assert_eq!(links.spans.len(), 1);
+    assert_eq!(links.spans[0].url, "https://example.com");
+    assert_eq!(links.spans[0].cells, vec![(0, 0, 9), (1, 0, 1)]);
+}
+
+#[test]
+fn hyperlink_survives_scrolling_into_scrollback() {
+    let mut p = vt100::Parser::new(3, 40, 100);
+    p.process(&osc8("https://example.com", "link"));
+    p.process(b"\r\nsecond\r\nthird\r\nfourth");
+
+    // The label has scrolled off the top; stream row 0 still carries it.
+    let links = scan_screen(p.screen());
+    assert!(links.spans.is_empty(), "not visible, so not scanned");
+    assert_eq!(
+        p.screen().stream_cell(0, 0).map(vt100::Cell::link_id),
+        Some(1)
+    );
+
+    p.screen_mut().set_scrollback(1);
+    let links = scan_screen(p.screen());
+    assert_eq!(links.spans.len(), 1);
+    assert_eq!(links.spans[0].cells, vec![(0, 0, 3)]);
+}
+
+#[test]
+fn close_sequence_ends_the_link() {
+    let mut p = vt100::Parser::new(4, 40, 100);
+    p.process(&osc8("https://example.com", "link"));
+    p.process(b"after");
+
+    let ids: Vec<u16> = (0..9)
+        .map(|c| p.screen().cell(0, c).unwrap().link_id())
+        .collect();
+    assert_eq!(ids, vec![1, 1, 1, 1, 0, 0, 0, 0, 0]);
+}
+
+#[test]
+fn ignores_hyperlinks_summoner_cannot_open() {
+    for url in ["file:///etc/passwd", "mailto:a@example.com", "javascript:alert(1)"] {
+        let mut p = vt100::Parser::new(4, 40, 100);
+        p.process(&osc8(url, "click"));
+        assert!(
+            scan_screen(p.screen()).spans.is_empty(),
+            "{url} should not render as clickable"
+        );
+    }
+}
+
+#[test]
+fn rejects_malformed_hyperlink_targets() {
+    // A URI carrying whitespace or controls never becomes a link.
+    let mut p = vt100::Parser::new(4, 40, 100);
+    p.process(b"\x1b]8;;https://exa mple.com\x1b\\click\x1b]8;;\x1b\\");
+    assert!(scan_screen(p.screen()).spans.is_empty());
+    assert_eq!(p.screen().cell(0, 0).unwrap().link_id(), 0);
+}
+
+#[test]
+fn rejoins_uri_containing_a_semicolon() {
+    let mut p = vt100::Parser::new(4, 40, 100);
+    p.process(b"\x1b]8;;https://example.com/a;b\x1b\\click\x1b]8;;\x1b\\");
+
+    let links = scan_screen(p.screen());
+    assert_eq!(links.spans.len(), 1);
+    assert_eq!(links.spans[0].url, "https://example.com/a;b");
+}
+
+#[test]
+fn ignores_osc8_params_but_honours_the_uri() {
+    let mut p = vt100::Parser::new(4, 40, 100);
+    p.process(b"\x1b]8;id=xyz;https://example.com\x1b\\click\x1b]8;;\x1b\\");
+
+    let links = scan_screen(p.screen());
+    assert_eq!(links.spans.len(), 1);
+    assert_eq!(links.spans[0].url, "https://example.com");
+}
+
+#[test]
+fn sgr_reset_does_not_break_a_link_but_erase_clears_it() {
+    let mut p = vt100::Parser::new(4, 40, 100);
+    p.process(b"\x1b]8;;https://example.com\x1b\\ab\x1b[0mcd\x1b]8;;\x1b\\");
+    let links = scan_screen(p.screen());
+    assert_eq!(links.spans.len(), 1, "SGR reset must not close the link");
+    assert_eq!(links.spans[0].cells, vec![(0, 0, 3)]);
+
+    // Erasing the line drops the ids with the text.
+    p.process(b"\r\x1b[K");
+    assert_eq!(p.screen().cell(0, 0).unwrap().link_id(), 0);
+    assert!(scan_screen(p.screen()).spans.is_empty());
+}
+
+#[test]
+fn same_target_twice_shares_one_span() {
+    let mut p = vt100::Parser::new(4, 40, 100);
+    p.process(&osc8("https://example.com", "one"));
+    p.process(b" gap ");
+    p.process(&osc8("https://example.com", "two"));
+
+    // Equal targets intern to one id, so both runs belong to the same link.
+    let links = scan_screen(p.screen());
+    assert_eq!(links.spans.len(), 1);
+    assert_eq!(links.spans[0].cells, vec![(0, 0, 2), (0, 8, 10)]);
+}
+
+#[test]
+fn osc8_span_wins_over_a_bare_url_in_the_label() {
+    let mut p = vt100::Parser::new(4, 60, 100);
+    p.process(&osc8("https://real.example.com", "https://decoy.example.com"));
+
+    let links = scan_screen(p.screen());
+    // Both scanners match these cells; the declared target is what a click gets.
+    assert_eq!(
+        links.span_at(0, 0).map(|s| s.url.as_str()),
+        Some("https://real.example.com")
+    );
+}
+
+#[test]
+fn finds_osc8_and_bare_urls_together() {
+    let mut p = vt100::Parser::new(4, 60, 100);
+    p.process(&osc8("https://example.com/a", "label"));
+    p.process(b" and https://example.com/b");
+
+    let links = scan_screen(p.screen());
+    let mut urls: Vec<&str> = links.spans.iter().map(|s| s.url.as_str()).collect();
+    urls.sort_unstable();
+    assert_eq!(urls, vec!["https://example.com/a", "https://example.com/b"]);
+}

@@ -86,6 +86,9 @@ struct App {
     /// highlight tracks streaming output and live dragging.
     session_spans: Option<SpanSet>,
     session_links: Links,
+    /// Cell the mouse is resting on, when it holds a link. Stored as a cell
+    /// rather than a URL so the status bar always shows the current target.
+    hover_link: Option<(u64, u16)>,
     session_area: Rect,
     dashboard_area: Rect,
     status_bar_area: Rect,
@@ -209,6 +212,7 @@ impl App {
             selection: None,
             session_spans: None,
             session_links: Links::default(),
+            hover_link: None,
             session_area: Rect::default(),
             dashboard_area: Rect::default(),
             status_bar_area: Rect::default(),
@@ -642,6 +646,7 @@ impl App {
                 self.selection = None;
                 self.session_spans = None;
                 self.session_links = Links::default();
+                self.hover_link = None;
             }
 
             // Render main content
@@ -717,7 +722,15 @@ impl App {
                 Mode::Session(idx) => Some(idx),
                 _ => None,
             };
-            let status_bar = StatusBar::new(&self.sessions, active_index);
+            // The switcher overlay swallows mouse input, so a hover left
+            // standing underneath it would go stale.
+            let hover_url = self
+                .hover_link
+                .filter(|_| self.session_switcher.is_none())
+                .and_then(|(row, col)| self.session_links.span_at(row, col))
+                .map(|span| span.url.as_str());
+            let status_bar = StatusBar::new(&self.sessions, active_index)
+                .with_hover_url(hover_url);
             frame.render_widget(status_bar, status_area);
         })?;
 
@@ -1064,17 +1077,40 @@ impl App {
         let scrollback = self.vt_parsers[idx].screen().scrollback();
 
         match mouse.kind {
+            // Scrolling slides content out from under a stationary cursor, so
+            // whatever was hovered is no longer there.
             MouseEventKind::ScrollUp => {
+                self.hover_link = None;
                 let new = scrollback.saturating_add(3);
                 if new != scrollback {
                     self.vt_parsers[idx].screen_mut().set_scrollback(new);
                 }
             }
             MouseEventKind::ScrollDown => {
+                self.hover_link = None;
                 let new = scrollback.saturating_sub(3);
                 if new != scrollback {
                     self.vt_parsers[idx].screen_mut().set_scrollback(new);
                 }
+            }
+            MouseEventKind::Moved => {
+                let inside = mouse.row >= area.y
+                    && mouse.row < area.y + area.height
+                    && mouse.column >= area.x
+                    && mouse.column < area.x + area.width;
+                self.hover_link = if inside {
+                    let (stream_row, col) = selection::mouse_to_stream(
+                        mouse.row,
+                        mouse.column,
+                        area,
+                        self.vt_parsers[idx].screen(),
+                    );
+                    self.session_links
+                        .contains(stream_row, col)
+                        .then_some((stream_row, col))
+                } else {
+                    None
+                };
             }
             MouseEventKind::Down(MouseButton::Left) => {
                 self.clear_selection();
