@@ -135,9 +135,19 @@ pub fn select_line(stream_row: u64, cols: u16) -> Selection {
 }
 
 /// Copy text to the system clipboard via the OSC 52 escape sequence.
+///
+/// Terminated with ST rather than BEL, and flushed immediately: this is the
+/// only escape Summoner writes to the host terminal outside Ratatui's backend,
+/// and a half-written OSC leaves the host swallowing everything drawn after it
+/// as string data.
 pub fn copy_to_clipboard(text: &str) {
     use base64::Engine;
+    if text.is_empty() {
+        return;
+    }
     let encoded = base64::engine::general_purpose::STANDARD.encode(text);
-    let osc = format!("\x1b]52;c;{}\x07", encoded);
-    let _ = std::io::Write::write_all(&mut std::io::stdout(), osc.as_bytes());
+    let osc = format!("\x1b]52;c;{}\x1b\\", encoded);
+    let mut out = std::io::stdout();
+    let _ = std::io::Write::write_all(&mut out, osc.as_bytes());
+    let _ = std::io::Write::flush(&mut out);
 }
