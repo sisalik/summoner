@@ -60,3 +60,49 @@ fn a_claude_code_reply_copies_as_markdown() {
     };
     assert_eq!(smart::compute_spans(p.screen(), &sel).text(), EXPECTED);
 }
+
+const GREEN: &str = "\x1b[38;2;13;188;121m";
+const BLUE: &str = "\x1b[38;2;36;114;200m";
+const YELLOW: &str = "\x1b[38;2;229;229;16m";
+const CYAN: &str = "\x1b[38;2;78;201;176m";
+
+/// The colours are the ones measured off a live Claude Code code block.
+#[test]
+fn a_syntax_highlighted_code_block_fences_and_does_not_reflow() {
+    let w: u16 = 82;
+    let mut p = vt100::Parser::new(30, w, 200);
+    let lines = vec![
+        "  Here is a snippet from the detector:".to_string(),
+        String::new(),
+        format!("  {GREEN}/// Runs of consecutive code lines.{OFF}"),
+        format!("  {BLUE}fn{OFF} {CYAN}detect_blocks{OFF}(lines: &[{YELLOW}Line{OFF}]) -> {YELLOW}Vec{OFF}<{YELLOW}Range{OFF}<{YELLOW}usize{OFF}>> {{"),
+        format!("      {BLUE}let{OFF} {BLUE}mut{OFF} blocks = {YELLOW}Vec{OFF}::{CYAN}new{OFF}();"),
+        format!("      {BLUE}let{OFF} code = i < lines.{CYAN}len{OFF}() && {CYAN}is_code_line{OFF}(&lines[i], guards);"),
+        format!("      {BLUE}match{OFF} (code, start) {{"),
+        format!("          ({YELLOW}true{OFF}, {YELLOW}None{OFF}) => start = {YELLOW}Some{OFF}(i),"),
+        "      }".to_string(),
+        "  }".to_string(),
+        String::new(),
+        "  That is the whole thing.".to_string(),
+    ];
+    for line in &lines {
+        p.process(line.as_bytes());
+        p.process(b"\r\n");
+    }
+    let sel = Selection {
+        anchor: (0, 0),
+        moving: (lines.len() as u64 - 1, w - 1),
+        dragged: true,
+        mode: SelectionMode::Smart,
+    };
+    let text = smart::compute_spans(p.screen(), &sel).text().to_string();
+    assert!(text.contains("```"), "{text}");
+    // The widest line in the selection is `let code = ...`; outside a fence the
+    // wrap estimate would make the `match` below it look like a continuation.
+    assert!(
+        text.contains("guards);\n    match (code, start) {"),
+        "{text}"
+    );
+    assert!(text.starts_with("Here is a snippet from the detector:\n\n```\n"), "{text}");
+    assert!(text.ends_with("```\n\nThat is the whole thing."), "{text}");
+}

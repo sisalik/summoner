@@ -173,26 +173,15 @@ fn link_punctuation_is_not_highlighted() {
 }
 
 #[test]
-fn two_heavily_coloured_lines_become_a_fence() {
+fn a_syntax_highlighted_paragraph_becomes_a_fence() {
     assert_eq!(
         smart(&[
             ("Ordinary prose in this reply", "..........................."),
-            ("let x = compute(1);", "1111111111111111111"),
-            ("let y = compute(2);", "2222222222222222222"),
+            ("", ""),
+            ("let x = compute(1);", "111.....2222222.3.."),
+            ("let y = compute(2);", "111.....2222222.3.."),
         ]),
         "Ordinary prose in this reply\n\n```\nlet x = compute(1);\nlet y = compute(2);\n```"
-    );
-}
-
-#[test]
-fn a_background_tinted_block_becomes_a_fence() {
-    assert_eq!(
-        smart(&[
-            ("Ordinary prose in this reply", "..........................."),
-            ("let a = 1;", "gggggggggg"),
-            ("let b = 2;", "gggggggggg"),
-        ]),
-        "Ordinary prose in this reply\n\n```\nlet a = 1;\nlet b = 2;\n```"
     );
 }
 
@@ -200,8 +189,33 @@ fn a_background_tinted_block_becomes_a_fence() {
 fn one_colourful_line_is_not_a_fence() {
     let text = smart(&[
         ("Ordinary prose in a reply", "........................"),
-        ("let x = compute(1);", "1111111111111111111"),
+        ("", ""),
+        ("let x = compute(1);", "111.....2222222.3.."),
+        ("", ""),
         ("Ordinary prose in a reply", "........................"),
+    ]);
+    assert!(!text.contains("```"), "{text}");
+}
+
+#[test]
+fn a_prose_paragraph_with_inline_code_is_not_a_fence() {
+    // Prose reaches for exactly one extra colour, however much of it there is.
+    let text = smart(&[
+        ("Pass the --json flag to cargo test and see", ".........cccccc..........................."),
+        ("then try the --quiet flag on the next run", ".............ccccccc....................."),
+    ]);
+    assert!(!text.contains("```"), "{text}");
+    assert!(text.contains("`--json`") && text.contains("`--quiet`"), "{text}");
+}
+
+#[test]
+fn an_unhighlighted_block_cannot_be_told_from_prose() {
+    // Claude Code draws a block whose language it cannot highlight in the body
+    // colour, with no fence, gutter, tint or indent. Nothing to detect.
+    let text = smart(&[
+        ("$ cargo test --test table_test", ""),
+        ("running 17 tests", ""),
+        ("test result: ok. 17 passed", ""),
     ]);
     assert!(!text.contains("```"), "{text}");
 }

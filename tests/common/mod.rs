@@ -24,7 +24,7 @@ impl Default for Palette {
 /// One marker character per character of the line:
 /// `.` body, `c` code colour, `d` dim code colour, `i` italic, `b` bold,
 /// `B` bold+italic, `u` underline, `h` italic+underline, `1`-`9` other
-/// colours, `g` a tinted background.
+/// colours.
 pub fn style(mark: char, palette: Palette) -> CellStyle {
     let mut style = CellStyle { fg: palette.body, ..CellStyle::default() };
     match mark {
@@ -53,7 +53,6 @@ pub fn style(mark: char, palette: Palette) -> CellStyle {
             style.italic = true;
             style.underline = true;
         }
-        'g' => style.bg = vt100::Color::Idx(236),
         '1'..='9' => style.fg = vt100::Color::Idx(mark as u8 - b'0'),
         _ => {}
     }

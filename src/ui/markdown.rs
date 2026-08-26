@@ -21,14 +21,17 @@ const MAX_PALETTE: usize = 16;
 /// Share of cells the modal colour must hold before it counts as a body colour.
 const BODY_SHARE: f32 = 0.6;
 
-/// Share of off-colour cells that makes a line syntax-highlighted code.
-const HEAVY_COLOUR_RATIO: f32 = 0.5;
+/// Distinct non-body colours a paragraph needs before it counts as syntax
+/// highlighting. Prose reaches for exactly one — the inline-code colour.
+const MIN_CODE_COLOURS: usize = 3;
+
+/// Share of off-colour glyphs a code paragraph carries. Measured against a
+/// live session: ~0.5 for a highlighted block, ~0.16 for prose with inline
+/// code in it.
+const CODE_COLOUR_SHARE: f32 = 0.3;
 
 /// A lone colourful line is never a code block.
 const MIN_FENCE_LINES: usize = 2;
-
-/// Below this many glyphs a line's colour mix says nothing.
-const MIN_CODE_LINE_CELLS: usize = 4;
 
 pub(crate) struct Guards {
     body: vt100::Color,
@@ -36,12 +39,18 @@ pub(crate) struct Guards {
     code: bool,
 }
 
-/// Derive the body colour and decide whether inline code can be inferred.
-pub(crate) fn guards(lines: &[Vec<Taken>]) -> Guards {
+/// Tally the foreground colours of every glyph that carries one.
+fn palette(lines: &[Vec<Taken>], skip: &[bool]) -> (Vec<(vt100::Color, usize)>, usize, bool) {
     let mut palette: Vec<(vt100::Color, usize)> = Vec::new();
     let mut total = 0usize;
     let mut overflow = false;
-    for cell in lines.iter().flatten().filter(|c| is_glyph(c) && !c.style.dim) {
+    let counted = lines
+        .iter()
+        .enumerate()
+        .filter(|(i, _)| !skip.get(*i).copied().unwrap_or(false))
+        .flat_map(|(_, line)| line.iter())
+        .filter(|c| is_glyph(c) && !c.style.dim);
+    for cell in counted {
         total += 1;
         match palette.iter().position(|(fg, _)| *fg == cell.style.fg) {
             Some(i) => palette[i].1 += 1,
@@ -49,11 +58,33 @@ pub(crate) fn guards(lines: &[Vec<Taken>]) -> Guards {
             None => overflow = true,
         }
     }
-    let (body, seen) = palette
+    (palette, total, overflow)
+}
+
+/// The colour the selection writes most of its text in.
+///
+/// Taken over everything, code blocks included: prose and code share a body
+/// colour, and the alternative — deciding what is code before knowing what
+/// body is — has no starting point.
+pub(crate) fn body_colour(lines: &[Vec<Taken>]) -> vt100::Color {
+    let (palette, _, _) = palette(lines, &[]);
+    palette
         .iter()
         .copied()
         .max_by_key(|&(_, seen)| seen)
-        .unwrap_or((vt100::Color::Default, 0));
+        .map_or(vt100::Color::Default, |(fg, _)| fg)
+}
+
+/// Decide whether inline code can be inferred, measuring every line except
+/// the fenced blocks — a code block's palette says nothing about the prose
+/// around it, and letting it vote drowns the body colour out. A table's cells
+/// are prose and do count.
+pub(crate) fn guards(lines: &[Vec<Taken>], body: vt100::Color, skip: &[bool]) -> Guards {
+    let (palette, total, overflow) = palette(lines, skip);
+    let seen = palette
+        .iter()
+        .find(|(fg, _)| *fg == body)
+        .map_or(0, |&(_, seen)| seen);
     let code = !overflow && total > 0 && seen as f32 / total as f32 >= BODY_SHARE;
     Guards { body, code }
 }
@@ -72,50 +103,61 @@ pub(crate) fn is_heading(cells: &[Taken]) -> bool {
     any
 }
 
-/// Whether this line is part of a rendered fenced code block.
+/// Paragraphs that look like a rendered fenced code block.
 ///
-/// How Claude Code marks a code block is unverified: this is the conservative
-/// fallback. A tinted background is the strong signal; failing that, a line
-/// that is mostly *not* body-coloured is syntax highlighting. Both failures
-/// degrade to "no fence" rather than to mangled output, because the same
-/// colour test also stops inline code being inferred on such a line.
-pub(crate) fn is_code_line(cells: &[Taken], guards: &Guards) -> bool {
-    let glyphs: Vec<&Taken> = cells.iter().filter(|c| is_glyph(c)).collect();
-    if glyphs.len() < MIN_CODE_LINE_CELLS {
-        return false;
-    }
-    if glyphs.iter().all(|c| c.style.bg != vt100::Color::Default) {
-        return true;
-    }
-    let off = glyphs
-        .iter()
-        .filter(|c| c.style.fg != guards.body && !c.style.dim)
-        .count();
-    off as f32 / glyphs.len() as f32 > HEAVY_COLOUR_RATIO
-}
-
-/// Runs of consecutive code lines, skipping lines already claimed by a table.
+/// Verified against a live session: Claude Code prints no fence characters, no
+/// language tag, no gutter glyph, no background tint and no extra indent for a
+/// code block. The only thing that separates one from prose is its syntax
+/// highlighting — prose reaches for exactly one extra colour, the inline-code
+/// one, while highlighted code reaches for several. So the test is the size of
+/// a paragraph's palette, not anything structural.
+///
+/// A block in a language Claude Code does not highlight carries no signal at
+/// all and stays prose. There is nothing on the grid to find.
 pub(crate) fn detect_code_blocks(
     lines: &[Vec<Taken>],
-    guards: &Guards,
+    body: vt100::Color,
     claimed: &[bool],
 ) -> Vec<Range<usize>> {
     let mut blocks = Vec::new();
-    let mut start = None;
-    for i in 0..=lines.len() {
-        let code = i < lines.len() && !claimed[i] && is_code_line(&lines[i], guards);
-        match (code, start) {
-            (true, None) => start = Some(i),
-            (false, Some(from)) => {
-                if i - from >= MIN_FENCE_LINES {
-                    blocks.push(from..i);
-                }
-                start = None;
-            }
-            _ => {}
+    let mut i = 0;
+    while i < lines.len() {
+        if claimed[i] || !lines[i].iter().any(is_glyph) {
+            i += 1;
+            continue;
         }
+        // Claude Code separates a code block from its prose with a blank line,
+        // so a paragraph is the unit to judge.
+        let mut end = i + 1;
+        while end < lines.len() && !claimed[end] && lines[end].iter().any(is_glyph) {
+            end += 1;
+        }
+        if is_code_paragraph(&lines[i..end], body) {
+            blocks.push(i..end);
+        }
+        i = end;
     }
     blocks
+}
+
+fn is_code_paragraph(lines: &[Vec<Taken>], body: vt100::Color) -> bool {
+    if lines.len() < MIN_FENCE_LINES {
+        return false;
+    }
+    let mut colours: Vec<vt100::Color> = Vec::new();
+    let (mut total, mut off) = (0usize, 0usize);
+    for cell in lines.iter().flatten().filter(|c| is_glyph(c) && !c.style.dim) {
+        total += 1;
+        if cell.style.fg == body {
+            continue;
+        }
+        off += 1;
+        // Counting past the threshold would only make `contains` slower.
+        if colours.len() < MIN_CODE_COLOURS && !colours.contains(&cell.style.fg) {
+            colours.push(cell.style.fg);
+        }
+    }
+    colours.len() >= MIN_CODE_COLOURS && off as f32 / total as f32 >= CODE_COLOUR_SHARE
 }
 
 /// Emit a line's cells with markdown markers around each style run.

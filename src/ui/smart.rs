@@ -35,7 +35,6 @@ pub(crate) const BOX_CHARS: [char; 19] = [
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub struct CellStyle {
     pub fg: vt100::Color,
-    pub bg: vt100::Color,
     pub bold: bool,
     pub dim: bool,
     pub italic: bool,
@@ -249,7 +248,6 @@ pub fn compute_spans(screen: &vt100::Screen, sel: &Selection) -> SpanSet {
                     },
                     style: CellStyle {
                         fg: cell.fgcolor(),
-                        bg: cell.bgcolor(),
                         bold: cell.bold(),
                         dim: cell.dim(),
                         italic: cell.italic(),
@@ -439,10 +437,10 @@ fn smart_spans(rows: &[RowIn], first_col: u16, last_col: u16) -> Computed {
     }
 
     let last_row = rows.len() - 1;
-    let guards = markdown::guards(&logical);
 
     // Regions are claimed before any chrome is removed: dropping box borders
     // and stripping the left frame is exactly what destroys a table.
+    let body = markdown::body_colour(&logical);
     let mut claimed = vec![false; logical.len()];
     let mut tables = table::detect(&logical);
     tables.retain(|table| {
@@ -452,10 +450,13 @@ fn smart_spans(rows: &[RowIn], first_col: u16, last_col: u16) -> Computed {
         claimed[table.lines.clone()].fill(true);
         true
     });
-    let blocks = markdown::detect_code_blocks(&logical, &guards, &claimed);
+    let blocks = markdown::detect_code_blocks(&logical, body, &claimed);
+    let mut fenced = vec![false; logical.len()];
     for block in &blocks {
         claimed[block.clone()].fill(true);
+        fenced[block.clone()].fill(true);
     }
+    let guards = markdown::guards(&logical, body, &fenced);
 
     let mut lines: Vec<Line> = Vec::with_capacity(logical.len());
     for (i, cells) in logical.into_iter().enumerate() {
