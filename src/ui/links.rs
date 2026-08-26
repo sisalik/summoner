@@ -405,7 +405,7 @@ fn powershell_encoded_command(url: &str) -> String {
 /// Whether a URL is one Summoner will hand to a browser. Also gates which
 /// OSC 8 links are drawn as clickable, so nothing is ever underlined that a
 /// Ctrl+click would silently ignore.
-fn is_openable(url: &str) -> bool {
+pub(crate) fn is_openable(url: &str) -> bool {
     url.starts_with("http://") || url.starts_with("https://")
 }
 

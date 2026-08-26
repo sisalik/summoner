@@ -3,14 +3,18 @@
 //! A raw selection is a rectangle of grid cells. What the user usually wants
 //! is the *text*: soft-wrapped lines joined back together, Claude Code's
 //! gutter chrome (`⏺ `, `⎿ `, `> `, quote bars like `│ ` and `▎ `) and box
-//! borders dropped, and the block dedented. Both modes are expressed as a
-//! [`SpanSet`] — the exact
-//! cells that will be copied — so the selection highlight can show what the
-//! clipboard is going to get.
+//! borders dropped, and the block dedented. Claude Code prints markdown, so
+//! smart mode goes one step further and puts the markdown back — see
+//! [`super::markdown`] and [`super::table`]. Both modes are expressed as a
+//! [`SpanSet`] — the cells the copy is made from — so the selection highlight
+//! can show what the clipboard is going to get.
 
 use std::borrow::Cow;
 
+use super::links;
+use super::markdown;
 use super::selection::{Selection, SelectionMode};
+use super::table::{self, Table};
 
 /// Gutter markers that introduce a block of their own: the line they mark
 /// starts something new, so the line above it ended deliberately.
@@ -22,10 +26,23 @@ const ITEM_MARKERS: [char; 3] = ['⏺', '⎿', '>'];
 const BAR_MARKERS: [char; 6] = ['│', '┃', '▏', '▎', '▍', '▌'];
 
 /// Characters that make a line pure box-drawing chrome.
-const BOX_CHARS: [char; 19] = [
+pub(crate) const BOX_CHARS: [char; 19] = [
     '─', '│', '╭', '╮', '╰', '╯', '├', '┤', '┬', '┴', '┼', '┌', '┐', '└', '┘', '═', '║', '━',
     '┃',
 ];
+
+/// The rendered style of one cell, as far as markdown reconstruction cares.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct CellStyle {
+    pub fg: vt100::Color,
+    pub bg: vt100::Color,
+    pub bold: bool,
+    pub dim: bool,
+    pub italic: bool,
+    pub underline: bool,
+    /// OSC 8 link id, 0 for none; resolved through [`RowIn::links`].
+    pub link: u16,
+}
 
 /// One physical row's worth of a selection: the cells actually copied.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -64,6 +81,18 @@ impl SpanSet {
     }
 }
 
+#[derive(Debug, Clone)]
+pub struct CellIn<'a> {
+    pub text: Cow<'a, str>,
+    pub style: CellStyle,
+}
+
+impl CellIn<'static> {
+    fn blank() -> Self {
+        Self { text: Cow::Borrowed(" "), style: CellStyle::default() }
+    }
+}
+
 /// A physical row as seen by the span algorithm.
 ///
 /// `cells` has one entry per column; `None` marks a wide-character
@@ -72,19 +101,42 @@ impl SpanSet {
 /// obvious `String` per cell is worth avoiding.
 #[derive(Debug, Clone)]
 pub struct RowIn<'a> {
-    pub cells: Vec<Option<Cow<'a, str>>>,
+    pub cells: Vec<Option<CellIn<'a>>>,
     pub wrapped: bool,
+    /// OSC 8 targets used on this row. Empty for all but a handful of rows.
+    pub links: Vec<(u16, Cow<'a, str>)>,
 }
 
 impl RowIn<'static> {
-    /// Build a row from plain text, one column per character.
+    /// Build an unstyled row from plain text, one column per character.
     pub fn from_text(text: &str, wrapped: bool, cols: u16) -> Self {
-        let mut cells: Vec<Option<Cow<'static, str>>> = text
-            .chars()
-            .map(|c| Some(Cow::Owned(c.to_string())))
+        Self::from_styled(
+            text.chars().map(|c| (c.to_string(), CellStyle::default())).collect(),
+            wrapped,
+            cols,
+        )
+    }
+
+    /// Build a row from per-cell text and style.
+    pub fn from_styled(cells: Vec<(String, CellStyle)>, wrapped: bool, cols: u16) -> Self {
+        let mut cells: Vec<Option<CellIn<'static>>> = cells
+            .into_iter()
+            .map(|(text, style)| Some(CellIn { text: Cow::Owned(text), style }))
             .collect();
-        cells.resize(usize::from(cols), Some(Cow::Borrowed(" ")));
-        Self { cells, wrapped }
+        cells.resize(usize::from(cols), Some(CellIn::blank()));
+        Self { cells, wrapped, links: Vec::new() }
+    }
+
+    /// Stamp an OSC 8 id and target over an inclusive column range.
+    pub fn with_link(mut self, cols: std::ops::RangeInclusive<u16>, url: &str) -> Self {
+        let id = self.links.len() as u16 + 1;
+        for col in cols {
+            if let Some(Some(cell)) = self.cells.get_mut(usize::from(col)) {
+                cell.style.link = id;
+            }
+        }
+        self.links.push((id, Cow::Owned(url.to_string())));
+        self
     }
 }
 
@@ -102,6 +154,64 @@ pub struct Computed {
     pub text: String,
 }
 
+/// The one place the highlight/clipboard relationship is expressed: a cell
+/// extends both, a marker is punctuation smart mode added and extends only the
+/// text.
+#[derive(Default)]
+pub(crate) struct Sink {
+    spans: Vec<RelSpan>,
+    text: String,
+}
+
+impl Sink {
+    pub(crate) fn cell(&mut self, cell: &Taken) {
+        self.mark(cell);
+        self.text.push_str(cell.text);
+    }
+
+    /// A cell copied as something else — an escaped `|`, a `]` inside a label.
+    pub(crate) fn cell_as(&mut self, cell: &Taken, text: &str) {
+        self.mark(cell);
+        self.text.push_str(text);
+    }
+
+    pub(crate) fn marker(&mut self, text: &str) {
+        self.text.push_str(text);
+    }
+
+    fn ends_with_blank_line(&self) -> bool {
+        self.text.is_empty() || self.text.ends_with("\n\n")
+    }
+
+    fn mark(&mut self, cell: &Taken) {
+        // Cells usually arrive in reading order; a table's rejoined cell is the
+        // exception, which is why the fallback exists at all.
+        if let Some(last) = self.spans.last_mut()
+            && last.row == cell.row
+        {
+            last.col_start = last.col_start.min(cell.col);
+            last.col_end = last.col_end.max(cell.col);
+            return;
+        }
+        match self.spans.iter_mut().find(|span| span.row == cell.row) {
+            Some(span) => {
+                span.col_start = span.col_start.min(cell.col);
+                span.col_end = span.col_end.max(cell.col);
+            }
+            None => self.spans.push(RelSpan {
+                row: cell.row,
+                col_start: cell.col,
+                col_end: cell.col,
+            }),
+        }
+    }
+
+    fn into_computed(mut self) -> Computed {
+        self.spans.sort_by_key(|span| span.row);
+        Computed { spans: self.spans, text: self.text }
+    }
+}
+
 /// Compute the copied cells for a selection against a live screen.
 pub fn compute_spans(screen: &vt100::Screen, sel: &Selection) -> SpanSet {
     let ((sr, sc), (er, ec)) = sel.normalised();
@@ -113,24 +223,45 @@ pub fn compute_spans(screen: &vt100::Screen, sel: &Selection) -> SpanSet {
         let Some(wrapped) = screen.stream_row_wrapped(stream_row) else {
             continue;
         };
-        let mut cells: Vec<Option<Cow<'_, str>>> = screen
+        let mut links: Vec<(u16, Cow<'_, str>)> = Vec::new();
+        let mut cells: Vec<Option<CellIn<'_>>> = screen
             .stream_row_cells(stream_row)
             .into_iter()
             .flatten()
             .take(usize::from(cols))
             .map(|cell| {
                 if cell.is_wide_continuation() {
-                    None
-                } else if cell.has_contents() {
-                    Some(Cow::Borrowed(cell.contents()))
-                } else {
-                    Some(Cow::Borrowed(" "))
+                    return None;
                 }
+                let link = cell.link_id();
+                if link != 0
+                    && !links.iter().any(|(id, _)| *id == link)
+                    && let Some(url) =
+                        screen.hyperlink(link).filter(|u| links::is_openable(u))
+                {
+                    links.push((link, Cow::Borrowed(url)));
+                }
+                Some(CellIn {
+                    text: if cell.has_contents() {
+                        Cow::Borrowed(cell.contents())
+                    } else {
+                        Cow::Borrowed(" ")
+                    },
+                    style: CellStyle {
+                        fg: cell.fgcolor(),
+                        bg: cell.bgcolor(),
+                        bold: cell.bold(),
+                        dim: cell.dim(),
+                        italic: cell.italic(),
+                        underline: cell.underline(),
+                        link,
+                    },
+                })
             })
             .collect();
-        cells.resize(usize::from(cols), Some(Cow::Borrowed(" ")));
+        cells.resize(usize::from(cols), Some(CellIn::blank()));
         stream_rows.push(stream_row);
-        rows.push(RowIn { cells, wrapped });
+        rows.push(RowIn { cells, wrapped, links });
     }
 
     if rows.is_empty() {
@@ -179,10 +310,12 @@ pub fn spans_core(
 }
 
 /// A cell taken from the clipped selection, tagged with where it came from.
-struct Taken<'a> {
-    row: usize,
-    col: u16,
-    text: &'a str,
+pub(crate) struct Taken<'a> {
+    pub row: usize,
+    pub col: u16,
+    pub text: &'a str,
+    pub style: CellStyle,
+    pub url: Option<&'a str>,
 }
 
 fn clipped_cells<'a>(rows: &'a [RowIn], first_col: u16, last_col: u16) -> Vec<Vec<Taken<'a>>> {
@@ -190,28 +323,58 @@ fn clipped_cells<'a>(rows: &'a [RowIn], first_col: u16, last_col: u16) -> Vec<Ve
     rows.iter()
         .enumerate()
         .map(|(i, row)| {
-            let start = if i == 0 { usize::from(first_col) } else { 0 };
-            let end = if i == last_row {
-                usize::from(last_col).min(row.cells.len().saturating_sub(1))
-            } else {
-                row.cells.len().saturating_sub(1)
-            };
             let mut taken = Vec::new();
-            if start > end {
-                return taken;
-            }
-            for (offset, cell) in row.cells[start..=end].iter().enumerate() {
-                if let Some(text) = cell {
-                    taken.push(Taken {
-                        row: i,
-                        col: (start + offset) as u16,
-                        text,
-                    });
-                }
-            }
+            take_row(row, i, bounds(row, i, last_row, first_col, last_col), &mut taken);
             taken
         })
         .collect()
+}
+
+fn bounds(
+    row: &RowIn,
+    i: usize,
+    last_row: usize,
+    first_col: u16,
+    last_col: u16,
+) -> (usize, usize) {
+    let start = if i == 0 { usize::from(first_col) } else { 0 };
+    let end = if i == last_row {
+        usize::from(last_col).min(row.cells.len().saturating_sub(1))
+    } else {
+        row.cells.len().saturating_sub(1)
+    };
+    (start, end)
+}
+
+/// Append one row's cells to `taken`, so a soft-wrapped logical line is built
+/// in place rather than assembled and then copied.
+fn take_row<'a>(
+    row: &'a RowIn,
+    i: usize,
+    (start, end): (usize, usize),
+    taken: &mut Vec<Taken<'a>>,
+) {
+    if start > end {
+        return;
+    }
+    for (offset, cell) in row.cells[start..=end].iter().enumerate() {
+        if let Some(cell) = cell {
+            taken.push(Taken {
+                row: i,
+                col: (start + offset) as u16,
+                text: cell.text.as_ref(),
+                style: cell.style,
+                url: url_for(row, cell.style.link),
+            });
+        }
+    }
+}
+
+fn url_for<'a>(row: &'a RowIn, link: u16) -> Option<&'a str> {
+    (link != 0)
+        .then(|| row.links.iter().find(|(id, _)| *id == link))
+        .flatten()
+        .map(|(_, url)| url.as_ref())
 }
 
 fn raw_spans(rows: &[RowIn], first_col: u16, last_col: u16) -> Computed {
@@ -237,18 +400,32 @@ fn raw_spans(rows: &[RowIn], first_col: u16, last_col: u16) -> Computed {
     Computed { spans, text }
 }
 
+/// One logical line, with everything the emit pass needs to know about it.
+struct Line<'a> {
+    cells: Vec<Taken<'a>>,
+    start: usize,
+    indent: usize,
+    blank: bool,
+    /// Had a gutter marker of its own, so it begins a new block.
+    marked: bool,
+    /// Belongs to a table or a fenced block: no chrome stripping, no dedent,
+    /// no reflow.
+    region: bool,
+    /// A lone box border outside any table.
+    dropped: bool,
+}
+
 fn smart_spans(rows: &[RowIn], first_col: u16, last_col: u16) -> Computed {
     // Analyse whole rows, not the clipped selection: gutters and indents have
     // to be measured against the real line, or starting a drag at the first
     // visible character would make that line look un-indented and cancel the
     // block's dedent. Clipping happens at the end, when cells are emitted.
-    let per_row = clipped_cells(rows, 0, u16::MAX);
-
-    // Group physical rows into logical lines along soft wraps.
+    // Physical rows are grouped into logical lines along soft wraps as they
+    // are read.
     let mut logical: Vec<Vec<Taken>> = Vec::new();
     let mut current: Vec<Taken> = Vec::new();
-    for (i, cells) in per_row.into_iter().enumerate() {
-        current.extend(cells);
+    for (i, row) in rows.iter().enumerate() {
+        take_row(row, i, (0, row.cells.len().saturating_sub(1)), &mut current);
         let joins_next = i + 1 < rows.len() && rows[i].wrapped;
         if !joins_next {
             logical.push(std::mem::take(&mut current));
@@ -257,26 +434,57 @@ fn smart_spans(rows: &[RowIn], first_col: u16, last_col: u16) -> Computed {
     if !current.is_empty() {
         logical.push(current);
     }
-
-    // Per line: drop box chrome, strip gutters, measure the indent left over.
-    struct Line<'a> {
-        cells: Vec<Taken<'a>>,
-        start: usize,
-        indent: usize,
-        blank: bool,
-        /// Had a gutter marker of its own, so it begins a new block.
-        marked: bool,
+    if logical.is_empty() {
+        return Computed::default();
     }
-    let mut lines = Vec::new();
-    for cells in logical {
+
+    let last_row = rows.len() - 1;
+    let guards = markdown::guards(&logical);
+
+    // Regions are claimed before any chrome is removed: dropping box borders
+    // and stripping the left frame is exactly what destroys a table.
+    let mut claimed = vec![false; logical.len()];
+    let mut tables = table::detect(&logical);
+    tables.retain(|table| {
+        if clips_table(table, &logical, first_col, last_col, last_row) {
+            return false;
+        }
+        claimed[table.lines.clone()].fill(true);
+        true
+    });
+    let blocks = markdown::detect_code_blocks(&logical, &guards, &claimed);
+    for block in &blocks {
+        claimed[block.clone()].fill(true);
+    }
+
+    let mut lines: Vec<Line> = Vec::with_capacity(logical.len());
+    for (i, cells) in logical.into_iter().enumerate() {
+        if claimed[i] {
+            lines.push(Line {
+                cells,
+                start: 0,
+                indent: 0,
+                blank: false,
+                marked: true,
+                region: true,
+                dropped: false,
+            });
+            continue;
+        }
         if is_box_border(&cells) {
+            lines.push(Line {
+                cells,
+                start: 0,
+                indent: 0,
+                blank: true,
+                marked: false,
+                region: false,
+                dropped: true,
+            });
             continue;
         }
         let (start, marked) = gutter_end(&cells);
-        let indent = cells[start..]
-            .iter()
-            .take_while(|c| c.text == " ")
-            .count();
+        let indent = cells[start..].iter().take_while(|c| c.text == " ").count();
         let blank = start + indent >= cells.len();
         lines.push(Line {
             cells,
@@ -284,6 +492,8 @@ fn smart_spans(rows: &[RowIn], first_col: u16, last_col: u16) -> Computed {
             indent,
             blank,
             marked,
+            region: false,
+            dropped: false,
         });
     }
 
@@ -294,7 +504,7 @@ fn smart_spans(rows: &[RowIn], first_col: u16, last_col: u16) -> Computed {
     // survives, because it is the same group's common indent that is removed.
     // Blank lines keep their place but must not drag the indent down.
     let mut dedents: Vec<(usize, usize)> = Vec::new();
-    for line in lines.iter().filter(|l| !l.blank) {
+    for line in lines.iter().filter(|l| !l.blank && !l.region && !l.dropped) {
         match dedents.iter_mut().find(|(start, _)| *start == line.start) {
             Some((_, indent)) => *indent = (*indent).min(line.indent),
             None => dedents.push((line.start, line.indent)),
@@ -302,10 +512,12 @@ fn smart_spans(rows: &[RowIn], first_col: u16, last_col: u16) -> Computed {
     }
 
     // Each line's cells after chrome removal, before the selection is applied.
-    let last_row = rows.len() - 1;
     let kept: Vec<&[Taken]> = lines
         .iter()
         .map(|line| {
+            if line.region {
+                return trim_trailing_blanks(&line.cells);
+            }
             let dedent = dedents
                 .iter()
                 .find(|(start, _)| *start == line.start)
@@ -318,10 +530,13 @@ fn smart_spans(rows: &[RowIn], first_col: u16, last_col: u16) -> Computed {
     let cols = rows[0].cells.len();
 
     // The width text was wrapped at, estimated from the widest line in the
-    // block. Used to tell a wrapped line from a deliberate line break.
+    // block. A table's frame is wider than the prose around it and would
+    // wreck the estimate, so regions do not contribute.
     let wrap_width = kept
         .iter()
-        .filter_map(|cells| cells.last())
+        .enumerate()
+        .filter(|(i, _)| !lines[*i].region && !lines[*i].dropped)
+        .filter_map(|(_, cells)| cells.last())
         .map(|cell| usize::from(cell.col) + 1)
         .max()
         .unwrap_or(0);
@@ -329,68 +544,138 @@ fn smart_spans(rows: &[RowIn], first_col: u16, last_col: u16) -> Computed {
     // Which lines are continuations of the line above rather than new ones.
     // Text the producing program wrapped arrives as separate lines but is one
     // paragraph; rejoin it rather than pasting mid-sentence breaks.
-    let joins: Vec<bool> = (0..kept.len())
-        .map(|i| {
-            i > 0
-                && !lines[i].marked
-                && wraps_onto_next(kept[i - 1], kept[i], wrap_width, cols)
+    let mut joins = vec![false; kept.len()];
+    let mut previous: Option<usize> = None;
+    for i in 0..kept.len() {
+        if lines[i].region {
+            previous = None;
+            continue;
+        }
+        if lines[i].dropped {
+            continue;
+        }
+        if let Some(p) = previous {
+            joins[i] =
+                !lines[i].marked && wraps_onto_next(kept[p], kept[i], wrap_width, cols);
+        }
+        previous = Some(i);
+    }
+
+    // Now apply the selection: drop anything outside it. A continuation is
+    // being reflowed onto the line above, so its own leading indent goes away
+    // — including in the highlight.
+    let clipped: Vec<Vec<&Taken>> = kept
+        .iter()
+        .enumerate()
+        .map(|(i, cells)| {
+            let cells: &[Taken] = if joins[i] {
+                let lead = cells.iter().take_while(|c| c.text == " ").count();
+                &cells[lead..]
+            } else {
+                cells
+            };
+            cells
+                .iter()
+                .filter(|cell| {
+                    let after_start = cell.row > 0 || cell.col >= first_col;
+                    let before_end = cell.row < last_row || cell.col <= last_col;
+                    after_start && before_end
+                })
+                .collect()
         })
         .collect();
 
-    let mut spans: Vec<RelSpan> = Vec::new();
-    let mut text = String::new();
+    let mut sink = Sink::default();
     let mut pending: Option<&'static str> = None;
-
-    for (i, cells) in kept.iter().enumerate() {
-        // A continuation is being reflowed onto the line above, so its own
-        // leading indent goes away — including in the highlight.
-        let cells: &[Taken] = if joins[i] {
-            let lead = cells.iter().take_while(|c| c.text == " ").count();
-            &cells[lead..]
-        } else {
-            cells
-        };
-
-        // Now apply the selection: drop anything outside it.
-        let clipped: Vec<&Taken> = cells
-            .iter()
-            .filter(|cell| {
-                let after_start = cell.row > 0 || cell.col >= first_col;
-                let before_end = cell.row < last_row || cell.col <= last_col;
-                after_start && before_end
-            })
-            .collect();
-        // A blank line has nothing to clip and still counts as a line break.
-        // A line with content that the selection misses entirely contributes
-        // nothing at all — not even a blank line.
-        if clipped.is_empty() && !cells.is_empty() {
+    let mut after_region = false;
+    let mut i = 0;
+    while i < lines.len() {
+        if lines[i].dropped {
+            i += 1;
+            continue;
+        }
+        if let Some(table) = tables.iter().find(|t| t.lines.start == i) {
+            blank_line(&mut sink, &mut pending);
+            table::emit(table, &clipped, &guards, &mut sink);
+            after_region = true;
+            i = table.lines.end;
+            continue;
+        }
+        if let Some(block) = blocks.iter().find(|b| b.start == i) {
+            blank_line(&mut sink, &mut pending);
+            markdown::emit_fence(&clipped[block.clone()], &mut sink);
+            after_region = true;
+            i = block.end;
             continue;
         }
 
-        if let Some(sep) = pending.take() {
-            text.push_str(sep);
+        let cells = &clipped[i];
+        // A blank line has nothing to clip and still counts as a line break.
+        // A line with content that the selection misses entirely contributes
+        // nothing at all — not even a blank line.
+        if cells.is_empty() && !kept[i].is_empty() {
+            i += 1;
+            continue;
         }
-
-        for cell in &clipped {
-            match spans.last_mut() {
-                Some(span) if span.row == cell.row => span.col_end = cell.col,
-                _ => spans.push(RelSpan {
-                    row: cell.row,
-                    col_start: cell.col,
-                    col_end: cell.col,
-                }),
+        if after_region {
+            // The separator is written when the next line with content
+            // arrives, so blank source lines after a region are already spent.
+            if cells.is_empty() {
+                i += 1;
+                continue;
             }
+            blank_line(&mut sink, &mut pending);
+            after_region = false;
         }
-        text.extend(clipped.iter().map(|c| c.text));
-
-        pending = Some(if joins.get(i + 1).copied().unwrap_or(false) {
-            " "
+        if let Some(sep) = pending.take() {
+            sink.marker(sep);
+        }
+        if markdown::is_heading(kept[i]) {
+            sink.marker("## ");
+            markdown::emit_plain(cells, false, &mut sink);
         } else {
-            "\n"
-        });
+            markdown::emit_line(cells, &guards, false, &mut sink);
+        }
+        let next = (i + 1..lines.len()).find(|&j| !lines[j].dropped);
+        pending = Some(if next.is_some_and(|j| joins[j]) { " " } else { "\n" });
+        i += 1;
     }
 
-    Computed { spans, text }
+    sink.into_computed()
+}
+
+/// Put a blank line between a region and its surroundings: a GFM table needs
+/// one, and half a paragraph is never joined onto a table either way. Topping
+/// up rather than always writing one keeps a blank line that was already there
+/// from doubling.
+fn blank_line(sink: &mut Sink, pending: &mut Option<&'static str>) {
+    if let Some(sep) = pending.take() {
+        sink.marker(sep);
+    }
+    while !sink.ends_with_blank_line() {
+        sink.marker("\n");
+    }
+}
+
+/// Whether the selection cuts through a table's frame sideways.
+///
+/// Half a table is not a table: truncated columns generate a large family of
+/// edge cases for a gesture nobody makes on purpose, so the region falls back
+/// to plain lines instead.
+fn clips_table(
+    table: &Table,
+    logical: &[Vec<Taken>],
+    first_col: u16,
+    last_col: u16,
+    last_row: usize,
+) -> bool {
+    let touches = |row: usize| {
+        logical[table.lines.clone()]
+            .iter()
+            .flatten()
+            .any(|cell| cell.row == row)
+    };
+    (touches(0) && first_col > table.frame.0) || (touches(last_row) && last_col < table.frame.1)
 }
 
 /// Whether `line` looks like it was wrapped onto `next` rather than ended.

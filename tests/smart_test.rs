@@ -249,3 +249,43 @@ fn highlight_matches_the_copied_text_on_a_real_screen() {
     }
     assert_eq!(highlighted, spans.text());
 }
+
+#[test]
+fn a_real_screen_keeps_its_inline_markdown() {
+    let mut p = vt100::Parser::new(6, 80, 100);
+    p.process(b"Run the \x1b[38;5;153mcargo build\x1b[0m command again\r\n");
+    p.process(b"\x1b[3msoftly italic\x1b[0m\r\n");
+
+    let sel = Selection {
+        anchor: (0, 0),
+        moving: (1, 79),
+        dragged: true,
+        mode: SelectionMode::Smart,
+    };
+    let spans = smart::compute_spans(p.screen(), &sel);
+    assert_eq!(
+        spans.text(),
+        "Run the `cargo build` command again\n*softly italic*"
+    );
+}
+
+#[test]
+fn a_real_screen_keeps_its_headings_and_links() {
+    let mut p = vt100::Parser::new(6, 80, 100);
+    p.process(b"\x1b[3;4mmarkfluence fix list\x1b[0m\r\n");
+    p.process(b"See the ");
+    p.process(b"\x1b]8;;https://example.com/docs\x1b\\docs\x1b]8;;\x1b\\");
+    p.process(b" here\r\n");
+
+    let sel = Selection {
+        anchor: (0, 0),
+        moving: (1, 79),
+        dragged: true,
+        mode: SelectionMode::Smart,
+    };
+    let spans = smart::compute_spans(p.screen(), &sel);
+    assert_eq!(
+        spans.text(),
+        "## markfluence fix list\nSee the [docs](https://example.com/docs) here"
+    );
+}
