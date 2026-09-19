@@ -173,7 +173,10 @@ fn main() -> Result<()> {
         Some("install") => {
             let dir = summoner_dir();
             std::fs::create_dir_all(&dir)?;
-            summoner::hooks::install_hooks(&dir);
+            let problems = summoner::hooks::install_hooks(&dir);
+            for problem in &problems {
+                eprintln!("warning: {}", problem);
+            }
             eprintln!("Summoner hooks installed.");
             eprintln!("  Hook script:     ~/.summoner/hooks/claude-state.sh");
             eprintln!("  StatusLine wrap:  ~/.summoner/hooks/statusline-wrapper.sh");

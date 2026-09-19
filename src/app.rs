@@ -96,6 +96,9 @@ struct App {
     reordering: bool,
     last_click: Option<(Instant, u16, u16)>,
     click_count: u8,
+    /// Hook installation problems, shown on the dashboard so a session that
+    /// never wakes up is not a mystery.
+    startup_notices: Vec<String>,
 }
 
 pub fn display_path(path: &str) -> String {
@@ -115,7 +118,7 @@ impl App {
             .join(".summoner");
 
         // Install Claude Code hooks for state detection
-        hooks::install_hooks(&config_dir);
+        let startup_notices = hooks::install_hooks(&config_dir);
 
         // Clean stale statusLine files from previous runs
         crate::statusline::clear_stale_files(&config_dir);
@@ -221,6 +224,7 @@ impl App {
             reordering: false,
             last_click: None,
             click_count: 0,
+            startup_notices,
         })
     }
 
@@ -407,13 +411,10 @@ impl App {
         let raster = rasterize_skeleton(&skeleton);
 
         let session = Session::new(directory.clone(), seed, creature_template);
+        let session_key = session.id.to_string();
 
-        let pty = PtySession::spawn(&self.config.general.default_shell, &directory, rows, cols)?;
-
-        // Clear any stale hook state file for this PID (in case of PID reuse)
-        if let Some(pid) = pty.pid() {
-            hooks::clear_state_file(&self.config_dir, pid);
-        }
+        let pty = PtySession::spawn(&self.config.general.default_shell, &directory, rows, cols, &session_key)?;
+        hooks::clear_state_file(&self.config_dir, &session_key);
 
         let idx = self.sessions.len();
         self.sessions.push(session);
@@ -507,9 +508,9 @@ impl App {
             // Primary: use Claude Code hooks for state detection
             // Detect Claude state via hooks (primary) or process check (fallback)
             let shell_pid = pty.pid();
-            let (mut hook_state, hook_session_id, hook_tool) = shell_pid
-                .map(|pid| hooks::read_hook_state(&self.config_dir, pid))
-                .unwrap_or((None, None, None));
+            let session_key = self.sessions[i].id.to_string();
+            let (mut hook_state, hook_session_id, hook_tool) =
+                hooks::read_hook_state(&self.config_dir, &session_key);
 
             // Claude Code doesn't always report a Stop when the user interrupts, which
             // would otherwise pin the session to Working forever
@@ -517,7 +518,7 @@ impl App {
                 if hook_state != Some(SessionState::Working) {
                     self.session_stats[i].esc_interrupt = None;
                 } else if let Some(esc_at) = self.session_stats[i].esc_interrupt {
-                    let mtime = shell_pid.and_then(|pid| hooks::state_file_mtime(&self.config_dir, pid));
+                    let mtime = hooks::state_file_mtime(&self.config_dir, &session_key);
                     if downgraded_after_esc(esc_at, mtime, std::time::SystemTime::now()) {
                         hook_state = Some(SessionState::Idle);
                     } else if mtime.is_some_and(|m| m > esc_at) {
@@ -576,10 +577,7 @@ impl App {
 
             // Check for child exit
             if pty.try_wait().is_some() {
-                // Clean up hook state file for this shell PID
-                if let Some(pid) = pty.pid() {
-                    hooks::clear_state_file(&self.config_dir, pid);
-                }
+                hooks::clear_state_file(&self.config_dir, &session_key);
                 self.pty_sessions[i] = None;
                 if matches!(self.mode, Mode::Session(idx) if idx == i) {
                     // Currently viewing this session — mark for removal
@@ -661,7 +659,8 @@ impl App {
                         &mut self.nav,
                         &mut self.git_cache,
                         self.reordering,
-                    );
+                    )
+                    .with_notice(self.startup_notices.first().map(|s| s.as_str()));
                     dashboard.render(main_area, frame.buffer_mut());
 
                     if let Some(ref project_dir) = self.confirm_close_project {
@@ -1247,12 +1246,9 @@ impl App {
 
         let directory = self.sessions[index].directory.clone();
         let (session_rows, session_cols) = session_size(rows, cols);
-        let pty = PtySession::spawn(&self.config.general.default_shell, &directory, session_rows, session_cols)?;
-
-        // Clear any stale hook state file for this PID
-        if let Some(pid) = pty.pid() {
-            hooks::clear_state_file(&self.config_dir, pid);
-        }
+        let session_key = self.sessions[index].id.to_string();
+        let pty = PtySession::spawn(&self.config.general.default_shell, &directory, session_rows, session_cols, &session_key)?;
+        hooks::clear_state_file(&self.config_dir, &session_key);
 
         // If the user chose to resume the claude conversation, run it
         if resume && let Some(ref conv_id) = self.sessions[index].claude_conversation_id.clone() {

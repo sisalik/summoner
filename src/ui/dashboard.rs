@@ -51,6 +51,8 @@ pub struct Dashboard<'a> {
     nav: &'a mut DashboardNav,
     git_cache: &'a mut GitDiffCache,
     reordering: bool,
+    /// A startup problem to show under the usage bar, if any.
+    notice: Option<&'a str>,
 }
 
 impl<'a> Dashboard<'a> {
@@ -63,7 +65,13 @@ impl<'a> Dashboard<'a> {
         git_cache: &'a mut GitDiffCache,
         reordering: bool,
     ) -> Self {
-        Self { sessions, session_stats, global_stats, rasters, nav, git_cache, reordering }
+        Self { sessions, session_stats, global_stats, rasters, nav, git_cache, reordering, notice: None }
+    }
+
+    /// Show a startup problem on a row under the usage bar.
+    pub fn with_notice(mut self, notice: Option<&'a str>) -> Self {
+        self.notice = notice;
+        self
     }
 
     pub fn render(&mut self, area: Rect, buf: &mut Buffer) {
@@ -87,14 +95,27 @@ impl<'a> Dashboard<'a> {
             .bg(Color::Rgb(20, 20, 30));
         draw_text(area.x, hint_y, hint_text, hint_style, area, buf);
 
+        // Notice row under the usage bar, only when there is something to say
+        let notice_rows = match self.notice {
+            Some(notice) if area.height >= 4 => {
+                let style = Style::default()
+                    .fg(Color::Rgb(230, 180, 80))
+                    .bg(Color::Rgb(20, 20, 30));
+                let text = format!(" \u{26a0} {} ", notice);
+                draw_text(area.x, area.y + 1, &text, style, area, buf);
+                1
+            }
+            _ => 0,
+        };
+
         // Content area (between top usage bar and bottom hints). Cards flow in
         // `flow_area` (one column narrower) so the last column is reserved for the
         // scrollbar track.
         let content_area = Rect {
             x: area.x,
-            y: area.y + 1,
+            y: area.y + 1 + notice_rows,
             width: area.width,
-            height: area.height.saturating_sub(2),
+            height: area.height.saturating_sub(2 + notice_rows),
         };
         let flow_area = Rect {
             x: content_area.x,

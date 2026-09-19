@@ -4,7 +4,7 @@ use std::thread;
 
 #[test]
 fn pty_session_spawns_and_reads_output() {
-    let session = PtySession::spawn("/bin/bash", "/tmp", 24, 80).unwrap();
+    let session = PtySession::spawn("/bin/bash", "/tmp", 24, 80, "test-session").unwrap();
     session.write(b"echo SUMMONER_TEST\r\n").unwrap();
     thread::sleep(Duration::from_millis(200));
     let output = session.read_available();
@@ -14,13 +14,13 @@ fn pty_session_spawns_and_reads_output() {
 
 #[test]
 fn pty_session_has_valid_pid() {
-    let session = PtySession::spawn("/bin/bash", "/tmp", 24, 80).unwrap();
+    let session = PtySession::spawn("/bin/bash", "/tmp", 24, 80, "test-session").unwrap();
     assert!(session.pid().is_some());
 }
 
 #[test]
 fn pty_session_can_resize() {
-    let session = PtySession::spawn("/bin/bash", "/tmp", 24, 80).unwrap();
+    let session = PtySession::spawn("/bin/bash", "/tmp", 24, 80, "test-session").unwrap();
     session.resize(40, 120).unwrap();
 }
 

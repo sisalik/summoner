@@ -25,7 +25,7 @@ src/
   config.rs            # AppConfig, SessionStore, RecentDirs — all TOML, stored in ~/.summoner/
   claude.rs            # Claude process detection: find_claude_child, find_conversation_id
   hooks.rs             # Claude Code hook installation (~/.claude/settings.json) and
-                       #   state file reading (~/.summoner/claude-states/{pid})
+                       #   state file reading (~/.summoner/claude-states/{session id})
   creature/
     generate.rs        # Xorshift PRNG, CellKind/Sprite buffers
     skeleton.rs        # 5 archetypes (bipedal, quadruped, blob, winged, serpentine):
@@ -73,7 +73,7 @@ tests/
 
 **PTY I/O**: Each session has a `PtySession` with a background reader thread feeding chunks via MPSC channel into a `vt100::Parser`. The parser's screen state is rendered directly to the Ratatui buffer.
 
-**Claude state detection**: Primary path reads hook state files written by a shell script (`~/.summoner/hooks/claude-state.sh`) invoked by Claude Code's hook API. Fallback checks for claude child process.
+**Claude state detection**: Primary path reads hook state files written by a shell script (`~/.summoner/hooks/claude-state.sh`) invoked by Claude Code's hook API. Fallback checks for claude child process. Every PTY is spawned with `SUMMONER_SESSION=<session id>` in its environment, which Claude Code passes on to hook commands; the script keys its state file on that and exits on its first line when the variable is absent, so Claude Code launched outside Summoner pays nothing. The hook sits on Claude Code's critical path (PreToolUse blocks the tool, PostToolUse blocks the result), so the script spawns no external process on the common path: it reads a 4 KB prefix of the payload with the `read` builtin and matches fields with `=~`. Do not reintroduce `${x##*pat}` expansions (quadratic, ~40 ms each on 8 KB) or `command -v` probes (a PATH miss under WSL stats ~70 drvfs directories, ~150 ms). `tests/hooks_test.rs` runs the script under bash against payloads up to 5 MB.
 
 **Session persistence**: `SessionStore` (TOML) saves all sessions every 10s and on exit. Disconnected sessions restore by re-spawning PTY in same directory and optionally running `claude --resume <conversation_id>`.
 
@@ -114,4 +114,4 @@ tests/
 - `sessions.toml` — persisted sessions (id, dir, creature seed/template, conversation id, timestamps)
 - `recent_dirs.toml` — directory history for picker
 - `hooks/claude-state.sh` — auto-installed hook script
-- `claude-states/{pid}` — per-shell state files written by hooks
+- `claude-states/{session id}` — per-session state files written by hooks (`{session id}.agents/` holds one marker per running subagent)

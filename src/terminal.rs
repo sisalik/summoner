@@ -15,7 +15,9 @@ pub struct PtySession {
 }
 
 impl PtySession {
-    pub fn spawn(shell: &str, cwd: &str, rows: u16, cols: u16) -> Result<Self> {
+    /// `session_key` is exported as `SUMMONER_SESSION` so the Claude Code hook
+    /// can find this session's state file without walking the process tree.
+    pub fn spawn(shell: &str, cwd: &str, rows: u16, cols: u16, session_key: &str) -> Result<Self> {
         let pty_system = native_pty_system();
 
         let pair = pty_system.openpty(PtySize {
@@ -27,6 +29,7 @@ impl PtySession {
 
         let mut cmd = CommandBuilder::new(shell);
         cmd.cwd(cwd);
+        cmd.env(crate::hooks::SESSION_ENV, session_key);
 
         // Keep Claude Code's conversation in the terminal's native scrollback
         // instead of the alternate-screen fullscreen renderer (default since

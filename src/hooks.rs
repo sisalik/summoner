@@ -4,110 +4,133 @@ use std::time::SystemTime;
 
 use crate::session::SessionState;
 
-const HOOK_SCRIPT: &str = r#"#!/bin/bash
-# Summoner Claude Code hook — reports state changes via file
+/// Environment variable Summoner exports into every PTY it spawns, carrying
+/// the session's id. Claude Code passes its environment on to hook commands,
+/// so the hook script uses it both to find the state file to write and to
+/// exit immediately when Claude Code was launched outside Summoner.
+pub const SESSION_ENV: &str = "SUMMONER_SESSION";
 
-# Extract fields without buffering the full payload in bash — PostToolUse JSON
-# embeds tool_response (hundreds of KB for image reads), and ${var##*pattern}
-# expansion over it costs minutes of CPU
-if command -v jq >/dev/null 2>&1; then
-    mapfile -t fields < <(jq -r '[.hook_event_name, .session_id, .tool_name, .notification_type, .agent_id, .trigger] | map(. // "")[]' 2>/dev/null)
-    event="${fields[0]}" sid="${fields[1]}" tool="${fields[2]}"
-    notif_type="${fields[3]}" agent_id="${fields[4]}" trigger="${fields[5]}"
-else
-    # Fallback: the fields we need all precede tool_input/tool_response, so an
-    # 8 KB cap keeps the expansion cheap
-    input=$(head -c 8192)
-    extract() {
-        local tmp="${input##*"\"$1\":\""}"
-        printf '%s' "${tmp%%\"*}"
-    }
-    event=$(extract hook_event_name)
-    sid=$(extract session_id)
-    tool=$(extract tool_name)
-    notif_type=$(extract notification_type)
-    agent_id=$(extract agent_id)
-    trigger=$(extract trigger)
-fi
-[ -z "$event" ] && exit 0
+/// The hook runs on Claude Code's critical path — PreToolUse blocks the tool,
+/// PostToolUse blocks the result, UserPromptSubmit blocks the prompt — so it is
+/// written to spawn no external process at all on the common path: bash
+/// builtins read a bounded prefix of the payload and match fields with the
+/// regex engine, which is linear. A PostToolUse payload embeds the whole tool
+/// response (megabytes for an image read), and the fields the hook needs all
+/// precede it, so it reads 4 KB and never looks at the rest. Pattern
+/// expansion (`${x##*pat}`) is avoided on purpose: it is quadratic in the
+/// input, and cost a quarter of a second on an 8 KB slice.
+const HOOK_SCRIPT: &str = r##"#!/bin/bash
+# Summoner Claude Code hook — reports state changes via file.
+# Kept free of external processes on the common path; see src/hooks.rs.
 
-# Notifications that don't change session state would otherwise clobber the last
-# meaningful event (idle_prompt fires periodically and would hide Stop)
-if [ "$event" = "Notification" ]; then
-    case "$notif_type" in
-        permission_prompt|agent_needs_input|elicitation_dialog) ;;
-        *) exit 0 ;;
-    esac
-fi
+# Launched outside Summoner: nothing to report, and don't read the payload
+[[ $SUMMONER_SESSION =~ ^[A-Za-z0-9_-]+$ ]] || exit 0
+
+# Only the rare branches below spawn a process; keep them off the Windows
+# PATH entries WSL appends, which cost a drvfs stat each on a miss
+PATH=/usr/local/bin:/usr/bin:/bin
+
+# The fields we need precede tool_input/tool_response, so 4 KB is enough
+IFS= read -r -N 4096 input
+
+[[ $input =~ \"hook_event_name\":\"([^\"]*)\" ]] || exit 0
+event=${BASH_REMATCH[1]}
+sid=
+[[ $input =~ \"session_id\":\"([^\"]*)\" ]] && sid=${BASH_REMATCH[1]}
 
 # Third field carries the event-specific payload
-extra="$tool"
-[ "$event" = "Notification" ] && extra="$notif_type"
-[ "$event" = "SubagentStart" ] || [ "$event" = "SubagentStop" ] && extra="$agent_id"
-[ "$event" = "PreCompact" ] || [ "$event" = "PostCompact" ] && extra="$trigger"
-
-# Hook process tree: shell → claude → bash → this script
-# Walk up to find the shell PID
-find_shell_pid() {
-    local pid=$PPID
-    while [ -n "$pid" ] && [ "$pid" -gt 1 ] 2>/dev/null; do
-        local ppid
-        ppid=$(awk '{print $4}' "/proc/$pid/stat" 2>/dev/null) || break
-        local comm
-        comm=$(cat "/proc/$ppid/comm" 2>/dev/null) || break
-        case "$comm" in
-            bash|zsh|fish|sh|dash|ksh|tcsh|csh)
-                echo "$ppid"
-                return
-                ;;
-        esac
-        pid=$ppid
-    done
-}
-
-shell_pid=$(find_shell_pid)
-[ -z "$shell_pid" ] && exit 0
+extra=
+case $event in
+    PreToolUse|PostToolUse)
+        [[ $input =~ \"tool_name\":\"([^\"]*)\" ]] && extra=${BASH_REMATCH[1]} ;;
+    Notification)
+        [[ $input =~ \"notification_type\":\"([^\"]*)\" ]] && extra=${BASH_REMATCH[1]}
+        # Notifications that don't change session state would otherwise clobber
+        # the last meaningful event (idle_prompt fires periodically and would
+        # hide Stop). The settings matcher filters these too; this is a backstop.
+        case $extra in
+            permission_prompt|agent_needs_input|elicitation_dialog) ;;
+            *) exit 0 ;;
+        esac ;;
+    SubagentStart|SubagentStop)
+        [[ $input =~ \"agent_id\":\"([^\"]*)\" ]] && extra=${BASH_REMATCH[1]} ;;
+    PreCompact|PostCompact)
+        [[ $input =~ \"trigger\":\"([^\"]*)\" ]] && extra=${BASH_REMATCH[1]} ;;
+esac
 
 dir="$HOME/.summoner/claude-states"
-mkdir -p "$dir" 2>/dev/null
+[ -d "$dir" ] || mkdir -p "$dir" 2>/dev/null
+state="$dir/$SUMMONER_SESSION"
+agents="$state.agents"
 
-# Track active subagents via marker files (don't touch main state file)
-if [ "$event" = "SubagentStart" ] && [ -n "$agent_id" ]; then
-    mkdir -p "$dir/$shell_pid.agents" 2>/dev/null
-    touch "$dir/$shell_pid.agents/$agent_id"
-elif [ "$event" = "SubagentStop" ] && [ -n "$agent_id" ]; then
-    rm -f "$dir/$shell_pid.agents/$agent_id"
-    rmdir "$dir/$shell_pid.agents" 2>/dev/null
-else
-    echo "$event $sid $extra" > "$dir/$shell_pid"
-    [ "$event" = "SessionEnd" ] && rm -rf "$dir/$shell_pid.agents"
-fi
+case $event in
+    # Track active subagents via marker files (don't touch main state file)
+    SubagentStart)
+        [ -n "$extra" ] || exit 0
+        [ -d "$agents" ] || mkdir -p "$agents" 2>/dev/null
+        : > "$agents/$extra" ;;
+    SubagentStop)
+        [ -n "$extra" ] || exit 0
+        rm -f "$agents/$extra"
+        rmdir "$agents" 2>/dev/null ;;
+    SessionEnd)
+        echo "$event $sid $extra" > "$state"
+        rm -rf "$agents" ;;
+    *)
+        echo "$event $sid $extra" > "$state" ;;
+esac
 exit 0
-"#;
+"##;
 
 const HOOK_COMMAND: &str = "bash ~/.summoner/hooks/claude-state.sh";
 
-const HOOK_EVENTS: &[&str] = &[
-    "SessionStart",
-    "UserPromptSubmit",
-    "Stop",
-    "Notification",
-    "SessionEnd",
-    "PreToolUse",
-    "PostToolUse",
-    "SubagentStart",
-    "SubagentStop",
-    "PreCompact",
-    "PostCompact",
+/// Upper bound on a single hook run. The script takes a few milliseconds;
+/// Claude Code's default is ten minutes, and a wedged hook would stall the
+/// tool call it is attached to for that long.
+const HOOK_TIMEOUT_SECS: u64 = 5;
+
+/// Events the hook subscribes to, with the matcher Claude Code applies before
+/// spawning it. Only three notification types change a session's state, so
+/// the rest (idle_prompt above all, which fires periodically) never cost a
+/// process.
+const HOOK_EVENTS: &[(&str, &str)] = &[
+    ("SessionStart", ""),
+    ("UserPromptSubmit", ""),
+    ("Stop", ""),
+    ("Notification", "permission_prompt|agent_needs_input|elicitation_dialog"),
+    ("SessionEnd", ""),
+    ("PreToolUse", ""),
+    ("PostToolUse", ""),
+    ("SubagentStart", ""),
+    ("SubagentStop", ""),
+    ("PreCompact", ""),
+    ("PostCompact", ""),
 ];
+
+/// The hook script as installed, for tests that exercise it under bash.
+pub fn hook_script() -> &'static str {
+    HOOK_SCRIPT
+}
 
 /// Install the hook script and configure ~/.claude/settings.json.
 /// Also cleans up stale state files from prior runs.
-pub fn install_hooks(summoner_dir: &Path) {
-    let _ = install_hook_script(summoner_dir);
-    let _ = configure_claude_settings();
+///
+/// Returns one line per step that failed. Nothing here is fatal — Summoner
+/// still works as a session manager without state detection — but a silent
+/// failure would leave every creature asleep with no explanation.
+pub fn install_hooks(summoner_dir: &Path) -> Vec<String> {
+    let mut problems = Vec::new();
+    if let Err(e) = install_hook_script(summoner_dir) {
+        problems.push(format!("hook script not installed: {}", e));
+    }
+    if let Err(e) = configure_claude_settings() {
+        problems.push(format!("~/.claude/settings.json not updated: {}", e));
+    }
     clear_all_state_files(summoner_dir);
-    crate::statusline::install_wrapper(summoner_dir);
+    if let Err(e) = crate::statusline::install_wrapper(summoner_dir) {
+        problems.push(format!("statusLine wrapper not installed: {}", e));
+    }
+    problems
 }
 
 /// Remove hook entries from ~/.claude/settings.json, delete scripts and state files.
@@ -126,7 +149,8 @@ pub fn uninstall_hooks(summoner_dir: &Path) {
     let _ = fs::remove_dir(summoner_dir.join("statusline-states"));
 }
 
-/// Remove all state files. Called on startup to avoid stale PID reuse.
+/// Remove all state files. Called on startup so nothing from a previous run
+/// is mistaken for a live session.
 pub fn clear_all_state_files(summoner_dir: &Path) {
     let dir = summoner_dir.join("claude-states");
     if let Ok(entries) = fs::read_dir(&dir) {
@@ -141,11 +165,10 @@ pub fn clear_all_state_files(summoner_dir: &Path) {
     }
 }
 
-/// Remove the state file for a specific shell PID.
-pub fn clear_state_file(summoner_dir: &Path, shell_pid: u32) {
-    let _ = fs::remove_file(state_file_path(summoner_dir, shell_pid));
-    let agents_dir = summoner_dir.join("claude-states").join(format!("{}.agents", shell_pid));
-    let _ = fs::remove_dir_all(agents_dir);
+/// Remove the state file and subagent markers for a session.
+pub fn clear_state_file(summoner_dir: &Path, session_key: &str) {
+    let _ = fs::remove_file(state_file_path(summoner_dir, session_key));
+    let _ = fs::remove_dir_all(agents_dir_path(summoner_dir, session_key));
 }
 
 fn install_hook_script(summoner_dir: &Path) -> std::io::Result<()> {
@@ -165,20 +188,53 @@ fn install_hook_script(summoner_dir: &Path) -> std::io::Result<()> {
     Ok(())
 }
 
-fn configure_claude_settings() -> std::io::Result<()> {
-    let claude_dir = dirs::home_dir()
+fn claude_settings_path() -> std::io::Result<PathBuf> {
+    Ok(dirs::home_dir()
         .ok_or_else(|| std::io::Error::new(std::io::ErrorKind::NotFound, "no home dir"))?
-        .join(".claude");
-    fs::create_dir_all(&claude_dir)?;
-    let settings_path = claude_dir.join("settings.json");
+        .join(".claude")
+        .join("settings.json"))
+}
 
+fn configure_claude_settings() -> std::io::Result<()> {
+    let settings_path = claude_settings_path()?;
+    if let Some(parent) = settings_path.parent() {
+        fs::create_dir_all(parent)?;
+    }
+    configure_settings_file(&settings_path).map(|_| ())
+}
+
+fn is_our_entry(entry: &serde_json::Value) -> bool {
+    entry.get("hooks")
+        .and_then(|h| h.as_array())
+        .map(|hooks| hooks.iter().any(|h| {
+            h.get("command").and_then(|c| c.as_str()) == Some(HOOK_COMMAND)
+        }))
+        .unwrap_or(false)
+}
+
+fn our_entry(matcher: &str) -> serde_json::Value {
+    serde_json::json!({
+        "matcher": matcher,
+        "hooks": [{
+            "type": "command",
+            "command": HOOK_COMMAND,
+            "timeout": HOOK_TIMEOUT_SECS,
+        }]
+    })
+}
+
+/// Add Summoner's hook entries to a Claude Code settings file, replacing any
+/// earlier version of them (an older install had no matcher or timeout) and
+/// leaving everything else untouched. Returns whether the file was written.
+pub fn configure_settings_file(settings_path: &Path) -> std::io::Result<bool> {
     // Read existing settings or start fresh
     let mut settings: serde_json::Value = if settings_path.exists() {
-        let content = fs::read_to_string(&settings_path)?;
+        let content = fs::read_to_string(settings_path)?;
         serde_json::from_str(&content).unwrap_or(serde_json::json!({}))
     } else {
         serde_json::json!({})
     };
+    let original = settings.clone();
 
     let hooks = settings
         .as_object_mut()
@@ -188,16 +244,10 @@ fn configure_claude_settings() -> std::io::Result<()> {
 
     let hooks_obj = match hooks.as_object_mut() {
         Some(obj) => obj,
-        None => return Ok(()),
+        None => return Ok(false),
     };
 
-    let our_hook = serde_json::json!({
-        "type": "command",
-        "command": HOOK_COMMAND
-    });
-    let mut changed = false;
-
-    for &event in HOOK_EVENTS {
+    for &(event, matcher) in HOOK_EVENTS {
         let event_hooks = hooks_obj
             .entry(event)
             .or_insert_with(|| serde_json::json!([]));
@@ -207,115 +257,89 @@ fn configure_claude_settings() -> std::io::Result<()> {
             None => continue,
         };
 
-        // Check if our hook is already present
-        let already_present = arr.iter().any(|entry| {
-            entry.get("hooks")
-                .and_then(|h| h.as_array())
-                .map(|hooks| hooks.iter().any(|h| {
-                    h.get("command").and_then(|c| c.as_str()) == Some(HOOK_COMMAND)
-                }))
-                .unwrap_or(false)
-        });
-
-        if !already_present {
-            arr.push(serde_json::json!({
-                "matcher": "",
-                "hooks": [our_hook]
-            }));
-            changed = true;
+        // Replace in place so a stale entry is upgraded and keeps its position
+        let wanted = our_entry(matcher);
+        let first = arr.iter().position(is_our_entry);
+        arr.retain(|e| !is_our_entry(e));
+        match first {
+            Some(pos) => arr.insert(pos.min(arr.len()), wanted),
+            None => arr.push(wanted),
         }
     }
 
-    if changed {
-        let content = serde_json::to_string_pretty(&settings)
-            .map_err(std::io::Error::other)?;
-        fs::write(&settings_path, content)?;
+    if settings == original {
+        return Ok(false);
     }
-    Ok(())
+    let content = serde_json::to_string_pretty(&settings)
+        .map_err(std::io::Error::other)?;
+    fs::write(settings_path, content)?;
+    Ok(true)
 }
 
 fn unconfigure_claude_settings() -> std::io::Result<()> {
-    let settings_path = dirs::home_dir()
-        .ok_or_else(|| std::io::Error::new(std::io::ErrorKind::NotFound, "no home dir"))?
-        .join(".claude")
-        .join("settings.json");
-
+    let settings_path = claude_settings_path()?;
     if !settings_path.exists() {
         return Ok(());
     }
+    unconfigure_settings_file(&settings_path).map(|_| ())
+}
 
-    let content = fs::read_to_string(&settings_path)?;
+/// Remove Summoner's hook entries from a Claude Code settings file, leaving
+/// everything else untouched. Returns whether the file was written.
+pub fn unconfigure_settings_file(settings_path: &Path) -> std::io::Result<bool> {
+    let content = fs::read_to_string(settings_path)?;
     let mut settings: serde_json::Value = serde_json::from_str(&content)
         .map_err(std::io::Error::other)?;
+    let original = settings.clone();
 
-    let mut changed = false;
-
-    // Remove our hook entries
     if let Some(hooks) = settings.get_mut("hooks").and_then(|h| h.as_object_mut()) {
-        for &event in HOOK_EVENTS {
+        for &(event, _) in HOOK_EVENTS {
             if let Some(arr) = hooks.get_mut(event).and_then(|v| v.as_array_mut()) {
-                let before = arr.len();
-                arr.retain(|entry| {
-                    !entry.get("hooks")
-                        .and_then(|h| h.as_array())
-                        .map(|hooks| hooks.iter().any(|h| {
-                            h.get("command").and_then(|c| c.as_str()) == Some(HOOK_COMMAND)
-                        }))
-                        .unwrap_or(false)
-                });
-                if arr.len() != before {
-                    changed = true;
-                }
+                arr.retain(|entry| !is_our_entry(entry));
             }
         }
         // Clean up empty event arrays
-        let empty_events: Vec<String> = hooks.iter()
-            .filter(|(_, v)| v.as_array().map(|a| a.is_empty()).unwrap_or(false))
-            .map(|(k, _)| k.clone())
-            .collect();
-        for key in empty_events {
-            hooks.remove(&key);
-            changed = true;
-        }
-        // Remove hooks key if empty
-        if hooks.is_empty() {
-            // mark for removal below
-        }
+        hooks.retain(|_, v| !v.as_array().map(|a| a.is_empty()).unwrap_or(false));
     }
     if settings.get("hooks").and_then(|h| h.as_object()).map(|o| o.is_empty()).unwrap_or(false) {
         settings.as_object_mut().unwrap().remove("hooks");
-        changed = true;
     }
 
-    if changed {
-        let content = serde_json::to_string_pretty(&settings)
-            .map_err(std::io::Error::other)?;
-        fs::write(&settings_path, content)?;
+    if settings == original {
+        return Ok(false);
     }
-    Ok(())
+    let content = serde_json::to_string_pretty(&settings)
+        .map_err(std::io::Error::other)?;
+    fs::write(settings_path, content)?;
+    Ok(true)
 }
 
-fn state_file_path(summoner_dir: &Path, shell_pid: u32) -> PathBuf {
-    summoner_dir.join("claude-states").join(shell_pid.to_string())
+fn state_file_path(summoner_dir: &Path, session_key: &str) -> PathBuf {
+    summoner_dir.join("claude-states").join(session_key)
 }
 
-/// Last time a hook event was recorded for a shell PID.
-pub fn state_file_mtime(summoner_dir: &Path, shell_pid: u32) -> Option<SystemTime> {
-    fs::metadata(state_file_path(summoner_dir, shell_pid))
+fn agents_dir_path(summoner_dir: &Path, session_key: &str) -> PathBuf {
+    summoner_dir.join("claude-states").join(format!("{}.agents", session_key))
+}
+
+/// Last time a hook event was recorded for a session.
+pub fn state_file_mtime(summoner_dir: &Path, session_key: &str) -> Option<SystemTime> {
+    fs::metadata(state_file_path(summoner_dir, session_key))
         .and_then(|m| m.modified())
         .ok()
 }
 
-/// Count active subagents for a shell PID by counting marker files.
-fn active_subagent_count(summoner_dir: &Path, shell_pid: u32) -> usize {
-    let agents_dir = summoner_dir.join("claude-states").join(format!("{}.agents", shell_pid));
-    fs::read_dir(agents_dir).map(|entries| entries.count()).unwrap_or(0)
+/// Count active subagents for a session by counting marker files.
+fn active_subagent_count(summoner_dir: &Path, session_key: &str) -> usize {
+    fs::read_dir(agents_dir_path(summoner_dir, session_key))
+        .map(|entries| entries.count())
+        .unwrap_or(0)
 }
 
 /// Read hook state and session ID in a single file read.
 /// Returns (state, session_id, active_tool) where state is None if no hook data or Claude exited.
-pub fn read_hook_state(summoner_dir: &Path, shell_pid: u32) -> (Option<SessionState>, Option<String>, Option<String>) {
-    let state_file = state_file_path(summoner_dir, shell_pid);
+pub fn read_hook_state(summoner_dir: &Path, session_key: &str) -> (Option<SessionState>, Option<String>, Option<String>) {
+    let state_file = state_file_path(summoner_dir, session_key);
     let content = match fs::read_to_string(&state_file) {
         Ok(c) => c,
         Err(_) => return (None, None, None),
@@ -328,7 +352,7 @@ pub fn read_hook_state(summoner_dir: &Path, shell_pid: u32) -> (Option<SessionSt
     let session_id = parts.next().map(|s| s.to_string());
     let tool_name = parts.next().map(|s| s.to_string());
 
-    let has_active_subagents = active_subagent_count(summoner_dir, shell_pid) > 0;
+    let has_active_subagents = active_subagent_count(summoner_dir, session_key) > 0;
 
     let idle_or_working = |has_active_subagents: bool| {
         if has_active_subagents {

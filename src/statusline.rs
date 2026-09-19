@@ -3,7 +3,7 @@ use std::path::Path;
 
 const WRAPPER_SCRIPT_HEAD: &str = r#"#!/bin/bash
 # Summoner statusLine wrapper — tees JSON to state file, pipes to downstream
-input=$(cat)
+IFS= read -r -d '' input
 
 # Extract session_id
 sid_tmp="${input##*"\"session_id\":\""}"
@@ -33,8 +33,8 @@ fn extract_passthrough_from_script(path: &Path) -> Option<String> {
 }
 
 /// Install the statusLine wrapper script and update ~/.claude/settings.json.
-pub fn install_wrapper(summoner_dir: &Path) {
-    let _ = install_wrapper_inner(summoner_dir);
+pub fn install_wrapper(summoner_dir: &Path) -> std::io::Result<()> {
+    install_wrapper_inner(summoner_dir)
 }
 
 fn install_wrapper_inner(summoner_dir: &Path) -> std::io::Result<()> {
