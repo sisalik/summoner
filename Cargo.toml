@@ -2,7 +2,15 @@
 name = "summoner"
 version = "0.1.0"
 edition = "2024"
+rust-version = "1.85"
 description = "A gamified terminal session manager for Claude Code"
+repository = "https://github.com/sisalik/summoner"
+license = "MIT"
+readme = "README.md"
+# Not publishable as it stands: crates.io ignores [patch], so a published
+# summoner would resolve vt100 to upstream, which lacks the stream-row and
+# OSC 8 APIs the selection code is built on.
+publish = false
 
 [features]
 default = []
