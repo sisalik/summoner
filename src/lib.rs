@@ -1,5 +1,6 @@
 pub mod app;
 pub mod claude;
+pub mod claude_settings;
 pub mod config;
 pub mod creature;
 pub mod hooks;

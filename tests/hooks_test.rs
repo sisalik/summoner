@@ -380,3 +380,61 @@ fn unconfigure_removes_hooks_key_when_nothing_is_left() {
     assert!(s.get("hooks").is_none());
     assert_eq!(s["model"], "opus");
 }
+
+#[test]
+fn malformed_settings_are_reported_and_left_alone() {
+    let tmp = TempDir::new().unwrap();
+    let path = tmp.path().join("settings.json");
+    // A trailing comma: legal in JSON5 and in many editors' muscle memory
+    let broken = r#"{"model": "opus", "env": {"FOO": "bar"},}"#;
+    fs::write(&path, broken).unwrap();
+
+    let err = configure_settings_file(&path).unwrap_err();
+    assert_eq!(err.kind(), std::io::ErrorKind::InvalidData);
+    assert_eq!(fs::read_to_string(&path).unwrap(), broken, "file untouched");
+
+    let err = unconfigure_settings_file(&path).unwrap_err();
+    assert_eq!(err.kind(), std::io::ErrorKind::InvalidData);
+    assert_eq!(fs::read_to_string(&path).unwrap(), broken, "file untouched");
+}
+
+#[test]
+fn settings_holding_a_non_object_are_reported_and_left_alone() {
+    let tmp = TempDir::new().unwrap();
+    let path = tmp.path().join("settings.json");
+    fs::write(&path, "[1, 2, 3]").unwrap();
+
+    let err = configure_settings_file(&path).unwrap_err();
+    assert_eq!(err.kind(), std::io::ErrorKind::InvalidData);
+    assert_eq!(fs::read_to_string(&path).unwrap(), "[1, 2, 3]");
+}
+
+#[test]
+fn the_first_edit_keeps_a_backup_and_later_edits_do_not_replace_it() {
+    let tmp = TempDir::new().unwrap();
+    let path = tmp.path().join("settings.json");
+    let backup = tmp.path().join("settings.json.summoner-bak");
+    let before = r#"{"model": "opus"}"#;
+    fs::write(&path, before).unwrap();
+
+    configure_settings_file(&path).unwrap();
+    assert_eq!(fs::read_to_string(&backup).unwrap(), before);
+
+    unconfigure_settings_file(&path).unwrap();
+    assert_eq!(
+        fs::read_to_string(&backup).unwrap(),
+        before,
+        "the backup still holds the settings as Summoner first found them"
+    );
+    assert!(!tmp.path().join("settings.json.summoner-tmp").exists(), "no temp file left behind");
+}
+
+#[test]
+fn a_missing_settings_file_is_created_without_a_backup() {
+    let tmp = TempDir::new().unwrap();
+    let path = tmp.path().join("settings.json");
+
+    assert!(configure_settings_file(&path).unwrap());
+    assert!(path.exists());
+    assert!(!tmp.path().join("settings.json.summoner-bak").exists());
+}

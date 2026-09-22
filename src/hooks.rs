@@ -2,6 +2,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::time::SystemTime;
 
+use crate::claude_settings;
 use crate::session::SessionState;
 
 /// Environment variable Summoner exports into every PTY it spawns, carrying
@@ -188,19 +189,8 @@ fn install_hook_script(summoner_dir: &Path) -> std::io::Result<()> {
     Ok(())
 }
 
-fn claude_settings_path() -> std::io::Result<PathBuf> {
-    Ok(dirs::home_dir()
-        .ok_or_else(|| std::io::Error::new(std::io::ErrorKind::NotFound, "no home dir"))?
-        .join(".claude")
-        .join("settings.json"))
-}
-
 fn configure_claude_settings() -> std::io::Result<()> {
-    let settings_path = claude_settings_path()?;
-    if let Some(parent) = settings_path.parent() {
-        fs::create_dir_all(parent)?;
-    }
-    configure_settings_file(&settings_path).map(|_| ())
+    configure_settings_file(&claude_settings::path()?).map(|_| ())
 }
 
 fn is_our_entry(entry: &serde_json::Value) -> bool {
@@ -227,18 +217,10 @@ fn our_entry(matcher: &str) -> serde_json::Value {
 /// earlier version of them (an older install had no matcher or timeout) and
 /// leaving everything else untouched. Returns whether the file was written.
 pub fn configure_settings_file(settings_path: &Path) -> std::io::Result<bool> {
-    // Read existing settings or start fresh
-    let mut settings: serde_json::Value = if settings_path.exists() {
-        let content = fs::read_to_string(settings_path)?;
-        serde_json::from_str(&content).unwrap_or(serde_json::json!({}))
-    } else {
-        serde_json::json!({})
-    };
+    let mut settings = claude_settings::read(settings_path)?;
     let original = settings.clone();
 
     let hooks = settings
-        .as_object_mut()
-        .ok_or_else(|| std::io::Error::new(std::io::ErrorKind::InvalidData, "settings not object"))?
         .entry("hooks")
         .or_insert_with(|| serde_json::json!({}));
 
@@ -270,26 +252,21 @@ pub fn configure_settings_file(settings_path: &Path) -> std::io::Result<bool> {
     if settings == original {
         return Ok(false);
     }
-    let content = serde_json::to_string_pretty(&settings)
-        .map_err(std::io::Error::other)?;
-    fs::write(settings_path, content)?;
+    claude_settings::write(settings_path, &settings)?;
     Ok(true)
 }
 
 fn unconfigure_claude_settings() -> std::io::Result<()> {
-    let settings_path = claude_settings_path()?;
-    if !settings_path.exists() {
-        return Ok(());
-    }
-    unconfigure_settings_file(&settings_path).map(|_| ())
+    unconfigure_settings_file(&claude_settings::path()?).map(|_| ())
 }
 
 /// Remove Summoner's hook entries from a Claude Code settings file, leaving
 /// everything else untouched. Returns whether the file was written.
 pub fn unconfigure_settings_file(settings_path: &Path) -> std::io::Result<bool> {
-    let content = fs::read_to_string(settings_path)?;
-    let mut settings: serde_json::Value = serde_json::from_str(&content)
-        .map_err(std::io::Error::other)?;
+    if !settings_path.exists() {
+        return Ok(false);
+    }
+    let mut settings = claude_settings::read(settings_path)?;
     let original = settings.clone();
 
     if let Some(hooks) = settings.get_mut("hooks").and_then(|h| h.as_object_mut()) {
@@ -302,15 +279,13 @@ pub fn unconfigure_settings_file(settings_path: &Path) -> std::io::Result<bool> 
         hooks.retain(|_, v| !v.as_array().map(|a| a.is_empty()).unwrap_or(false));
     }
     if settings.get("hooks").and_then(|h| h.as_object()).map(|o| o.is_empty()).unwrap_or(false) {
-        settings.as_object_mut().unwrap().remove("hooks");
+        settings.remove("hooks");
     }
 
     if settings == original {
         return Ok(false);
     }
-    let content = serde_json::to_string_pretty(&settings)
-        .map_err(std::io::Error::other)?;
-    fs::write(settings_path, content)?;
+    claude_settings::write(settings_path, &settings)?;
     Ok(true)
 }
 

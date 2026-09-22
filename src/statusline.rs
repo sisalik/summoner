@@ -1,6 +1,8 @@
 use std::fs;
 use std::path::Path;
 
+use crate::claude_settings;
+
 const WRAPPER_SCRIPT_HEAD: &str = r#"#!/bin/bash
 # Summoner statusLine wrapper — tees JSON to state file, pipes to downstream
 IFS= read -r -d '' input
@@ -34,24 +36,16 @@ fn extract_passthrough_from_script(path: &Path) -> Option<String> {
 
 /// Install the statusLine wrapper script and update ~/.claude/settings.json.
 pub fn install_wrapper(summoner_dir: &Path) -> std::io::Result<()> {
-    install_wrapper_inner(summoner_dir)
+    install_wrapper_at(summoner_dir, &claude_settings::path()?)
 }
 
-fn install_wrapper_inner(summoner_dir: &Path) -> std::io::Result<()> {
+/// As `install_wrapper`, against a given settings file.
+pub fn install_wrapper_at(summoner_dir: &Path, settings_path: &Path) -> std::io::Result<()> {
     let hooks_dir = summoner_dir.join("hooks");
     fs::create_dir_all(&hooks_dir)?;
 
-    let claude_dir = dirs::home_dir()
-        .ok_or_else(|| std::io::Error::new(std::io::ErrorKind::NotFound, "no home dir"))?
-        .join(".claude");
-    let settings_path = claude_dir.join("settings.json");
-
-    let settings: serde_json::Value = if settings_path.exists() {
-        let content = fs::read_to_string(&settings_path)?;
-        serde_json::from_str(&content).unwrap_or(serde_json::json!({}))
-    } else {
-        serde_json::json!({})
-    };
+    let mut settings = claude_settings::read(settings_path)?;
+    let original = settings.clone();
 
     let current_cmd = settings.get("statusLine")
         .and_then(|sl| sl.get("command"))
@@ -85,18 +79,16 @@ fn install_wrapper_inner(summoner_dir: &Path) -> std::io::Result<()> {
         fs::set_permissions(&script_path, fs::Permissions::from_mode(0o755))?;
     }
 
-    let mut settings = settings;
-    settings["statusLine"] = serde_json::json!({
+    settings.insert("statusLine".into(), serde_json::json!({
         "type": "command",
         "command": WRAPPER_COMMAND,
         "padding": 0
-    });
+    }));
 
-    let content = serde_json::to_string_pretty(&settings)
-        .map_err(std::io::Error::other)?;
-    fs::write(&settings_path, content)?;
-
-    Ok(())
+    if settings == original {
+        return Ok(());
+    }
+    claude_settings::write(settings_path, &settings)
 }
 
 /// Remove the statusLine wrapper from ~/.claude/settings.json, restoring
@@ -108,19 +100,22 @@ pub fn uninstall_wrapper() {
 fn uninstall_wrapper_inner() -> std::io::Result<()> {
     let home = dirs::home_dir()
         .ok_or_else(|| std::io::Error::new(std::io::ErrorKind::NotFound, "no home dir"))?;
-    let settings_path = home.join(".claude").join("settings.json");
+    uninstall_wrapper_at(
+        &home.join(".summoner/hooks/statusline-wrapper.sh"),
+        &claude_settings::path()?,
+    )
+}
 
+/// As `uninstall_wrapper`, against a given wrapper script and settings file.
+pub fn uninstall_wrapper_at(script_path: &Path, settings_path: &Path) -> std::io::Result<()> {
     if !settings_path.exists() {
         return Ok(());
     }
 
-    // Check if there's a passthrough command to restore
-    let script_path = home.join(".summoner/hooks/statusline-wrapper.sh");
-    let passthrough = extract_passthrough_from_script(&script_path);
+    // The passthrough command captured on install, to be restored
+    let passthrough = extract_passthrough_from_script(script_path);
 
-    let content = fs::read_to_string(&settings_path)?;
-    let mut settings: serde_json::Value = serde_json::from_str(&content)
-        .map_err(std::io::Error::other)?;
+    let mut settings = claude_settings::read(settings_path)?;
 
     // Only touch statusLine if it's currently ours
     let is_ours = settings.get("statusLine")
@@ -129,19 +124,18 @@ fn uninstall_wrapper_inner() -> std::io::Result<()> {
         == Some(WRAPPER_COMMAND);
 
     if is_ours {
-        if let Some(passthrough_cmd) = passthrough {
-            // Restore original command
-            settings["statusLine"] = serde_json::json!({
-                "type": "command",
-                "command": passthrough_cmd
-            });
-        } else {
-            settings.as_object_mut().unwrap().remove("statusLine");
+        match passthrough {
+            Some(passthrough_cmd) => {
+                settings.insert("statusLine".into(), serde_json::json!({
+                    "type": "command",
+                    "command": passthrough_cmd
+                }));
+            }
+            None => {
+                settings.remove("statusLine");
+            }
         }
-
-        let content = serde_json::to_string_pretty(&settings)
-            .map_err(std::io::Error::other)?;
-        fs::write(&settings_path, content)?;
+        claude_settings::write(settings_path, &settings)?;
     }
 
     Ok(())

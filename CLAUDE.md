@@ -24,6 +24,9 @@ src/
                        #   Disconnected/ShellOnly), project grouping (session_order)
   config.rs            # AppConfig, SessionStore, RecentDirs — all TOML, stored in ~/.summoner/
   claude.rs            # Claude process detection: find_claude_child, find_conversation_id
+  claude_settings.rs   # ~/.claude/settings.json: read as an object (malformed is an error,
+                       #   never an empty map), write once via temp file + rename, back up
+                       #   the original on the first edit
   hooks.rs             # Claude Code hook installation (~/.claude/settings.json) and
                        #   state file reading (~/.summoner/claude-states/{session id})
   creature/
@@ -75,6 +78,8 @@ tests/
 
 **Claude state detection**: Primary path reads hook state files written by a shell script (`~/.summoner/hooks/claude-state.sh`) invoked by Claude Code's hook API. Fallback checks for claude child process. Every PTY is spawned with `SUMMONER_SESSION=<session id>` in its environment, which Claude Code passes on to hook commands; the script keys its state file on that and exits on its first line when the variable is absent, so Claude Code launched outside Summoner pays nothing. The hook sits on Claude Code's critical path (PreToolUse blocks the tool, PostToolUse blocks the result), so the script spawns no external process on the common path: it reads a 4 KB prefix of the payload with the `read` builtin and matches fields with `=~`. Do not reintroduce `${x##*pat}` expansions (quadratic, ~40 ms each on 8 KB) or `command -v` probes (a PATH miss under WSL stats ~70 drvfs directories, ~150 ms). `tests/hooks_test.rs` runs the script under bash against payloads up to 5 MB.
 
+**Claude Code settings**: `~/.claude/settings.json` is the user's file, holding their permissions, environment and their own hooks, and both `hooks.rs` and `statusline.rs` edit it in place. All of that I/O goes through `claude_settings.rs`: a file that does not parse as a JSON object is an error rather than an empty map, so a read-modify-write can never replace the user's settings with Summoner's entries alone, and a write lands in a temp file that is renamed over the original, so an interrupted write cannot truncate it. The first edit copies the original to `settings.json.summoner-bak`. Errors reach the user: `install_hooks` returns one line per failed step, shown on the dashboard and by `summoner install`.
+
 **Session persistence**: `SessionStore` (TOML) saves all sessions every 10s and on exit. Disconnected sessions restore by re-spawning PTY in same directory and optionally running `claude --resume <conversation_id>`.
 
 **Input routing**: Global keys (Ctrl+C/Q, Shift+F12 session switcher, F12 toggle, F1-F11 session switch) are handled first, then mode-specific handlers (dashboard nav, PTY forwarding via `key_to_bytes`, dir picker). The session switcher is an overlay (`Option<SessionSwitcher>`), not a `Mode` — it renders on top of whichever screen is active and swallows keys and mouse while open.
@@ -114,4 +119,5 @@ tests/
 - `sessions.toml` — persisted sessions (id, dir, creature seed/template, conversation id, timestamps)
 - `recent_dirs.toml` — directory history for picker
 - `hooks/claude-state.sh` — auto-installed hook script
+- `settings.json.summoner-bak` (in `~/.claude/`) — the settings as Summoner first found them
 - `claude-states/{session id}` — per-session state files written by hooks (`{session id}.agents/` holds one marker per running subagent)

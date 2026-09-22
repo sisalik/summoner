@@ -42,3 +42,46 @@ fn parse_statusline_json_missing_session_id() {
     let result = StatusLineData::from_json(json);
     assert!(result.is_none());
 }
+
+#[test]
+fn wrapper_install_captures_an_existing_status_line_and_uninstall_restores_it() {
+    let tmp = tempfile::TempDir::new().unwrap();
+    let settings_path = tmp.path().join("settings.json");
+    std::fs::write(
+        &settings_path,
+        r#"{"model": "opus", "statusLine": {"type": "command", "command": "my-prompt.sh"}}"#,
+    )
+    .unwrap();
+    let summoner_dir = tmp.path().join("summoner");
+
+    summoner::statusline::install_wrapper_at(&summoner_dir, &settings_path).unwrap();
+    let settings: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(&settings_path).unwrap()).unwrap();
+    assert_eq!(settings["model"], "opus");
+    assert_eq!(
+        settings["statusLine"]["command"],
+        "bash ~/.summoner/hooks/statusline-wrapper.sh"
+    );
+
+    let script_path = summoner_dir.join("hooks").join("statusline-wrapper.sh");
+    assert!(std::fs::read_to_string(&script_path).unwrap().contains("my-prompt.sh"));
+
+    summoner::statusline::uninstall_wrapper_at(&script_path, &settings_path).unwrap();
+    let settings: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(&settings_path).unwrap()).unwrap();
+    assert_eq!(settings["statusLine"]["command"], "my-prompt.sh");
+    assert_eq!(settings["model"], "opus");
+}
+
+#[test]
+fn wrapper_install_reports_malformed_settings_and_leaves_them_alone() {
+    let tmp = tempfile::TempDir::new().unwrap();
+    let settings_path = tmp.path().join("settings.json");
+    let broken = r#"{"statusLine": {"command": "my-prompt.sh",}}"#;
+    std::fs::write(&settings_path, broken).unwrap();
+
+    let err = summoner::statusline::install_wrapper_at(&tmp.path().join("summoner"), &settings_path)
+        .unwrap_err();
+    assert_eq!(err.kind(), std::io::ErrorKind::InvalidData);
+    assert_eq!(std::fs::read_to_string(&settings_path).unwrap(), broken);
+}
