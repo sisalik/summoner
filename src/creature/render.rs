@@ -16,6 +16,7 @@ pub fn state_palette(state: SessionState) -> Palette {
     match state {
         SessionState::Working => Palette { body, border: Color::Rgb(0, 100, 60), highlight: Color::Rgb(100, 255, 180) },
         SessionState::Waiting => Palette { body, border: Color::Rgb(180, 100, 0), highlight: Color::Rgb(255, 220, 100) },
+        SessionState::Errored => Palette { body, border: Color::Rgb(130, 25, 25), highlight: Color::Rgb(255, 150, 140) },
         SessionState::Idle => Palette { body, border: Color::Rgb(50, 60, 140), highlight: Color::Rgb(150, 170, 255) },
         SessionState::Sleeping => Palette { body, border: Color::Rgb(40, 45, 60), highlight: Color::Rgb(100, 110, 140) },
         SessionState::Disconnected => Palette { body, border: Color::Rgb(60, 60, 60), highlight: Color::Rgb(130, 130, 130) },

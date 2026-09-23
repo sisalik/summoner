@@ -57,6 +57,8 @@ case $event in
         [[ $input =~ \"agent_id\":\"([^\"]*)\" ]] && extra=${BASH_REMATCH[1]} ;;
     PreCompact|PostCompact)
         [[ $input =~ \"trigger\":\"([^\"]*)\" ]] && extra=${BASH_REMATCH[1]} ;;
+    StopFailure)
+        [[ $input =~ \"error\":\"([^\"]*)\" ]] && extra=${BASH_REMATCH[1]} ;;
 esac
 
 dir="$HOME/.summoner/claude-states"
@@ -98,6 +100,7 @@ const HOOK_EVENTS: &[(&str, &str)] = &[
     ("SessionStart", ""),
     ("UserPromptSubmit", ""),
     ("Stop", ""),
+    ("StopFailure", ""),
     ("Notification", "permission_prompt|agent_needs_input|elicitation_dialog"),
     ("SessionEnd", ""),
     ("PreToolUse", ""),
@@ -340,6 +343,9 @@ pub fn read_hook_state(summoner_dir: &Path, session_key: &str) -> (Option<Sessio
     let state = match event {
         "UserPromptSubmit" => Some(SessionState::Working),
         "Stop" | "SessionStart" => idle_or_working(has_active_subagents),
+        // Fired instead of Stop when an API error ended the turn. It wins over
+        // running subagents: the main thread is stuck until the user acts.
+        "StopFailure" => Some(SessionState::Errored),
         "Notification" => match tool_name.as_deref() {
             // agent_needs_input covers permission prompts bubbling up from subagents
             Some("permission_prompt" | "agent_needs_input" | "elicitation_dialog") => {

@@ -86,6 +86,14 @@ fn stop_reports_idle_unless_subagents_active() {
 }
 
 #[test]
+fn stop_failure_reports_errored_even_with_subagents_active() {
+    let tmp = TempDir::new().unwrap();
+    assert_eq!(state_for(tmp.path(), "StopFailure sid server_error"), Some(SessionState::Errored));
+    add_subagent_marker(tmp.path());
+    assert_eq!(state_for(tmp.path(), "StopFailure sid server_error"), Some(SessionState::Errored));
+}
+
+#[test]
 fn tool_events_report_working() {
     let tmp = TempDir::new().unwrap();
     assert_eq!(state_for(tmp.path(), "PreToolUse sid Bash"), Some(SessionState::Working));
@@ -437,4 +445,17 @@ fn a_missing_settings_file_is_created_without_a_backup() {
     assert!(configure_settings_file(&path).unwrap());
     assert!(path.exists());
     assert!(!tmp.path().join("settings.json.summoner-bak").exists());
+}
+
+#[test]
+fn script_records_the_api_error_kind() {
+    let tmp = TempDir::new().unwrap();
+    let fields = [
+        ("error", "server_error"),
+        ("error_details", "Connection lost mid-response"),
+        ("last_assistant_message", "API Error: Connection lost mid-response."),
+    ];
+    run_hook(tmp.path(), Some(KEY), &payload("StopFailure", &fields, ""));
+    assert_eq!(state_content(tmp.path(), KEY).as_deref(), Some("StopFailure abc-123 server_error"));
+    assert_eq!(read_hook_state(&summoner_dir(tmp.path()), KEY).0, Some(SessionState::Errored));
 }

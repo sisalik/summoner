@@ -19,6 +19,7 @@ mod render_creature {
         match s {
             "working" => SessionState::Working,
             "waiting" => SessionState::Waiting,
+            "errored" => SessionState::Errored,
             "idle" => SessionState::Idle,
             "sleeping" => SessionState::Sleeping,
             "disconnected" => SessionState::Disconnected,

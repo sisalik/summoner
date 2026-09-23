@@ -142,7 +142,7 @@ impl LocomotionState {
                 4 => self.drive_waiting_serpentine(),
                 _ => self.drive_waiting_bipedal(),
             },
-            SessionState::Idle => match self.archetype {
+            SessionState::Idle | SessionState::Errored => match self.archetype {
                 1 => self.drive_idle_quadruped(),
                 2 => self.drive_idle_blob(),
                 3 => self.drive_idle_winged(),

@@ -5,6 +5,8 @@ use uuid::Uuid;
 pub enum SessionState {
     Working,
     Waiting,
+    /// The last turn ended on an API error (connection lost, overload, rate limit)
+    Errored,
     Idle,
     Sleeping,
     Disconnected,
@@ -17,6 +19,7 @@ impl SessionState {
         match self {
             Self::Working => "\u{26a1}",      // ⚡
             Self::Waiting => "\u{1f4ac}",     // 💬
+            Self::Errored => "\u{2757}",      // ❗
             Self::Idle => "\u{1f4a4}",        // 💤
             Self::Sleeping => "\u{1f319}",    // 🌙
             Self::Disconnected => "\u{2715}", // ✕
@@ -29,6 +32,7 @@ impl SessionState {
         match self {
             Self::Working => "\u{25b6}",   // ▶
             Self::Waiting => "\u{25cf}",   // ●
+            Self::Errored => "!",
             Self::Idle => "\u{25c6}",      // ◆
             Self::Sleeping => "\u{263e}",  // ☾
             Self::Disconnected => "\u{2715}", // ✕
@@ -40,6 +44,7 @@ impl SessionState {
         match self {
             Self::Working => "Working",
             Self::Waiting => "Waiting",
+            Self::Errored => "Errored",
             Self::Idle => "Idle",
             Self::Sleeping => "Sleeping",
             Self::Disconnected => "Disconnected",
@@ -51,6 +56,7 @@ impl SessionState {
         match self {
             Self::Working => Color::Rgb(0, 200, 120),
             Self::Waiting => Color::Rgb(255, 180, 50),
+            Self::Errored => Color::Rgb(230, 70, 70),
             Self::Idle => Color::Rgb(100, 120, 220),
             Self::Sleeping => Color::Rgb(80, 90, 120),
             Self::Disconnected => Color::Rgb(100, 100, 100),

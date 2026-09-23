@@ -19,13 +19,14 @@ const CELL_H: u16 = 14;
 const ANIM_STATES: &[SessionState] = &[
     SessionState::Working,
     SessionState::Waiting,
+    SessionState::Errored,
     SessionState::Idle,
     SessionState::Sleeping,
     SessionState::Disconnected,
 ];
 
 /// Extended state labels for the test grid, including "Rest" pseudo-state.
-const STATE_COUNT: usize = 6; // 5 real + 1 Rest
+const STATE_COUNT: usize = ANIM_STATES.len() + 1;
 
 fn state_label(idx: usize) -> &'static str {
     if idx < ANIM_STATES.len() {

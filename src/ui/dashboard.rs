@@ -329,6 +329,7 @@ impl<'a> Dashboard<'a> {
                 && (session.claude_conversation_id.is_some()
                     || session.state == SessionState::Working
                     || session.state == SessionState::Waiting
+                    || session.state == SessionState::Errored
                     || session.state == SessionState::Idle);
 
             let health_y = inner.y;
@@ -367,6 +368,7 @@ impl<'a> Dashboard<'a> {
             let is_claude_sprite = session.claude_conversation_id.is_some()
                 || session.state == SessionState::Working
                 || session.state == SessionState::Waiting
+                || session.state == SessionState::Errored
                 || session.state == SessionState::Idle;
 
             if is_claude_sprite {
