@@ -66,6 +66,20 @@ dir="$HOME/.summoner/claude-states"
 state="$dir/$SUMMONER_SESSION"
 agents="$state.agents"
 
+# Claude Code also compacts an idle session before its prompt cache expires.
+# It reports trigger "auto" like mid-turn compaction, but no Stop follows it.
+# Mid-turn compaction always comes after a prompt or tool event, so an idle
+# one is recognised by the event recorded before it.
+if [[ $extra == auto ]]; then
+    prev=
+    [ -f "$state" ] && read -r prev < "$state"
+    idle_re='^(Stop|StopFailure|SessionStart)( |$)|^PostCompact .* (manual|idle)$'
+    case $event in
+        PreCompact) [[ $prev =~ $idle_re ]] && extra=idle ;;
+        PostCompact) [[ $prev =~ ^PreCompact\ .*\ idle$ ]] && extra=idle ;;
+    esac
+fi
+
 case $event in
     # Track active subagents via marker files (don't touch main state file)
     SubagentStart)
@@ -357,8 +371,9 @@ pub fn read_hook_state(summoner_dir: &Path, session_key: &str) -> (Option<Sessio
         },
         "PreToolUse" => Some(SessionState::Working),
         "PostToolUse" => Some(SessionState::Working),
-        // Auto-compaction happens mid-turn, so more events follow; manual /compact
-        // is issued from an idle prompt and returns there
+        // Auto-compaction happens mid-turn, so more events follow. Manual /compact
+        // and idle compaction (tagged "idle" by the script) start from an idle
+        // prompt and return there.
         "PreCompact" => Some(SessionState::Working),
         "PostCompact" => {
             if tool_name.as_deref() == Some("auto") {

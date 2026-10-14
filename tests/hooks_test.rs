@@ -286,6 +286,45 @@ fn script_records_compaction_trigger() {
 }
 
 #[test]
+fn script_returns_idle_compaction_to_idle() {
+    let tmp = TempDir::new().unwrap();
+    let sd = summoner_dir(tmp.path());
+    for before in [payload("Stop", &[], ""), payload("SessionStart", &[("source", "resume")], ""),
+                   payload("PostCompact", &[("trigger", "manual")], "")] {
+        run_hook(tmp.path(), Some(KEY), &before);
+        run_hook(tmp.path(), Some(KEY), &payload("PreCompact", &[("trigger", "auto")], ""));
+        assert_eq!(state_content(tmp.path(), KEY).as_deref(), Some("PreCompact abc-123 idle"), "{}", before);
+        assert_eq!(read_hook_state(&sd, KEY).0, Some(SessionState::Working));
+        run_hook(tmp.path(), Some(KEY), &payload("PostCompact", &[("trigger", "auto")], ""));
+        assert_eq!(state_content(tmp.path(), KEY).as_deref(), Some("PostCompact abc-123 idle"));
+        assert_eq!(read_hook_state(&sd, KEY).0, Some(SessionState::Idle));
+    }
+    // A second idle compaction in a row is still idle
+    run_hook(tmp.path(), Some(KEY), &payload("PreCompact", &[("trigger", "auto")], ""));
+    assert_eq!(state_content(tmp.path(), KEY).as_deref(), Some("PreCompact abc-123 idle"));
+}
+
+#[test]
+fn script_keeps_mid_turn_compaction_working() {
+    let tmp = TempDir::new().unwrap();
+    for before in [tool_payload("PostToolUse", "Read", 0), payload("UserPromptSubmit", &[("prompt", "hi")], "")] {
+        run_hook(tmp.path(), Some(KEY), &before);
+        run_hook(tmp.path(), Some(KEY), &payload("PreCompact", &[("trigger", "auto")], ""));
+        assert_eq!(state_content(tmp.path(), KEY).as_deref(), Some("PreCompact abc-123 auto"));
+        run_hook(tmp.path(), Some(KEY), &payload("PostCompact", &[("trigger", "auto")], ""));
+        assert_eq!(state_content(tmp.path(), KEY).as_deref(), Some("PostCompact abc-123 auto"));
+        assert_eq!(read_hook_state(&summoner_dir(tmp.path()), KEY).0, Some(SessionState::Working));
+    }
+}
+
+#[test]
+fn idle_compaction_with_subagent_stays_working() {
+    let tmp = TempDir::new().unwrap();
+    add_subagent_marker(tmp.path());
+    assert_eq!(state_for(tmp.path(), "PostCompact sid idle"), Some(SessionState::Working));
+}
+
+#[test]
 fn script_ignores_input_that_is_not_a_hook_payload() {
     let tmp = TempDir::new().unwrap();
     assert_eq!(run_hook(tmp.path(), Some(KEY), ""), 0);
