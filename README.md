@@ -21,7 +21,7 @@ Sessions persist across restarts. Close Summoner, reopen it later, and your sess
 Requires Rust 1.85 or later (edition 2024).
 
 ```bash
-cargo install --path .
+cargo install --path . --locked
 ```
 
 This puts the `summoner` binary in `~/.cargo/bin/`, which should be on your PATH.
