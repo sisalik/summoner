@@ -1,6 +1,6 @@
 mod common;
 
-use common::{row, row_link, smart, smart_pal, smart_rows, Palette};
+use common::{plain_copy, row, row_link, smart, smart_pal, smart_rows, Palette};
 
 #[test]
 fn a_colour_run_becomes_inline_code() {
@@ -162,10 +162,16 @@ fn an_osc8_label_equal_to_its_target_stays_bare() {
 #[test]
 fn link_punctuation_is_not_highlighted() {
     use summoner::ui::selection::SelectionMode;
-    use summoner::ui::smart;
+    use summoner::ui::smart::{self, CopyFormat};
 
     let rows = vec![row_link("See the docs here", 8..=11, "https://example.com/docs")];
-    let computed = smart::spans_core(&rows, 0, common::COLS - 1, SelectionMode::Smart);
+    let computed = smart::spans_core(
+        &rows,
+        0,
+        common::COLS - 1,
+        SelectionMode::Smart,
+        CopyFormat::Markdown,
+    );
     // One span over the whole line; the URL and brackets add no cells.
     assert_eq!(computed.spans.len(), 1);
     assert_eq!(computed.spans[0].col_start, 0);
@@ -224,4 +230,48 @@ fn an_unhighlighted_block_cannot_be_told_from_prose() {
 fn unstyled_text_is_untouched() {
     let plain = row("plain *text* with _marks_ and | pipes", "");
     assert_eq!(smart_rows(vec![plain]), "plain *text* with _marks_ and | pipes");
+}
+
+#[test]
+fn a_plain_copy_of_a_highlighted_shell_command_has_no_backticks() {
+    let command = "! mkdir -p ~/.config/m && printf '%s' \"$T\" > ~/f && unset T";
+    let marks = "..ccccc....................cccccc.1111.2222..........ccccc..";
+    let text = plain_copy(vec![row(command, marks)]);
+    assert_eq!(text, command);
+}
+
+#[test]
+fn a_plain_copy_drops_headings_emphasis_links_and_fences() {
+    let rows = vec![
+        row("A heading", "hhhhhhhhh"),
+        row("Some bold words here", ".....bbbb..........."),
+        row_link("See the docs here", 8..=11, "https://example.com/docs"),
+        row("", ""),
+        row("let x = compute(1);", "111.....2222222.3.."),
+        row("let y = compute(2);", "111.....2222222.3.."),
+    ];
+    assert_eq!(
+        plain_copy(rows),
+        "A heading\nSome bold words here\nSee the docs here\n\n\
+         let x = compute(1);\nlet y = compute(2);"
+    );
+}
+
+#[test]
+fn plain_and_markdown_copies_highlight_the_same_cells() {
+    use summoner::ui::selection::SelectionMode;
+    use summoner::ui::smart::{self, CopyFormat};
+
+    let rows = vec![
+        row("A heading", "hhhhhhhhh"),
+        row("Use the --json flag here", "........cccccc.........."),
+        row_link("See the docs here", 8..=11, "https://example.com/docs"),
+        row("", ""),
+        row("let x = compute(1);", "111.....2222222.3.."),
+        row("let y = compute(2);", "111.....2222222.3.."),
+    ];
+    let spans = |format| {
+        smart::spans_core(&rows, 0, common::COLS - 1, SelectionMode::Smart, format).spans
+    };
+    assert_eq!(spans(CopyFormat::Plain), spans(CopyFormat::Markdown));
 }

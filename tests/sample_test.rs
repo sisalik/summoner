@@ -2,7 +2,7 @@
 //! with the escapes it actually emits, copied as markdown.
 
 use summoner::ui::selection::{Selection, SelectionMode};
-use summoner::ui::smart;
+use summoner::ui::smart::{self, CopyFormat};
 
 const CODE: &str = "\x1b[38;5;153m";
 const OFF: &str = "\x1b[0m";
@@ -58,7 +58,7 @@ fn a_claude_code_reply_copies_as_markdown() {
         dragged: true,
         mode: SelectionMode::Smart,
     };
-    assert_eq!(smart::compute_spans(p.screen(), &sel).text(), EXPECTED);
+    assert_eq!(smart::compute_spans(p.screen(), &sel, CopyFormat::Markdown).text(), EXPECTED);
 }
 
 const GREEN: &str = "\x1b[38;2;13;188;121m";
@@ -95,7 +95,7 @@ fn a_syntax_highlighted_code_block_fences_and_does_not_reflow() {
         dragged: true,
         mode: SelectionMode::Smart,
     };
-    let text = smart::compute_spans(p.screen(), &sel).text().to_string();
+    let text = smart::compute_spans(p.screen(), &sel, CopyFormat::Markdown).text().to_string();
     assert!(text.contains("```"), "{text}");
     // The widest line in the selection is `let code = ...`; outside a fence the
     // wrap estimate would make the `match` below it look like a continuation.

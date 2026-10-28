@@ -4,8 +4,9 @@
 //! is the *text*: soft-wrapped lines joined back together, Claude Code's
 //! gutter chrome (`⏺ `, `⎿ `, `> `, quote bars like `│ ` and `▎ `) and box
 //! borders dropped, and the block dedented. Claude Code prints markdown, so
-//! smart mode goes one step further and puts the markdown back — see
-//! [`super::markdown`] and [`super::table`]. Both modes are expressed as a
+//! smart mode can go one step further and put the markdown back — see
+//! [`super::markdown`] and [`super::table`] — when the copy asks for
+//! [`CopyFormat::Markdown`]. Both modes are expressed as a
 //! [`SpanSet`] — the cells the copy is made from — so the selection highlight
 //! can show what the clipboard is going to get.
 
@@ -30,6 +31,18 @@ pub(crate) const BOX_CHARS: [char; 19] = [
     '─', '│', '╭', '╮', '╰', '╯', '├', '┤', '┬', '┴', '┼', '┌', '┐', '└', '┘', '═', '║', '━',
     '┃',
 ];
+
+/// What a smart selection is copied as. A raw selection ignores it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CopyFormat {
+    /// The text as read: soft wraps joined, chrome stripped, prose reflowed.
+    /// Tables still become GFM tables, since their cells cannot be read
+    /// without the `|` between them.
+    Plain,
+    /// Plain plus the markdown punctuation inferred from the styling: inline
+    /// code, emphasis, headings, links and code fences.
+    Markdown,
+}
 
 /// The rendered style of one cell, as far as markdown reconstruction cares.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -155,14 +168,26 @@ pub struct Computed {
 
 /// The one place the highlight/clipboard relationship is expressed: a cell
 /// extends both, a marker is punctuation smart mode added and extends only the
-/// text.
-#[derive(Default)]
+/// text. Markup is a marker that only a markdown copy carries.
 pub(crate) struct Sink {
     spans: Vec<RelSpan>,
     text: String,
+    markdown: bool,
 }
 
 impl Sink {
+    fn new(format: CopyFormat) -> Self {
+        Self {
+            spans: Vec::new(),
+            text: String::new(),
+            markdown: format == CopyFormat::Markdown,
+        }
+    }
+
+    pub(crate) fn is_markdown(&self) -> bool {
+        self.markdown
+    }
+
     pub(crate) fn cell(&mut self, cell: &Taken) {
         self.mark(cell);
         self.text.push_str(cell.text);
@@ -176,6 +201,12 @@ impl Sink {
 
     pub(crate) fn marker(&mut self, text: &str) {
         self.text.push_str(text);
+    }
+
+    pub(crate) fn markup(&mut self, text: &str) {
+        if self.markdown {
+            self.text.push_str(text);
+        }
     }
 
     fn ends_with_blank_line(&self) -> bool {
@@ -212,7 +243,9 @@ impl Sink {
 }
 
 /// Compute the copied cells for a selection against a live screen.
-pub fn compute_spans(screen: &vt100::Screen, sel: &Selection) -> SpanSet {
+///
+/// The spans do not depend on `format`, only the text does.
+pub fn compute_spans(screen: &vt100::Screen, sel: &Selection, format: CopyFormat) -> SpanSet {
     let ((sr, sc), (er, ec)) = sel.normalised();
     let (_, cols) = screen.size();
 
@@ -274,7 +307,7 @@ pub fn compute_spans(screen: &vt100::Screen, sel: &Selection) -> SpanSet {
         cols.saturating_sub(1)
     };
 
-    let computed = spans_core(&rows, first_col, last_col, sel.mode);
+    let computed = spans_core(&rows, first_col, last_col, sel.mode, format);
     SpanSet {
         spans: computed
             .spans
@@ -297,13 +330,14 @@ pub fn spans_core(
     first_col: u16,
     last_col: u16,
     mode: SelectionMode,
+    format: CopyFormat,
 ) -> Computed {
     if rows.is_empty() {
         return Computed::default();
     }
     match mode {
         SelectionMode::Raw => raw_spans(rows, first_col, last_col),
-        SelectionMode::Smart => smart_spans(rows, first_col, last_col),
+        SelectionMode::Smart => smart_spans(rows, first_col, last_col, format),
     }
 }
 
@@ -413,7 +447,7 @@ struct Line<'a> {
     dropped: bool,
 }
 
-fn smart_spans(rows: &[RowIn], first_col: u16, last_col: u16) -> Computed {
+fn smart_spans(rows: &[RowIn], first_col: u16, last_col: u16, format: CopyFormat) -> Computed {
     // Analyse whole rows, not the clipped selection: gutters and indents have
     // to be measured against the real line, or starting a drag at the first
     // visible character would make that line look un-indented and cancel the
@@ -586,7 +620,7 @@ fn smart_spans(rows: &[RowIn], first_col: u16, last_col: u16) -> Computed {
         })
         .collect();
 
-    let mut sink = Sink::default();
+    let mut sink = Sink::new(format);
     let mut pending: Option<&'static str> = None;
     let mut after_region = false;
     let mut i = 0;
@@ -632,7 +666,7 @@ fn smart_spans(rows: &[RowIn], first_col: u16, last_col: u16) -> Computed {
             sink.marker(sep);
         }
         if markdown::is_heading(kept[i]) {
-            sink.marker("## ");
+            sink.markup("## ");
             markdown::emit_plain(cells, false, &mut sink);
         } else {
             markdown::emit_line(cells, &guards, false, &mut sink);

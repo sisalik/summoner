@@ -1,7 +1,7 @@
 #![allow(dead_code)]
 
 use summoner::ui::selection::SelectionMode;
-use summoner::ui::smart::{self, CellStyle, RowIn};
+use summoner::ui::smart::{self, CellStyle, CopyFormat, RowIn};
 
 pub const COLS: u16 = 60;
 
@@ -80,7 +80,7 @@ pub fn smart(lines: &[(&str, &str)]) -> String {
 
 pub fn smart_pal(lines: &[(&str, &str)], palette: Palette) -> String {
     let rows: Vec<RowIn> = lines.iter().map(|(t, m)| row_with(t, m, palette)).collect();
-    smart::spans_core(&rows, 0, COLS - 1, SelectionMode::Smart).text
+    smart::spans_core(&rows, 0, COLS - 1, SelectionMode::Smart, CopyFormat::Markdown).text
 }
 
 pub fn row_link(
@@ -92,7 +92,7 @@ pub fn row_link(
 }
 
 pub fn smart_rows(rows: Vec<RowIn<'static>>) -> String {
-    smart::spans_core(&rows, 0, COLS - 1, SelectionMode::Smart).text
+    smart::spans_core(&rows, 0, COLS - 1, SelectionMode::Smart, CopyFormat::Markdown).text
 }
 
 /// Smart-copy text for plain, unstyled lines.
@@ -101,5 +101,10 @@ pub fn smart_plain(lines: &[&str]) -> String {
         .iter()
         .map(|l| RowIn::from_text(l, false, COLS))
         .collect();
-    smart::spans_core(&rows, 0, COLS - 1, SelectionMode::Smart).text
+    smart::spans_core(&rows, 0, COLS - 1, SelectionMode::Smart, CopyFormat::Markdown).text
+}
+
+/// Plain-copy text for prepared rows: the same selection without markdown.
+pub fn plain_copy(rows: Vec<RowIn<'static>>) -> String {
+    smart::spans_core(&rows, 0, COLS - 1, SelectionMode::Smart, CopyFormat::Plain).text
 }

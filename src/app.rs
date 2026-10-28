@@ -25,7 +25,7 @@ use crate::ui::session_switcher::{SessionSwitcher, SwitcherAction};
 use crate::ui::links::{self, Links};
 use crate::ui::selection::{self, Selection, SelectionMode};
 use crate::ui::session_view::TerminalView;
-use crate::ui::smart::{self, SpanSet};
+use crate::ui::smart::{self, CopyFormat, SpanSet};
 use crate::ui::status_bar::StatusBar;
 
 const SCROLLBACK_LEN: usize = 1000;
@@ -693,7 +693,7 @@ impl App {
                             .selection
                             .as_ref()
                             .filter(|sel| sel.dragged && !sel.is_empty())
-                            .map(|sel| smart::compute_spans(screen, sel));
+                            .map(|sel| smart::compute_spans(screen, sel, CopyFormat::Plain));
                         let view = TerminalView::new(screen)
                             .with_selection(self.session_spans.as_ref())
                             .with_links(Some(&self.session_links));
@@ -913,19 +913,30 @@ impl App {
                 self.handle_dashboard_input(key, rows, cols)?;
             }
             Mode::Session(idx) => {
-                // Ctrl+C with active selection: copy and clear
-                if key.modifiers.contains(KeyModifiers::CONTROL)
-                    && key.code == KeyCode::Char('c')
+                // Ctrl+C (plain) or Alt+C (markdown) with active selection:
+                // copy and clear
+                let copy_format = match key.code {
+                    KeyCode::Char('c') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                        Some(CopyFormat::Plain)
+                    }
+                    KeyCode::Char('c') if key.modifiers.contains(KeyModifiers::ALT) => {
+                        Some(CopyFormat::Markdown)
+                    }
+                    _ => None,
+                };
+                if let Some(format) = copy_format
                     && self.selection.is_some()
                 {
                     if let Some(ref sel) = self.selection
                         && !sel.is_empty() && idx < self.vt_parsers.len() {
-                            // Copy exactly what the highlight showed.
-                            let spans = match self.session_spans.take() {
-                                Some(spans) => spans,
-                                None => smart::compute_spans(
+                            // Copy exactly what the highlight showed. The
+                            // cached spans carry the plain text.
+                            let spans = match (format, self.session_spans.take()) {
+                                (CopyFormat::Plain, Some(spans)) => spans,
+                                _ => smart::compute_spans(
                                     self.vt_parsers[idx].screen(),
                                     sel,
+                                    format,
                                 ),
                             };
                             if !spans.text().is_empty() {

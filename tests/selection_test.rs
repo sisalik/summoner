@@ -1,5 +1,5 @@
 use summoner::ui::selection::{self, Selection, SelectionMode};
-use summoner::ui::smart;
+use summoner::ui::smart::{self, CopyFormat};
 
 const ROWS: u16 = 5;
 const COLS: u16 = 20;
@@ -9,7 +9,7 @@ fn parser(scrollback: usize) -> vt100::Parser {
 }
 
 fn extract(screen: &vt100::Screen, sel: &Selection) -> String {
-    smart::compute_spans(screen, sel).text().to_string()
+    smart::compute_spans(screen, sel, CopyFormat::Markdown).text().to_string()
 }
 
 fn write_lines(parser: &mut vt100::Parser, lines: &[&str]) {

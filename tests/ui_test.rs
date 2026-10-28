@@ -98,7 +98,7 @@ fn session_view_highlights_only_the_copied_cells() {
     use ratatui::style::Modifier;
     use summoner::ui::selection::{Selection, SelectionMode};
     use summoner::ui::session_view::TerminalView;
-    use summoner::ui::smart;
+    use summoner::ui::smart::{self, CopyFormat};
 
     let mut p = vt100::Parser::new(4, 40, 100);
     p.process("⏺ Ran tool".as_bytes());
@@ -109,7 +109,7 @@ fn session_view_highlights_only_the_copied_cells() {
         dragged: true,
         mode: SelectionMode::Smart,
     };
-    let spans = smart::compute_spans(p.screen(), &sel);
+    let spans = smart::compute_spans(p.screen(), &sel, CopyFormat::Markdown);
     let area = Rect::new(0, 0, 40, 4);
     let mut buf = Buffer::empty(area);
     TerminalView::new(p.screen())

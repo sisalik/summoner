@@ -1,5 +1,5 @@
 use summoner::ui::selection::{Selection, SelectionMode};
-use summoner::ui::smart::{self, RowIn};
+use summoner::ui::smart::{self, CopyFormat, RowIn};
 
 const COLS: u16 = 40;
 
@@ -12,7 +12,7 @@ fn rows(lines: &[&str]) -> Vec<RowIn<'static>> {
 
 fn smart_text(lines: &[&str]) -> String {
     let rows = rows(lines);
-    smart::spans_core(&rows, 0, COLS - 1, SelectionMode::Smart).text
+    smart::spans_core(&rows, 0, COLS - 1, SelectionMode::Smart, CopyFormat::Markdown).text
 }
 
 #[test]
@@ -82,7 +82,13 @@ fn code_indentation_inside_a_gutter_survives() {
 #[test]
 fn dedents_even_when_the_drag_starts_at_the_first_character() {
     let rows = rows(&["    alpha", "    beta"]);
-    let computed = smart::spans_core(&rows, 4, COLS - 1, SelectionMode::Smart);
+    let computed = smart::spans_core(
+        &rows,
+        4,
+        COLS - 1,
+        SelectionMode::Smart,
+        CopyFormat::Markdown,
+    );
     assert_eq!(computed.text, "alpha\nbeta");
 }
 
@@ -99,7 +105,7 @@ fn rejoins_prose_the_program_wrapped() {
         "  Selections were anchored to the live screen top, so streaming output slid",
         "  the text out from under the highlight.",
     ]);
-    let computed = smart::spans_core(&rows, 0, 79, SelectionMode::Smart);
+    let computed = smart::spans_core(&rows, 0, 79, SelectionMode::Smart, CopyFormat::Markdown);
     assert_eq!(
         computed.text,
         "Selections were anchored to the live screen top, so streaming output slid \
@@ -113,7 +119,7 @@ fn rejoins_prose_wrapped_behind_a_quote_bar() {
         "  ▎ Selections were anchored to the live screen top, so streaming output slid",
         "  ▎ the text out from under the highlight.",
     ]);
-    let computed = smart::spans_core(&rows, 0, 79, SelectionMode::Smart);
+    let computed = smart::spans_core(&rows, 0, 79, SelectionMode::Smart, CopyFormat::Markdown);
     assert_eq!(
         computed.text,
         "Selections were anchored to the live screen top, so streaming output slid \
@@ -128,7 +134,7 @@ fn keeps_a_break_at_an_item_marker_behind_a_bar() {
         "  ▎ Selections were anchored to the live screen top, so streaming output slid",
         "  ▎ > the text out from under the highlight.",
     ]);
-    let computed = smart::spans_core(&rows, 0, 79, SelectionMode::Smart);
+    let computed = smart::spans_core(&rows, 0, 79, SelectionMode::Smart, CopyFormat::Markdown);
     assert_eq!(
         computed.text,
         "Selections were anchored to the live screen top, so streaming output slid\n\
@@ -142,7 +148,7 @@ fn keeps_a_break_when_the_next_word_would_have_fit() {
         "  Short.",
         "  This is a long line that runs most of the way out to the eightieth column",
     ]);
-    let computed = smart::spans_core(&rows, 0, 79, SelectionMode::Smart);
+    let computed = smart::spans_core(&rows, 0, 79, SelectionMode::Smart, CopyFormat::Markdown);
     assert_eq!(
         computed.text,
         "Short.\nThis is a long line that runs most of the way out to the eightieth column",
@@ -156,7 +162,7 @@ fn rejoins_a_wrapped_list_item_across_its_hanging_indent() {
         "     only ever sees the rendered grid, which is why URL detection kept",
         "     producing mangled links.",
     ]);
-    let computed = smart::spans_core(&rows, 0, 79, SelectionMode::Smart);
+    let computed = smart::spans_core(&rows, 0, 79, SelectionMode::Smart, CopyFormat::Markdown);
     assert_eq!(
         computed.text,
         "2. Links work in-app instead of via Windows Terminal. Windows Terminal \
@@ -171,7 +177,7 @@ fn does_not_join_list_items() {
         "  - first item that runs right out to the far end of the eighty column line",
         "  - second item",
     ]);
-    let computed = smart::spans_core(&rows, 0, 79, SelectionMode::Smart);
+    let computed = smart::spans_core(&rows, 0, 79, SelectionMode::Smart, CopyFormat::Markdown);
     assert_eq!(
         computed.text,
         "- first item that runs right out to the far end of the eighty column line\n- second item",
@@ -184,7 +190,13 @@ fn joins_soft_wrapped_rows_into_one_logical_line() {
         RowIn::from_text(&format!("{:width$}", "aaaa", width = COLS as usize), true, COLS),
         RowIn::from_text("bbbb", false, COLS),
     ];
-    let computed = smart::spans_core(&rows, 0, COLS - 1, SelectionMode::Smart);
+    let computed = smart::spans_core(
+        &rows,
+        0,
+        COLS - 1,
+        SelectionMode::Smart,
+        CopyFormat::Markdown,
+    );
     assert!(!computed.text.contains('\n'));
     assert!(computed.text.starts_with("aaaa"));
     assert!(computed.text.ends_with("bbbb"));
@@ -194,7 +206,13 @@ fn joins_soft_wrapped_rows_into_one_logical_line() {
 fn a_selection_starting_past_the_gutter_strips_nothing() {
     let rows = rows(&["⏺ Ran tool"]);
     // Start the selection at the "R" of "Ran".
-    let computed = smart::spans_core(&rows, 2, COLS - 1, SelectionMode::Smart);
+    let computed = smart::spans_core(
+        &rows,
+        2,
+        COLS - 1,
+        SelectionMode::Smart,
+        CopyFormat::Markdown,
+    );
     assert_eq!(computed.text, "Ran tool");
     assert_eq!(computed.spans.len(), 1);
     assert_eq!(computed.spans[0].col_start, 2);
@@ -203,7 +221,13 @@ fn a_selection_starting_past_the_gutter_strips_nothing() {
 #[test]
 fn spans_exclude_the_stripped_cells() {
     let rows = rows(&["⏺   indented"]);
-    let computed = smart::spans_core(&rows, 0, COLS - 1, SelectionMode::Smart);
+    let computed = smart::spans_core(
+        &rows,
+        0,
+        COLS - 1,
+        SelectionMode::Smart,
+        CopyFormat::Markdown,
+    );
     assert_eq!(computed.text, "indented");
     // Gutter marker, its space and the dedented indent are not highlighted.
     assert_eq!(computed.spans[0].col_start, 4);
@@ -213,7 +237,7 @@ fn spans_exclude_the_stripped_cells() {
 #[test]
 fn raw_mode_copies_cells_verbatim() {
     let rows = rows(&["⏺   indented", "  second"]);
-    let computed = smart::spans_core(&rows, 0, COLS - 1, SelectionMode::Raw);
+    let computed = smart::spans_core(&rows, 0, COLS - 1, SelectionMode::Raw, CopyFormat::Plain);
     assert_eq!(computed.text, "⏺   indented\n  second");
     assert_eq!(computed.spans[0].col_start, 0);
     assert_eq!(computed.spans[0].col_end, COLS - 1);
@@ -231,7 +255,7 @@ fn highlight_matches_the_copied_text_on_a_real_screen() {
         dragged: true,
         mode: SelectionMode::Smart,
     };
-    let spans = smart::compute_spans(p.screen(), &sel);
+    let spans = smart::compute_spans(p.screen(), &sel, CopyFormat::Markdown);
     assert_eq!(spans.text(), "Ran tool\nindented body");
 
     // Every highlighted cell is part of the copied text, and nothing else is.
@@ -262,7 +286,7 @@ fn a_real_screen_keeps_its_inline_markdown() {
         dragged: true,
         mode: SelectionMode::Smart,
     };
-    let spans = smart::compute_spans(p.screen(), &sel);
+    let spans = smart::compute_spans(p.screen(), &sel, CopyFormat::Markdown);
     assert_eq!(
         spans.text(),
         "Run the `cargo build` command again\n*softly italic*"
@@ -283,7 +307,7 @@ fn a_real_screen_keeps_its_headings_and_links() {
         dragged: true,
         mode: SelectionMode::Smart,
     };
-    let spans = smart::compute_spans(p.screen(), &sel);
+    let spans = smart::compute_spans(p.screen(), &sel, CopyFormat::Markdown);
     assert_eq!(
         spans.text(),
         "## markfluence fix list\nSee the [docs](https://example.com/docs) here"

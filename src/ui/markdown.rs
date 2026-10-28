@@ -160,9 +160,14 @@ fn is_code_paragraph(lines: &[Vec<Taken>], body: vt100::Color) -> bool {
     colours.len() >= MIN_CODE_COLOURS && off as f32 / total as f32 >= CODE_COLOUR_SHARE
 }
 
-/// Emit a line's cells with markdown markers around each style run.
+/// Emit a line's cells with markdown markers around each style run; a plain
+/// copy gets the cells alone.
 pub(crate) fn emit_line(cells: &[&Taken], guards: &Guards, in_table: bool, sink: &mut Sink) {
     if cells.is_empty() {
+        return;
+    }
+    if !sink.is_markdown() {
+        emit_plain(cells, in_table, sink);
         return;
     }
     let body_present = cells
@@ -192,7 +197,7 @@ pub(crate) fn emit_plain(cells: &[&Taken], in_table: bool, sink: &mut Sink) {
     }
 }
 
-/// Emit a run of lines verbatim inside a fence.
+/// Emit a run of lines verbatim, inside a fence when the copy is markdown.
 pub(crate) fn emit_fence(lines: &[Vec<&Taken>], sink: &mut Sink) {
     let dedent = lines
         .iter()
@@ -210,13 +215,16 @@ pub(crate) fn emit_fence(lines: &[Vec<&Taken>], sink: &mut Sink) {
         .0;
     let fence = "`".repeat(ticks.max(2) + 1);
 
-    sink.marker(&fence);
-    for line in lines {
-        sink.marker("\n");
+    sink.markup(&fence);
+    sink.markup("\n");
+    for (n, line) in lines.iter().enumerate() {
+        if n > 0 {
+            sink.marker("\n");
+        }
         emit_plain(&line[dedent.min(line.len())..], false, sink);
     }
-    sink.marker("\n");
-    sink.marker(&fence);
+    sink.markup("\n");
+    sink.markup(&fence);
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]

@@ -65,11 +65,12 @@ Keys go straight to the program in the session. The exceptions handle selection 
 
 | Input | Action |
 |-------|--------|
-| Drag | Select, converting the output to markdown as it is copied |
+| Drag | Select the text as read: wrapped lines joined, Claude Code's gutters stripped |
 | `Alt`+drag | Select the raw characters instead, for pasting into a shell |
 | Double-click | Select a word, or a whole URL |
 | Triple-click | Select a logical line |
-| `Ctrl+C` | Copy the selection; with no selection, it goes to the program |
+| `Ctrl+C` | Copy the selection as plain text; with no selection, it goes to the program |
+| `Alt+C` | Copy the selection as markdown; with no selection, it goes to the program |
 | `Ctrl`+click | Open a link in your browser |
 
 A session whose shell has exited shows a resume dialog: `r` resumes the Claude conversation, `s` starts a fresh shell, `Esc` returns to the dashboard.
@@ -80,7 +81,7 @@ Summoner spawns each session as a PTY and renders it through a VT100 emulator, s
 
 A disconnected session is restored by spawning a shell in its original directory and running `claude --resume <conversation_id>` when a conversation was active.
 
-Because Summoner runs nested inside your terminal, selection, copying and link clicking are handled in-app rather than by the host terminal. Smart selection reconstructs markdown from what is on screen: headings, inline code, fenced code blocks, tables and links.
+Because Summoner runs nested inside your terminal, selection, copying and link clicking are handled in-app rather than by the host terminal. `Alt+C` reconstructs markdown from what is on screen: headings, inline code, fenced code blocks, tables and links. `Ctrl+C` copies the same text without that punctuation, so it pastes cleanly into a shell.
 
 ## Config
 

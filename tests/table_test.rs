@@ -2,7 +2,7 @@ mod common;
 
 use common::{smart, smart_plain, COLS};
 use summoner::ui::selection::SelectionMode;
-use summoner::ui::smart::{self as spans, RowIn};
+use summoner::ui::smart::{self as spans, CopyFormat, RowIn};
 
 const TABLE: [&str; 5] = [
     "┌──────┬────────────────────────┐",
@@ -148,7 +148,13 @@ fn a_table_does_not_widen_the_wrap_estimate_of_the_prose_around_it() {
 #[test]
 fn a_horizontally_clipped_selection_falls_back_to_plain_lines() {
     let rows: Vec<RowIn> = TABLE.iter().map(|l| RowIn::from_text(l, false, COLS)).collect();
-    let text = spans::spans_core(&rows, 1, COLS - 1, SelectionMode::Smart).text;
+    let text = spans::spans_core(
+        &rows,
+        1,
+        COLS - 1,
+        SelectionMode::Smart,
+        CopyFormat::Markdown,
+    ).text;
     assert!(!text.contains("|---|"), "{text}");
     assert!(!text.contains(":---:"), "{text}");
 }
@@ -172,7 +178,13 @@ fn table_spans_cover_content_cells_only() {
         "└─────┴─────┘",
     ];
     let rows: Vec<RowIn> = table.iter().map(|l| RowIn::from_text(l, false, COLS)).collect();
-    let computed = spans::spans_core(&rows, 0, COLS - 1, SelectionMode::Smart);
+    let computed = spans::spans_core(
+        &rows,
+        0,
+        COLS - 1,
+        SelectionMode::Smart,
+        CopyFormat::Markdown,
+    );
     // The rule lines contribute no cells at all.
     assert!(computed.spans.iter().all(|s| s.row == 1 || s.row == 2), "{:?}", computed.spans);
     // The frame bars sit outside the highlighted range.
@@ -188,14 +200,20 @@ fn a_soft_wrapped_table_falls_back_to_plain_lines() {
         RowIn::from_text("│ a   │ b   │", false, COLS),
         RowIn::from_text("└─────┴─────┘", false, COLS),
     ];
-    let text = spans::spans_core(&rows, 0, COLS - 1, SelectionMode::Smart).text;
+    let text = spans::spans_core(
+        &rows,
+        0,
+        COLS - 1,
+        SelectionMode::Smart,
+        CopyFormat::Markdown,
+    ).text;
     assert!(!text.contains("|---|"), "{text}");
 }
 
 #[test]
 fn raw_mode_still_copies_a_table_verbatim() {
     let rows: Vec<RowIn> = TABLE.iter().map(|l| RowIn::from_text(l, false, COLS)).collect();
-    let text = spans::spans_core(&rows, 0, COLS - 1, SelectionMode::Raw).text;
+    let text = spans::spans_core(&rows, 0, COLS - 1, SelectionMode::Raw, CopyFormat::Plain).text;
     assert_eq!(text, TABLE.join("\n"));
 }
 
@@ -224,4 +242,16 @@ fn a_table_gets_exactly_one_blank_line_around_it() {
         with_gap,
         "prose above\n\n| a | b |\n|---|---|\n| c | d |\n\nprose below"
     );
+}
+
+#[test]
+fn a_plain_copy_still_makes_a_table() {
+    let table = [
+        "│ a   │ b   │",
+        "├─────┼─────┤",
+        "│ c   │ d   │",
+    ];
+    let rows: Vec<RowIn> = table.iter().map(|l| RowIn::from_text(l, false, COLS)).collect();
+    let text = spans::spans_core(&rows, 0, COLS - 1, SelectionMode::Smart, CopyFormat::Plain).text;
+    assert_eq!(text, "| a | b |\n|---|---|\n| c | d |");
 }
