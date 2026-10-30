@@ -275,3 +275,24 @@ fn plain_and_markdown_copies_highlight_the_same_cells() {
     };
     assert_eq!(spans(CopyFormat::Plain), spans(CopyFormat::Markdown));
 }
+
+#[test]
+fn a_code_span_does_not_end_inside_a_quoted_token() {
+    // Claude Code's shell highlighting colours the opening quote of "$T" but
+    // draws `$T"` in the body colour.
+    assert_eq!(
+        smart(&[(
+            "Then run printf '%s' \"$T\" > out to save it",
+            ".........cccccc.1111.1....................",
+        )]),
+        "Then run `printf '%s' \"$T\"` > out to save it"
+    );
+}
+
+#[test]
+fn a_code_span_with_an_unmatched_quote_stops_at_a_space() {
+    assert_eq!(
+        smart(&[("The Sink's methods take a \" too", "....cccc..................c....")]),
+        "The `Sink`'s methods take a `\"` too"
+    );
+}

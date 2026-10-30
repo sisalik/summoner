@@ -178,6 +178,7 @@ pub(crate) fn emit_line(cells: &[&Taken], guards: &Guards, in_table: bool, sink:
         .map(|c| cell_marks(c, guards, body_present))
         .collect();
     bridge_blanks(cells, &mut marks);
+    close_quotes(cells, &mut marks);
 
     let mut i = 0;
     while i < cells.len() {
@@ -291,6 +292,38 @@ fn bridge_blanks(cells: &[&Taken], marks: &mut [Marks]) {
         if i > 0 && end < cells.len() && marks[i - 1] == marks[end] {
             let carried = marks[i - 1];
             marks[i..end].fill(carried);
+        }
+        i = end;
+    }
+}
+
+/// Carry a code run that ends on an unmatched quote through to the closing
+/// quote, as long as no space comes first. Claude Code's shell highlighting
+/// colours the opening quote of `"$T"` but draws `$T"` in the body colour,
+/// which would otherwise split the token across a code span and plain text.
+fn close_quotes(cells: &[&Taken], marks: &mut [Marks]) {
+    let mut i = 0;
+    while i < cells.len() {
+        let mut end = i + 1;
+        while end < cells.len() && marks[end] == marks[i] {
+            end += 1;
+        }
+        if marks[i].code {
+            for quote in ["\"", "'"] {
+                if cells[i..end].iter().filter(|c| c.text == quote).count() % 2 == 0 {
+                    continue;
+                }
+                let close = cells[end..]
+                    .iter()
+                    .take_while(|c| is_glyph(c))
+                    .position(|c| c.text == quote);
+                if let Some(close) = close {
+                    let run = marks[i];
+                    marks[end..=end + close].fill(run);
+                    end += close + 1;
+                    break;
+                }
+            }
         }
         i = end;
     }
