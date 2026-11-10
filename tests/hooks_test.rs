@@ -2,6 +2,7 @@ use std::fs;
 use std::io::Write;
 use std::path::Path;
 use std::process::{Command, Stdio};
+use std::time::{Duration, SystemTime};
 
 use summoner::hooks::{
     configure_settings_file, hook_script, read_hook_state, state_file_mtime,
@@ -285,6 +286,19 @@ fn script_records_compaction_trigger() {
     assert_eq!(read_hook_state(&summoner_dir(tmp.path()), KEY).0, Some(SessionState::Idle));
 }
 
+/// The hooks Claude Code fires between PreCompact and PostCompact, in the order
+/// recorded from a live 2.1.322 session: the summarising agents stop, then the
+/// session restarts with source "compact".
+fn run_compaction_restart(home: &Path) {
+    run_hook(home, Some(KEY), &payload("SubagentStop", &[("agent_id", "ac2b0c462e28e5107"), ("agent_type", "")], ""));
+    run_hook(home, Some(KEY), &payload("SessionStart", &[("source", "compact"), ("model", "claude-opus-5-5")], ""));
+}
+
+fn age_state_file(home: &Path, age: Duration) {
+    let file = fs::File::options().write(true).open(summoner_dir(home).join("claude-states").join(KEY)).unwrap();
+    file.set_modified(SystemTime::now() - age).unwrap();
+}
+
 #[test]
 fn script_returns_idle_compaction_to_idle() {
     let tmp = TempDir::new().unwrap();
@@ -295,6 +309,8 @@ fn script_returns_idle_compaction_to_idle() {
         run_hook(tmp.path(), Some(KEY), &payload("PreCompact", &[("trigger", "auto")], ""));
         assert_eq!(state_content(tmp.path(), KEY).as_deref(), Some("PreCompact abc-123 idle"), "{}", before);
         assert_eq!(read_hook_state(&sd, KEY).0, Some(SessionState::Working));
+        run_compaction_restart(tmp.path());
+        assert_eq!(state_content(tmp.path(), KEY).as_deref(), Some("PreCompact abc-123 idle"), "the restart is not recorded");
         run_hook(tmp.path(), Some(KEY), &payload("PostCompact", &[("trigger", "auto")], ""));
         assert_eq!(state_content(tmp.path(), KEY).as_deref(), Some("PostCompact abc-123 idle"));
         assert_eq!(read_hook_state(&sd, KEY).0, Some(SessionState::Idle));
@@ -311,9 +327,35 @@ fn script_keeps_mid_turn_compaction_working() {
         run_hook(tmp.path(), Some(KEY), &before);
         run_hook(tmp.path(), Some(KEY), &payload("PreCompact", &[("trigger", "auto")], ""));
         assert_eq!(state_content(tmp.path(), KEY).as_deref(), Some("PreCompact abc-123 auto"));
+        run_compaction_restart(tmp.path());
+        assert_eq!(read_hook_state(&summoner_dir(tmp.path()), KEY).0, Some(SessionState::Working));
         run_hook(tmp.path(), Some(KEY), &payload("PostCompact", &[("trigger", "auto")], ""));
         assert_eq!(state_content(tmp.path(), KEY).as_deref(), Some("PostCompact abc-123 auto"));
         assert_eq!(read_hook_state(&summoner_dir(tmp.path()), KEY).0, Some(SessionState::Working));
+    }
+}
+
+/// An interrupted turn may never report Stop, which leaves a tool event as the
+/// last one recorded when idle compaction arrives.
+#[test]
+fn script_treats_compaction_long_after_the_last_event_as_idle() {
+    let tmp = TempDir::new().unwrap();
+    run_hook(tmp.path(), Some(KEY), &tool_payload("PostToolUse", "Read", 0));
+    age_state_file(tmp.path(), Duration::from_secs(50 * 60));
+    run_hook(tmp.path(), Some(KEY), &payload("PreCompact", &[("trigger", "auto")], ""));
+    assert_eq!(state_content(tmp.path(), KEY).as_deref(), Some("PreCompact abc-123 idle"));
+    run_compaction_restart(tmp.path());
+    run_hook(tmp.path(), Some(KEY), &payload("PostCompact", &[("trigger", "auto")], ""));
+    assert_eq!(read_hook_state(&summoner_dir(tmp.path()), KEY).0, Some(SessionState::Idle));
+}
+
+#[test]
+fn script_records_a_session_start_that_is_not_a_compaction() {
+    let tmp = TempDir::new().unwrap();
+    for source in ["startup", "resume", "clear"] {
+        run_hook(tmp.path(), Some(KEY), &payload("Stop", &[], ""));
+        run_hook(tmp.path(), Some(KEY), &payload("SessionStart", &[("source", source)], ""));
+        assert_eq!(state_content(tmp.path(), KEY).as_deref(), Some("SessionStart abc-123"), "{}", source);
     }
 }
 

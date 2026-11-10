@@ -42,6 +42,10 @@ sid=
 # Third field carries the event-specific payload
 extra=
 case $event in
+    SessionStart)
+        # Compaction restarts the session between PreCompact and PostCompact.
+        # Recording that would overwrite the PreCompact line PostCompact reads.
+        [[ $input =~ \"source\":\"compact\" ]] && exit 0 ;;
     PreToolUse|PostToolUse)
         [[ $input =~ \"tool_name\":\"([^\"]*)\" ]] && extra=${BASH_REMATCH[1]} ;;
     Notification)
@@ -68,14 +72,19 @@ agents="$state.agents"
 
 # Claude Code also compacts an idle session before its prompt cache expires.
 # It reports trigger "auto" like mid-turn compaction, but no Stop follows it.
-# Mid-turn compaction always comes after a prompt or tool event, so an idle
-# one is recognised by the event recorded before it.
+# Mid-turn compaction comes straight after a prompt or tool event, so an idle
+# one is recognised by the event recorded before it. A turn the user
+# interrupted may never report Stop, so a state file untouched for over a
+# minute counts as idle too: -mmin +1 is that on BSD find, two minutes on GNU.
 if [[ $extra == auto ]]; then
     prev=
     [ -f "$state" ] && read -r prev < "$state"
     idle_re='^(Stop|StopFailure|SessionStart)( |$)|^PostCompact .* (manual|idle)$'
     case $event in
-        PreCompact) [[ $prev =~ $idle_re ]] && extra=idle ;;
+        PreCompact)
+            if [[ $prev =~ $idle_re ]] || [ -n "$(find "$state" -mmin +1 2>/dev/null)" ]; then
+                extra=idle
+            fi ;;
         PostCompact) [[ $prev =~ ^PreCompact\ .*\ idle$ ]] && extra=idle ;;
     esac
 fi
