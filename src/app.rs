@@ -620,11 +620,6 @@ impl App {
                     // Background session died — mark disconnected
                     self.sessions[i].state = SessionState::Disconnected;
                     self.locomotions[i].set_state(SessionState::Disconnected);
-                    // Adjust mode index if needed
-                    if let Mode::Session(idx) = self.mode
-                        && idx > i {
-                            self.mode = Mode::Session(idx - 1);
-                        }
                 }
             }
 
