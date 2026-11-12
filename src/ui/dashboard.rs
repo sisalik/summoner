@@ -4,6 +4,7 @@ use ratatui::buffer::{Buffer, Cell};
 use ratatui::layout::{Position, Rect};
 use ratatui::style::{Color, Style};
 use ratatui::widgets::Widget;
+use unicode_width::UnicodeWidthChar;
 
 use crate::creature::outline::RasterResult;
 use crate::creature::render::{
@@ -17,6 +18,7 @@ use crate::ui::dashboard_nav::DashboardNav;
 const CREATURE_WIDTH: u16 = 18;
 const CREATURE_HEIGHT: u16 = 24;
 const SCROLLBAR_WIDTH: u16 = 1;
+const BACKGROUND: Color = Color::Rgb(20, 20, 30);
 
 /// Width available to card flow after reserving the scrollbar column.
 pub fn layout_width(content_width: u16) -> u16 {
@@ -92,7 +94,7 @@ impl<'a> Dashboard<'a> {
         };
         let hint_style = Style::default()
             .fg(Color::Rgb(120, 120, 140))
-            .bg(Color::Rgb(20, 20, 30));
+            .bg(BACKGROUND);
         draw_text(area.x, hint_y, hint_text, hint_style, area, buf);
 
         // Notice row under the usage bar, only when there is something to say
@@ -100,7 +102,7 @@ impl<'a> Dashboard<'a> {
             Some(notice) if area.height >= 4 => {
                 let style = Style::default()
                     .fg(Color::Rgb(230, 180, 80))
-                    .bg(Color::Rgb(20, 20, 30));
+                    .bg(BACKGROUND);
                 let text = format!(" \u{26a0} {} ", notice);
                 draw_text(area.x, area.y + 1, &text, style, area, buf);
                 1
@@ -160,12 +162,6 @@ impl<'a> Dashboard<'a> {
         let scroll_row = self.nav.scroll_row();
 
         if sc.full_rows == 0 {
-            self.render_flat_rows(
-                &groups, &group_sizes, &layout, &basenames, &needs_full_path,
-                content_area, card_height, row_stride, creature_render_h,
-                buf, 0, usize::MAX,
-            );
-            draw_scrollbar(content_area, total_rows, sc.full_rows, scroll_row, buf);
             return;
         }
 
@@ -301,16 +297,33 @@ impl<'a> Dashboard<'a> {
             draw_text(x, title_y, " ", Style::default().fg(border_color), clip, buf);
         }
 
-        for (local_idx, &sess_idx) in group.sessions.iter().enumerate() {
+        let selected_local = selected
+            .checked_sub(flat_pos_start)
+            .filter(|&local| local < group.sessions.len());
+        let (first, count) = visible_creatures(card_area.width, group.sessions.len(), selected_local);
+        // A dashed side border marks each side with creatures scrolled out of
+        // view; unlike a label it survives a short window cutting the card off
+        let border_style = Style::default().fg(border_color);
+        if first > 0 {
+            dash_side_border(card_area.x, card_area, clip, border_style, buf);
+        }
+        if first + count < group.sessions.len() {
+            dash_side_border(card_area.right().saturating_sub(1), card_area, clip, border_style, buf);
+        }
+
+        // Creatures are laid out at full width and clipped at the card's inner
+        // edge, so the one after the last that fits shows partly as a hint
+        for (slot, (local_idx, &sess_idx)) in group.sessions.iter().enumerate().skip(first).enumerate() {
             let session = &self.sessions[sess_idx];
 
             let creature_spacing = CREATURE_WIDTH + 2;
-            let cx = inner.x + local_idx as u16 * creature_spacing;
+            let cx = inner.x + slot as u16 * creature_spacing;
             let inner_right = inner.x + inner.width;
+            // Visible width; equals CREATURE_WIDTH except for the clipped one
             let cw = CREATURE_WIDTH.min(inner_right.saturating_sub(cx));
 
             if cw == 0 || cx >= inner_right {
-                continue;
+                break;
             }
 
             let creature_col = Rect {
@@ -343,7 +356,7 @@ impl<'a> Dashboard<'a> {
                 } else {
                     " ---%".to_string()
                 };
-                let bar_total = cw.saturating_sub(pct_str.len() as u16) as usize;
+                let bar_total = CREATURE_WIDTH.saturating_sub(pct_str.len() as u16) as usize;
                 let damaged = (bar_total as u64 * pct as u64 / 100).min(bar_total as u64) as usize;
                 let healthy = bar_total.saturating_sub(damaged);
 
@@ -358,7 +371,7 @@ impl<'a> Dashboard<'a> {
             let creature_area = Rect {
                 x: cx,
                 y: creature_y,
-                width: cw,
+                width: CREATURE_WIDTH,
                 height: creature_render_h,
             };
 
@@ -371,7 +384,7 @@ impl<'a> Dashboard<'a> {
             if is_claude_sprite {
                 if let Some(raster) = self.rasters.get(sess_idx) {
                     let palette = state_palette(session.state);
-                    render_sprite_shaded_clipped(&raster.sprite, &raster.capsule_ids, &palette, creature_area, clip, buf);
+                    render_sprite_shaded_clipped(&raster.sprite, &raster.capsule_ids, &palette, creature_area, col_clip, buf);
                 }
             } else {
                 let icon = terminal_icon_sprite();
@@ -385,7 +398,7 @@ impl<'a> Dashboard<'a> {
                     width: icon_w.min(creature_area.width.saturating_sub(x_offset)),
                     height: creature_area.height.saturating_sub(y_offset),
                 };
-                render_sprite_to_buffer_clipped(&icon, &palette, centered_area, clip, buf);
+                render_sprite_to_buffer_clipped(&icon, &palette, centered_area, col_clip, buf);
             }
 
             if is_active_claude && lvl_xp_y < card_area.y + card_area.height.saturating_sub(2) {
@@ -409,7 +422,7 @@ impl<'a> Dashboard<'a> {
                 draw_text(cx, lvl_xp_y, &lvl_text, Style::default().fg(lvl_color), col_clip, buf);
 
                 let xp_len = xp.chars().count() as u16;
-                let xp_x = cx + cw.saturating_sub(xp_len);
+                let xp_x = cx + CREATURE_WIDTH.saturating_sub(xp_len);
                 draw_text(xp_x, lvl_xp_y, &xp, Style::default().fg(Color::Rgb(255, 213, 79)), col_clip, buf);
             }
 
@@ -449,54 +462,10 @@ impl<'a> Dashboard<'a> {
                     draw_selection_box(box_area, clip, buf, box_color);
                 }
             }
-        }
-    }
 
-    #[allow(clippy::too_many_arguments)]
-    fn render_flat_rows(
-        &mut self,
-        groups: &[crate::session::ProjectGroup],
-        group_sizes: &[usize],
-        layout: &FlowLayout,
-        basenames: &[&str],
-        needs_full_path: &[bool],
-        content_area: Rect,
-        card_height: u16,
-        row_stride: u16,
-        creature_render_h: u16,
-        buf: &mut Buffer,
-        first_row: usize,
-        max_rows: usize,
-    ) {
-        let selected = self.nav.selected();
-        let end = (first_row + max_rows).min(layout.row_groups.len());
-        for row_idx in first_row..end {
-            let card_y = content_area.y + 1 + (row_idx - first_row) as u16 * row_stride;
-            if card_y + card_height > content_area.y + content_area.height {
-                break;
-            }
-            for &group_idx in &layout.row_groups[row_idx] {
-                let card_pos = &layout.cards[group_idx];
-                let card_x = content_area.x + card_pos.x;
-                let card_area = Rect {
-                    x: card_x,
-                    y: card_y,
-                    width: card_pos.width,
-                    height: card_height,
-                };
-                let flat_pos_start: usize = group_sizes.iter().take(group_idx).sum();
-                self.render_card_into(
-                    group_idx,
-                    card_area,
-                    content_area,
-                    groups,
-                    basenames,
-                    needs_full_path,
-                    flat_pos_start,
-                    selected,
-                    creature_render_h,
-                    buf,
-                );
+            if local_idx >= first + count {
+                let inner_rows = Rect { y: inner.y, height: inner.height, ..creature_col };
+                fade_area(rect_intersect(inner_rows, clip), buf);
             }
         }
     }
@@ -525,7 +494,8 @@ pub fn scroll_layout(
     }
     let natural_full_rows = (content_height / row_stride) as usize;
     if natural_full_rows == 0 {
-        return ScrollLayout { full_rows: 0, top_peek: 0, bottom_peek: 0 };
+        // Shorter than one card: show the top of the current row's cards
+        return ScrollLayout { full_rows: 1, top_peek: 0, bottom_peek: 0 };
     }
     let leftover = content_height % row_stride;
 
@@ -570,7 +540,21 @@ fn natural_card_width(session_count: usize) -> u16 {
     (creatures_w + 4).max(28) // border(2) + padding(2), floor at 28
 }
 
-/// Flow layout: each card gets its natural width, packed left-to-right with row wrapping.
+/// Which of a card's creatures are shown in full, as `(first, count)`. A card
+/// too narrow for all of its creatures shows as many as fit, scrolled so the
+/// selected creature (`selected_local`, when it is in this card) stays visible;
+/// the next one is drawn clipped at the card's edge.
+pub fn visible_creatures(card_width: u16, session_count: usize, selected_local: Option<usize>) -> (usize, usize) {
+    // Inner width is the card minus border and padding; the last creature
+    // needs no gap after it.
+    let fit = ((card_width.saturating_sub(4) + 2) / (CREATURE_WIDTH + 2)).max(1) as usize;
+    let count = fit.min(session_count);
+    let first = selected_local.map_or(0, |sel| (sel + 1).saturating_sub(count));
+    (first, count)
+}
+
+/// Flow layout: each card gets its natural width, capped to the available
+/// width, packed left-to-right with row wrapping.
 pub fn flow_layout(group_sizes: &[usize], available_width: u16) -> FlowLayout {
     let mut cards = Vec::with_capacity(group_sizes.len());
     let mut row_groups: Vec<Vec<usize>> = Vec::new();
@@ -578,7 +562,8 @@ pub fn flow_layout(group_sizes: &[usize], available_width: u16) -> FlowLayout {
     let mut current_row: usize = 0;
 
     for (i, &size) in group_sizes.iter().enumerate() {
-        let card_w = natural_card_width(size);
+        // Leave room for the left margin and the right gap
+        let card_w = natural_card_width(size).min(available_width.saturating_sub(2));
         let needed = card_w + 1; // card + right gap
 
         if current_x > 1 && current_x + needed > available_width {
@@ -600,16 +585,18 @@ pub fn flow_layout(group_sizes: &[usize], available_width: u16) -> FlowLayout {
 }
 
 /// Hit-test: given a mouse position, return the flat session index clicked (if any).
+/// `selected` is needed because it decides how a narrow card's creatures are scrolled.
 pub fn session_at_position(
     group_sizes: &[usize],
     content_area: Rect,
     scroll_row: usize,
-    card_height: u16,
-    row_stride: u16,
+    selected: usize,
     mouse_row: u16,
     mouse_col: u16,
 ) -> Option<usize> {
     if group_sizes.is_empty() { return None; }
+
+    let (card_height, row_stride) = card_metrics();
 
     let layout = flow_layout(group_sizes, layout_width(content_area.width));
     let total_rows = layout.row_groups.len();
@@ -649,10 +636,15 @@ pub fn session_at_position(
             let creature_spacing = CREATURE_WIDTH + 2;
             let flat_pos_start: usize = group_sizes.iter().take(group_idx).sum();
             let size = group_sizes[group_idx];
-            for local_idx in 0..size {
-                let cx = inner_x + local_idx as u16 * creature_spacing;
-                if mouse_col >= cx && mouse_col < cx + CREATURE_WIDTH {
-                    return Some(flat_pos_start + local_idx);
+            let selected_local = selected.checked_sub(flat_pos_start).filter(|&local| local < size);
+            let (first, _) = visible_creatures(card_width, size, selected_local);
+            // Includes the creature clipped at the card's inner edge
+            let inner_right = (card_x + card_width).saturating_sub(2);
+            for slot in 0..size - first {
+                let cx = inner_x + slot as u16 * creature_spacing;
+                if cx >= inner_right { break; }
+                if mouse_col >= cx && mouse_col < (cx + CREATURE_WIDTH).min(inner_right) {
+                    return Some(flat_pos_start + first + slot);
                 }
             }
             return Some(flat_pos_start);
@@ -675,7 +667,7 @@ fn draw_scrollbar(
 
     let track_x = area.x + area.width - 1;
     let track_h = area.height;
-    let bg = Color::Rgb(20, 20, 30);
+    let bg = BACKGROUND;
     let track_style = Style::default().fg(Color::Rgb(35, 35, 48)).bg(bg);
     let thumb_style = Style::default().fg(Color::Rgb(70, 70, 90)).bg(bg);
 
@@ -703,9 +695,36 @@ fn draw_scrollbar(
     }
 }
 
+/// Redraw the side border at column `x` of `card` dashed, between its corners.
+fn dash_side_border(x: u16, card: Rect, clip: Rect, style: Style, buf: &mut Buffer) {
+    for y in card.y + 1..card.bottom().saturating_sub(1) {
+        draw_text(x, y, "\u{254e}", style, clip, buf);
+    }
+}
+
+/// Blend every colour in `area` halfway into the background, so a creature
+/// cut off at a card's edge reads as offstage.
+fn fade_area(area: Rect, buf: &mut Buffer) {
+    let fade = |color: Color| match (color, BACKGROUND) {
+        (Color::Rgb(r, g, b), Color::Rgb(br, bg, bb)) => {
+            let mix = |c: u8, base: u8| ((c as u16 + base as u16) / 2) as u8;
+            Color::Rgb(mix(r, br), mix(g, bg), mix(b, bb))
+        }
+        (other, _) => other,
+    };
+    let area = area.intersection(buf.area);
+    for y in area.top()..area.bottom() {
+        for x in area.left()..area.right() {
+            let cell = &mut buf[(x, y)];
+            cell.fg = fade(cell.fg);
+            cell.bg = fade(cell.bg);
+        }
+    }
+}
+
 fn background_cell() -> Cell {
     let mut cell = Cell::default();
-    cell.set_bg(Color::Rgb(20, 20, 30));
+    cell.set_bg(BACKGROUND);
     cell
 }
 
@@ -725,7 +744,9 @@ fn draw_text(x: u16, y: u16, text: &str, style: Style, clip: Rect, buf: &mut Buf
     for (i, ch) in text.chars().enumerate() {
         let px = x + i as u16;
         if px < clip.x { continue; }
-        if px >= clip.x.saturating_add(clip.width) { break; }
+        // A wide glyph in the last column would spill one column past the clip
+        let width = UnicodeWidthChar::width(ch).unwrap_or(1).max(1) as u16;
+        if px + width > clip.x.saturating_add(clip.width) { break; }
         if let Some(cell) = buf.cell_mut(Position { x: px, y }) {
             cell.set_symbol(&ch.to_string());
             cell.set_style(style);
@@ -929,11 +950,115 @@ mod peek_tests {
     }
 
     #[test]
-    fn zero_rows_fallback() {
-        // Too short for a full row
+    fn shorter_than_a_card_shows_one_clipped_row() {
         let s = scroll_layout(5, 17, 3, 0);
-        assert_eq!(s.full_rows, 0);
+        assert_eq!(s.full_rows, 1);
         assert_eq!(s.top_peek, 0);
         assert_eq!(s.bottom_peek, 0);
+    }
+
+    #[test]
+    fn narrow_card_is_capped_to_the_available_width() {
+        // Three creatures want 64 columns
+        let layout = flow_layout(&[3], 43);
+        assert_eq!(layout.cards[0].width, 41);
+        assert_eq!(layout.row_groups, vec![vec![0]]);
+    }
+
+    #[test]
+    fn wide_card_keeps_its_natural_width() {
+        let layout = flow_layout(&[3], 120);
+        assert_eq!(layout.cards[0].width, natural_card_width(3));
+    }
+
+    #[test]
+    fn natural_width_card_shows_every_creature() {
+        assert_eq!(visible_creatures(natural_card_width(3), 3, None), (0, 3));
+        assert_eq!(visible_creatures(natural_card_width(3), 3, Some(2)), (0, 3));
+    }
+
+    #[test]
+    fn narrow_card_scrolls_to_the_selected_creature() {
+        // 41 columns fit one creature
+        assert_eq!(visible_creatures(41, 3, None), (0, 1));
+        assert_eq!(visible_creatures(41, 3, Some(0)), (0, 1));
+        assert_eq!(visible_creatures(41, 3, Some(2)), (2, 1));
+        // 44 columns fit two
+        assert_eq!(visible_creatures(44, 3, Some(2)), (1, 2));
+        assert_eq!(visible_creatures(44, 3, Some(1)), (0, 2));
+    }
+
+    #[test]
+    fn clicking_a_clipped_creature_selects_it() {
+        // At 44 columns a three-creature card is 41 wide: creature 0 is whole
+        // and creature 1 starts at column 23, clipped at the inner edge (40)
+        let content = Rect::new(0, 1, 44, 22);
+        assert_eq!(session_at_position(&[3], content, 0, 0, 10, 30), Some(1));
+        // The padding past the inner edge belongs to the card, not a creature
+        assert_eq!(session_at_position(&[3], content, 0, 0, 10, 40), Some(0));
+    }
+}
+
+#[cfg(test)]
+mod narrow_card_tests {
+    use super::*;
+    use crate::creature::{locomotion::LocomotionState, outline::rasterize_skeleton, skeleton::Skeleton};
+
+    /// Three shell sessions in one project, drawn at `width` x 24 with
+    /// creature `selected` selected.
+    fn render_three_shells(width: u16, selected: usize) -> Buffer {
+        let sessions: Vec<Session> = (0..3).map(|i| {
+            let mut s = Session::new("/tmp/narrow-card".into(), i, "bipedal".into());
+            s.state = SessionState::ShellOnly;
+            s
+        }).collect();
+        let stats: Vec<SessionStats> = sessions.iter().map(|_| SessionStats::new()).collect();
+        let sprites: Vec<_> = (0..3).map(|i| {
+            rasterize_skeleton(LocomotionState::new(Skeleton::instantiate(i, 42), SessionState::ShellOnly).skeleton())
+        }).collect();
+        let mut nav = DashboardNav::new();
+        nav.update_layout_with_rows(&[3], flow_layout(&[3], layout_width(width)).row_groups);
+        nav.set_selected(selected);
+        let mut git = GitDiffCache::new(3600);
+        let area = Rect::new(0, 0, width, 24);
+        let mut buf = Buffer::empty(area);
+        Dashboard::new(&sessions, &stats, &GlobalStats::new(), &sprites, &mut nav, &mut git, false)
+            .render(area, &mut buf);
+        buf
+    }
+
+    fn fg_colours(buf: &Buffer, xs: std::ops::Range<u16>) -> Vec<Color> {
+        xs.flat_map(|x| (2..19).map(move |y| (x, y))).map(|p| buf[p].fg).collect()
+    }
+
+    // At 60 columns the card is 57 wide (columns 1 to 57): creatures start at
+    // columns 3 and 23, and the third starts at 43, cut off at the inner edge.
+    #[test]
+    fn hidden_creatures_dash_their_side_of_the_border() {
+        let first = render_three_shells(60, 0);
+        assert_eq!(first[(1, 10)].symbol(), "\u{2502}");
+        assert_eq!(first[(57, 10)].symbol(), "\u{254e}");
+
+        let last = render_three_shells(60, 2);
+        assert_eq!(last[(1, 10)].symbol(), "\u{254e}");
+        assert_eq!(last[(57, 10)].symbol(), "\u{2502}");
+    }
+
+    #[test]
+    fn cut_off_creature_is_faded() {
+        let buf = render_three_shells(60, 0);
+        let label = SessionState::ShellOnly.color();
+        assert!(fg_colours(&buf, 3..21).contains(&label));
+        let clipped = fg_colours(&buf, 43..56);
+        assert!(!clipped.contains(&label));
+        assert!(clipped.contains(&Color::Rgb(110, 110, 120)));
+    }
+
+    #[test]
+    fn wide_card_has_solid_borders_and_no_fading() {
+        let buf = render_three_shells(80, 0);
+        assert_eq!(buf[(1, 10)].symbol(), "\u{2502}");
+        assert_eq!(buf[(64, 10)].symbol(), "\u{2502}");
+        assert!(fg_colours(&buf, 43..61).contains(&SessionState::ShellOnly.color()));
     }
 }
