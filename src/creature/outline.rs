@@ -15,7 +15,7 @@ const BORDER_WIDTH: f32 = 1.0;
 /// - 100+i*2 = limb i upper bone
 /// - 100+i*2+1 = limb i lower bone
 /// - 200+i = wing membrane triangle i
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct RasterResult {
     pub sprite: Sprite,
     pub capsule_ids: Vec<u8>,

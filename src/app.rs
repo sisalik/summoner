@@ -37,6 +37,16 @@ const SLEEP_AFTER_IDLE: Duration = Duration::from_secs(30 * 60);
 /// Claude stopped without reporting it.
 const ESC_INTERRUPT_GRACE: Duration = Duration::from_secs(5);
 
+/// How often each session's state is re-read: hook state files, the working
+/// directory and the process tree under `/proc`. PTY output is drained on
+/// every loop iteration regardless.
+const SESSION_POLL_INTERVAL: Duration = Duration::from_millis(250);
+
+/// The longest a frame goes undrawn when nothing marks it dirty. Covers what
+/// changes with time alone: the usage reset countdown, the git diff counts
+/// (refreshed while drawing) and the token and context stats.
+const MAX_FRAME_AGE: Duration = Duration::from_secs(1);
+
 /// PTY grid size for a terminal of `term_rows` x `term_cols`: one row goes to
 /// the status bar. Never returns a zero dimension — vt100 panics on a grid
 /// with no rows or no columns, which a very small or not-yet-sized terminal
@@ -67,6 +77,11 @@ struct App {
     recent_dirs: RecentDirs,
     config_dir: PathBuf,
     last_tick: Instant,
+    last_session_poll: Instant,
+    /// Set by anything that changes what is on screen; the loop draws only
+    /// when it is set or the last frame is older than `MAX_FRAME_AGE`.
+    needs_redraw: bool,
+    last_draw: Instant,
     confirm_close_project: Option<String>,
     confirm_selection: bool,
     confirm_quit: bool,
@@ -199,6 +214,9 @@ impl App {
             recent_dirs,
             config_dir,
             last_tick: Instant::now(),
+            last_session_poll: Instant::now(),
+            needs_redraw: true,
+            last_draw: Instant::now(),
             confirm_close_project: None,
             confirm_selection: false,
             confirm_quit: false,
@@ -472,17 +490,18 @@ impl App {
         }
     }
 
-    fn process_pty_output(&mut self) {
-        let mut dir_changed = false;
-        let mut remove_active: Option<usize> = None;
+    /// Feed waiting PTY output to each session's parser. Only output for the
+    /// session on screen calls for a redraw; the others are not drawn.
+    fn drain_pty_output(&mut self) {
         for i in 0..self.sessions.len() {
-            let pty = match &self.pty_sessions[i] {
-                Some(p) => p,
-                None => continue,
-            };
-
-            // Read output and feed to vt100 parser
+            let Some(pty) = &self.pty_sessions[i] else { continue };
             let chunks = pty.read_available();
+            if chunks.is_empty() {
+                continue;
+            }
+            if self.mode == Mode::Session(i) {
+                self.needs_redraw = true;
+            }
             for chunk in &chunks {
                 if self.strip_alt_screen {
                     let (rows, _) = self.vt_parsers[i].screen().size();
@@ -492,6 +511,21 @@ impl App {
                     self.vt_parsers[i].process(chunk);
                 }
             }
+        }
+    }
+
+    /// Re-read each live session's working directory, Claude state and exit
+    /// status, and mark a redraw when anything the dashboard or status bar
+    /// shows has changed.
+    fn poll_sessions(&mut self) {
+        let mut dir_changed = false;
+        let mut remove_active: Option<usize> = None;
+        for i in 0..self.sessions.len() {
+            let pty = match &self.pty_sessions[i] {
+                Some(p) => p,
+                None => continue,
+            };
+            let shown_before = self.polled_view(i);
 
             // Update working directory from /proc/PID/cwd
             if let Some(cwd) = pty.cwd()
@@ -593,16 +627,29 @@ impl App {
                         }
                 }
             }
+
+            if self.polled_view(i) != shown_before {
+                self.needs_redraw = true;
+            }
         }
 
         if let Some(idx) = remove_active {
             self.close_session(idx);
             self.mode = Mode::Dashboard;
+            self.needs_redraw = true;
         }
 
         if dir_changed {
             self.refresh_nav_layout();
         }
+    }
+
+    /// The fields of session `i` that `poll_sessions` can change and the
+    /// dashboard or status bar shows.
+    fn polled_view(&self, i: usize) -> (SessionState, String, Option<String>, Option<String>) {
+        let session = &self.sessions[i];
+        let active_tool = self.session_stats.get(i).and_then(|s| s.active_tool.clone());
+        (session.state, session.directory.clone(), session.claude_conversation_id.clone(), active_tool)
     }
 
     fn save_state(&self) {
@@ -1281,10 +1328,17 @@ impl App {
         Ok(())
     }
 
+    /// Advance every creature. Most frames of a slow pose rasterise to the
+    /// same pixels, and drawing the dashboard costs far more than ticking and
+    /// rasterising, so only a changed sprite calls for a redraw.
     fn tick_animations(&mut self, dt: Duration) {
         for (i, loco) in self.locomotions.iter_mut().enumerate() {
             loco.tick(dt);
-            self.sprites[i] = rasterize_skeleton(loco.skeleton());
+            let sprite = rasterize_skeleton(loco.skeleton());
+            if sprite != self.sprites[i] {
+                self.sprites[i] = sprite;
+                self.needs_redraw = true;
+            }
         }
     }
 
@@ -1746,8 +1800,12 @@ pub fn run(terminal: &mut DefaultTerminal) -> Result<()> {
     let mut app = App::new()?;
 
     loop {
-        app.render(terminal)?;
-        app.refresh_nav_layout();
+        if app.needs_redraw || app.last_draw.elapsed() >= MAX_FRAME_AGE {
+            app.render(terminal)?;
+            app.refresh_nav_layout();
+            app.needs_redraw = false;
+            app.last_draw = Instant::now();
+        }
 
         let timeout = match app.mode {
             Mode::Dashboard | Mode::DirPicker => Duration::from_millis(33),
@@ -1755,7 +1813,9 @@ pub fn run(terminal: &mut DefaultTerminal) -> Result<()> {
         };
 
         if event::poll(timeout)? {
-            match event::read()? {
+            let event = event::read()?;
+            app.needs_redraw = true;
+            match event {
                 Event::Key(key) => {
                     let size = terminal.size()?;
                     let should_quit = app.handle_input(key, size.height, size.width)?;
@@ -1914,12 +1974,15 @@ pub fn run(terminal: &mut DefaultTerminal) -> Result<()> {
             }
         }
 
-        // Process PTY output
-        app.process_pty_output();
+        app.drain_pty_output();
+        let now = Instant::now();
+        if now.duration_since(app.last_session_poll) >= SESSION_POLL_INTERVAL {
+            app.poll_sessions();
+            app.last_session_poll = now;
+        }
         app.update_stats();
 
         // Periodic state save (every 10 seconds)
-        let now = Instant::now();
         if now.duration_since(app.last_save) >= Duration::from_secs(10) {
             app.save_state();
             app.last_save = now;

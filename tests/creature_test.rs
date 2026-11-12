@@ -433,3 +433,24 @@ fn render_sprite_to_buffer_clipped_respects_clip_rect() {
     let any_nonblank = (0..4).any(|x| buf[Position { x, y: 1 }].symbol() != " ");
     assert!(any_nonblank, "row 1 (inside clip) must have sprite content");
 }
+
+/// The dashboard redraws only when a sprite changes, so a creature that holds
+/// still must rasterise to exactly the same pixels on every tick.
+#[test]
+fn still_creatures_rasterise_identically_across_ticks() {
+    for archetype in 0..ARCHETYPE_COUNT {
+        for state in [SessionState::Disconnected, SessionState::ShellOnly] {
+            let mut loco = LocomotionState::new(Skeleton::instantiate(archetype, 42), state);
+            let first = rasterize_skeleton(loco.skeleton());
+            for _ in 0..30 {
+                loco.tick(Duration::from_millis(33));
+                assert_eq!(
+                    rasterize_skeleton(loco.skeleton()),
+                    first,
+                    "{} in {state:?} changed pixels while holding still",
+                    archetype_name(archetype),
+                );
+            }
+        }
+    }
+}

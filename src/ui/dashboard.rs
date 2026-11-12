@@ -1,6 +1,6 @@
 // Dashboard grid — grouped by project, with selection boxes
 
-use ratatui::buffer::Buffer;
+use ratatui::buffer::{Buffer, Cell};
 use ratatui::layout::{Position, Rect};
 use ratatui::style::{Color, Style};
 use ratatui::widgets::Widget;
@@ -180,8 +180,7 @@ impl<'a> Dashboard<'a> {
             width: content_area.width,
             height: scratch_height,
         };
-        let mut scratch = Buffer::empty(scratch_area);
-        fill_background(scratch_area, &mut scratch);
+        let mut scratch = Buffer::filled(scratch_area, background_cell());
 
         // scratch_y = abs_y - content_area.y + row_stride
         let scratch_clip = Rect {
@@ -236,14 +235,12 @@ impl<'a> Dashboard<'a> {
         }
 
         // Copy scratch[row_stride..row_stride+content_area.height] rows to buf[content_area.y..].
-        for row in 0..content_area.height {
-            for col in 0..content_area.width {
-                let src = Position { x: content_area.x + col, y: row_stride + row };
-                let dst = Position { x: content_area.x + col, y: content_area.y + row };
-                if let (Some(src_cell), Some(dst_cell)) = (scratch.cell(src), buf.cell_mut(dst)) {
-                    *dst_cell = src_cell.clone();
-                }
-            }
+        let copy_area = content_area.intersection(buf.area);
+        let width = copy_area.width as usize;
+        for y in copy_area.top()..copy_area.bottom() {
+            let src = scratch.index_of(copy_area.x, y - content_area.y + row_stride);
+            let dst = buf.index_of(copy_area.x, y);
+            buf.content[dst..dst + width].clone_from_slice(&scratch.content[src..src + width]);
         }
 
         draw_scrollbar(content_area, total_rows, sc.full_rows, scroll_row, buf);
@@ -706,15 +703,20 @@ fn draw_scrollbar(
     }
 }
 
+fn background_cell() -> Cell {
+    let mut cell = Cell::default();
+    cell.set_bg(Color::Rgb(20, 20, 30));
+    cell
+}
+
+/// Blank `area` to the dashboard background. Fills whole row slices, since
+/// this touches every cell of every dashboard frame.
 fn fill_background(area: Rect, buf: &mut Buffer) {
-    let bg = Style::default().bg(Color::Rgb(20, 20, 30));
-    for y in area.y..area.y + area.height {
-        for x in area.x..area.x + area.width {
-            if let Some(cell) = buf.cell_mut(Position { x, y }) {
-                cell.set_symbol(" ");
-                cell.set_style(bg);
-            }
-        }
+    let area = area.intersection(buf.area);
+    let blank = background_cell();
+    for y in area.top()..area.bottom() {
+        let start = buf.index_of(area.x, y);
+        buf.content[start..start + area.width as usize].fill(blank.clone());
     }
 }
 
